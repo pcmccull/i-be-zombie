@@ -9,13 +9,13 @@ import { checkVictory } from '../src/systems/VictorySystem';
 const dt = BALANCE.sim.fixedDt;
 describe('victory, defeat and restart: design §15.12–13,15', () => {
   it('requires both objectives, gives defeat priority, and emits phase events exactly once', () => {
-    const sim = new Simulation(); damageGate(sim.ctx, 250); checkVictory(sim.ctx);
+    const sim = new Simulation(); damageGate(sim.ctx, BALANCE.gate.maxHp); checkVictory(sim.ctx);
     expect(sim.state.phase).toBe('playing'); sim.reset();
     for (const g of sim.state.guards) damageGuard(sim.ctx, g, 50, 'other');
     checkVictory(sim.ctx); expect(sim.state.phase).toBe('playing');
-    damageGate(sim.ctx, 250); sim.drainEvents(); checkVictory(sim.ctx); checkVictory(sim.ctx);
+    damageGate(sim.ctx, BALANCE.gate.maxHp); sim.drainEvents(); checkVictory(sim.ctx); checkVictory(sim.ctx);
     expect(sim.state.phase).toBe('victory'); expect(sim.drainEvents()).toEqual([{ type: 'victory' }]);
-    sim.reset(); damageGate(sim.ctx, 250);
+    sim.reset(); damageGate(sim.ctx, BALANCE.gate.maxHp);
     for (const g of sim.state.guards) damageGuard(sim.ctx, g, 50, 'other');
     damageLeader(sim.ctx, 100); sim.drainEvents(); checkVictory(sim.ctx); checkVictory(sim.ctx);
     expect(sim.state.phase).toBe('defeat'); expect(sim.drainEvents()).toEqual([{ type: 'defeat' }]);
@@ -24,7 +24,7 @@ describe('victory, defeat and restart: design §15.12–13,15', () => {
   it.each(['victory', 'defeat'] as const)('freezes all gameplay after %s, then reset restores all state and navigation', phase => {
     const sim = new Simulation(); recruitZombie(sim.ctx, sim.state.zombies[0], false);
     sim.step(dt, { ...emptyInput(), rush: true, rally: true, attackTarget: { kind: 'gate' } });
-    damageGuard(sim.ctx, sim.state.guards[5], 50, 'zombie'); damageGate(sim.ctx, 250);
+    damageGuard(sim.ctx, sim.state.guards[5], 50, 'zombie'); damageGate(sim.ctx, BALANCE.gate.maxHp);
     if (phase === 'victory') for (const g of sim.state.guards) damageGuard(sim.ctx, g, 50, 'other');
     else damageLeader(sim.ctx, 100);
     checkVictory(sim.ctx); expect(sim.state.phase).toBe(phase); sim.drainEvents();
@@ -56,7 +56,7 @@ describe('victory, defeat and restart: design §15.12–13,15', () => {
     damageGuard(sim.ctx, g, 50, 'other'); sim.step(dt, emptyInput());
     expect(sim.state.order.type).toBe('follow');
     sim.step(dt, { ...emptyInput(), attackTarget: { kind: 'gate' } });
-    damageGate(sim.ctx, 250); sim.step(dt, emptyInput()); expect(sim.state.order.type).toBe('follow');
+    damageGate(sim.ctx, BALANCE.gate.maxHp); sim.step(dt, emptyInput()); expect(sim.state.order.type).toBe('follow');
     expect(sim.ctx.nav.effectiveTarget).toBeNull();
   });
 });

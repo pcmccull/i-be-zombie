@@ -34,7 +34,7 @@ describe('B1 horde engagement', () => {
     const sim = fixture(); add(sim, { x: 83, z: -50 });
     const near = living(sim, 6), far = living(sim, 5);
     sim.state.order = { type: 'attack', target: { kind: 'gate' } };
-    damageGate(sim.ctx, 250); sim.drainEvents(); commands(sim);
+    damageGate(sim.ctx, BALANCE.gate.maxHp); sim.drainEvents(); commands(sim);
     expect(sim.state.order).toEqual({ type: 'attack', target: ref(near) });
     expect(changes(sim)).toEqual([{ type: 'orderChanged', order: sim.state.order }]);
     commands(sim); expect(changes(sim)).toEqual([]);
@@ -45,7 +45,7 @@ describe('B1 horde engagement', () => {
     const sim = fixture(); add(sim, { x: 83, z: -50 });
     living(sim, 5, { x: 83, z: -26 });
     sim.state.order = { type: 'attack', target: { kind: 'gate' } };
-    damageGate(sim.ctx, 250); sim.drainEvents(); commands(sim); commands(sim);
+    damageGate(sim.ctx, BALANCE.gate.maxHp); sim.drainEvents(); commands(sim); commands(sim);
     expect(sim.state.order).toEqual({ type: 'follow' });
     expect(changes(sim)).toEqual([{ type: 'orderChanged', order: { type: 'follow' } }]);
   });
@@ -81,7 +81,7 @@ describe('B1 horde engagement', () => {
       const zeroHp = living(sim, 6); zeroHp.hp = 0;
       const edge = living(sim, 5, { x: sim.state.gate.center.x, z: sim.state.gate.center.z + 25 });
       sim.state.order = { type: 'attack', target: { kind: 'gate' } };
-      damageGate(sim.ctx, 250); sim.drainEvents(); commands(sim);
+      damageGate(sim.ctx, BALANCE.gate.maxHp); sim.drainEvents(); commands(sim);
       expect(sim.state.order).toEqual({ type: 'attack', target: ref(edge) });
       return changes(sim);
     }
@@ -91,7 +91,7 @@ describe('B1 horde engagement', () => {
   it('includes reachable tower attack proxies after the breach', () => {
     const sim = fixture(); add(sim, { x: 83, z: -50 }); const tower = living(sim, 0);
     sim.state.order = { type: 'attack', target: { kind: 'gate' } };
-    damageGate(sim.ctx, 250); commands(sim); updateNavigation(sim.ctx, dt, input);
+    damageGate(sim.ctx, BALANCE.gate.maxHp); commands(sim); updateNavigation(sim.ctx, dt, input);
     expect(sim.state.order).toEqual({ type: 'attack', target: ref(tower) });
     expect(sim.ctx.nav.attackField!.distanceAt(sim.state.zombies[0].pos)).toBeLessThan(Infinity);
   });
@@ -104,7 +104,7 @@ describe('B1 horde engagement', () => {
     expect(canMelee(sim.ctx, z.pos, BALANCE.walker.attackRange, { kind: 'gate' })).toBe(false);
     updateCombat(sim.ctx, dt, input);
     expect(g.hp).toBe(g.maxHp - BALANCE.walker.attackDamage);
-    expect(sim.state.gate.hp).toBe(250);
+    expect(sim.state.gate.hp).toBe(BALANCE.gate.maxHp);
     expect(sim.state.order).toEqual({ type: 'attack', target: { kind: 'gate' } });
     expect(z.engageTarget).toEqual({ kind: 'gate' });
     expect(changes(sim)).toEqual([]);
@@ -117,7 +117,7 @@ describe('B1 horde engagement', () => {
     updateNavigation(sim.ctx, dt, input); updateHorde(sim.ctx, dt, input);
     expect(canMelee(sim.ctx, z.pos, BALANCE.walker.attackRange, { kind: 'gate' })).toBe(true);
     updateCombat(sim.ctx, dt, input);
-    expect(sim.state.gate.hp).toBe(250 - BALANCE.walker.attackDamage); expect(g.hp).toBe(g.maxHp);
+    expect(sim.state.gate.hp).toBe(BALANCE.gate.maxHp - BALANCE.walker.attackDamage); expect(g.hp).toBe(g.maxHp);
   });
 
   it('defends on a guard order while preserving its route and rejects melee across the gate', () => {
@@ -138,7 +138,7 @@ describe('B1 horde engagement', () => {
   it.each([false, true])('recall wins during or after succession and stays follow (succeeded=%s)', succeeded => {
     const sim = fixture(); const z = add(sim, { x: 83, z: -50 }); const g = living(sim, 6);
     sim.state.order = { type: 'attack', target: { kind: 'gate' } };
-    damageGate(sim.ctx, 250);
+    damageGate(sim.ctx, BALANCE.gate.maxHp);
     if (succeeded) commands(sim);
     sim.drainEvents();
     applyHordeCommands(sim.ctx, dt, { ...input, recall: true, attackTarget: ref(g) });

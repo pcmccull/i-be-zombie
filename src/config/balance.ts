@@ -92,7 +92,7 @@ export const BALANCE = {
     patrolIdleTime: 2,
   },
   gate: {
-    maxHp: 250,
+    maxHp: 400, // spec initial 250; raised after playtest (60 walkers broke 250 HP in ~6 s)
   },
   conversion: {
     chance: 0.7,

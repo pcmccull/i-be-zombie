@@ -49,7 +49,7 @@ describe('guard perception and LOS: design §15.9', () => {
     const z = add(sim, { x: 83, z: -48 });
     expect(run(sim, 5).filter(e => e.type === 'shot')).toHaveLength(0);
     expect(g.target).toBeNull();
-    damageGate(sim.ctx, 250); g.facing = 0; sim.drainEvents();
+    damageGate(sim.ctx, BALANCE.gate.maxHp); g.facing = 0; sim.drainEvents();
     const shots = run(sim, 2).filter(e => e.type === 'shot');
     expect(shots.length).toBeGreaterThan(0); expect(g.target).toEqual({ kind: 'zombie', id: z.id });
   });

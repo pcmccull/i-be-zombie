@@ -63,7 +63,7 @@ describe('combat: design §15.7–8', () => {
       const other = createZombie(sim.ctx.newId(), { x: 83, z: -50.5 }, { state, variant: 0, spawnZone: -1, isConverted: false, rng: sim.ctx.rng });
       other.engageTarget = { kind: 'gate' }; sim.state.zombies.push(other);
     }
-    updateCombat(sim.ctx, dt, input); expect(sim.state.gate.hp).toBe(250);
+    updateCombat(sim.ctx, dt, input); expect(sim.state.gate.hp).toBe(BALANCE.gate.maxHp);
   });
 
   it('leader prefers ordered targets, falls back to nearest guard, and cannot melee while sprinting', () => {
@@ -76,7 +76,7 @@ describe('combat: design §15.7–8', () => {
     expect(g.hp).toBe(40); updateCombat(sim.ctx, dt, input); expect(g.hp).toBe(30);
     l.pos = { x: 83, z: -50.5 }; l.attackCooldown = 0;
     g.pos = { x: 83, z: -49.5 }; sim.state.order = { type: 'attack', target: { kind: 'gate' } };
-    updateCombat(sim.ctx, dt, input); expect(sim.state.gate.hp).toBe(240); expect(g.hp).toBe(30);
+    updateCombat(sim.ctx, dt, input); expect(sim.state.gate.hp).toBe(BALANCE.gate.maxHp - 10); expect(g.hp).toBe(30);
   });
 
   it('rejects melee across walls, vehicles and buildings, including at a tower through the perimeter', () => {
@@ -130,7 +130,7 @@ describe('combat: design §15.7–8', () => {
     const sim = new Simulation(); sim.state.zombies = [];
     const tower = sim.state.guards[0];
     for (const other of sim.state.guards) if (other !== tower) damageGuard(sim.ctx, other, 50, 'other');
-    damageGate(sim.ctx, 250);
+    damageGate(sim.ctx, BALANCE.gate.maxHp);
     for (let i = 0; i < 12; i++) add(sim, { x: 80 + i % 4, z: -49 + Math.floor(i / 4) });
     sim.step(dt, { ...input, attackTarget: { kind: 'guard', id: tower.id }, rush: true });
     for (let i = 0; i < 1800 && tower.state !== 'DEAD'; i++) { sim.step(dt, input); sim.drainEvents(); }
