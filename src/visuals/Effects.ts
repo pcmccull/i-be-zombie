@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { BALANCE } from '../config/balance';
-import type { EntityId, GameEvent, GameState, Vec3 } from '../core/types';
+import type { DistrictLayout, EntityId, GameEvent, GameState, StrongholdId, Vec2, Vec3 } from '../core/types';
 
 const MAX_TRACERS = 64;
 const MAX_MUZZLES = 32;
@@ -8,6 +8,9 @@ const MAX_PARTICLES = 256;
 const MAX_RINGS = 36;
 const MAX_SWIRLS = 8;
 const MAX_ALERTS = 8;
+const MAX_ARCS = 12;
+const MAX_PILLARS = 6;
+const CLAW_ARC_LENGTH = (Math.PI * 2) / 3;
 
 interface TracerSlot {
   active: boolean;
@@ -80,6 +83,30 @@ interface AlertSlot {
   group: THREE.Group;
 }
 
+interface ArcSlot {
+  active: boolean;
+  age: number;
+  duration: number;
+  x: number;
+  y: number;
+  z: number;
+  yaw: number;
+  tilt: number;
+  scale: number;
+  colorHex: number;
+}
+
+interface PillarSlot {
+  active: boolean;
+  age: number;
+  duration: number;
+  x: number;
+  z: number;
+  radius: number;
+  height: number;
+  colorHex: number;
+}
+
 export class Effects {
   private readonly scene: THREE.Scene;
   private readonly rootGroup: THREE.Group;
@@ -131,6 +158,41 @@ export class Effects {
   private readonly orderInnerGeo: THREE.BufferGeometry;
   private readonly orderChevronGeo: THREE.BufferGeometry;
   private readonly orderMat: THREE.MeshBasicMaterial;
+
+  // Alpha claw/bite swing arcs (additive sector meshes) and light pillars (captures, nests, respawn, evolve)
+  private readonly arcGeo: THREE.BufferGeometry;
+  private readonly arcMat: THREE.MeshBasicMaterial;
+  private readonly arcMesh: THREE.InstancedMesh;
+  private readonly arcs: ArcSlot[] = [];
+  private nextArcIdx = 0;
+
+  private readonly pillarGeo: THREE.BufferGeometry;
+  private readonly pillarMat: THREE.MeshBasicMaterial;
+  private readonly pillarMesh: THREE.InstancedMesh;
+  private readonly pillars: PillarSlot[] = [];
+  private nextPillarIdx = 0;
+
+  // Horde Frenzy aura (follows the Alpha while frenzyTimeLeft > 0)
+  private readonly auraGeo: THREE.BufferGeometry;
+  private readonly auraMat: THREE.MeshBasicMaterial;
+  private readonly auraOuter: THREE.Mesh;
+  private readonly auraInner: THREE.Mesh;
+  private auraTimer = 0;
+
+  // Move-order ground marker (fades at arrival / expiry)
+  private readonly moveGroup: THREE.Group;
+  private readonly moveRingGeo: THREE.BufferGeometry;
+  private readonly moveDotGeo: THREE.BufferGeometry;
+  private readonly moveArrowGeo: THREE.BufferGeometry;
+  private readonly moveMat: THREE.MeshBasicMaterial;
+  private readonly moveRing: THREE.Mesh;
+  private readonly moveArrow: THREE.Mesh;
+  private moveAlpha = 0;
+
+  private readonly strongholdPos = new Map<StrongholdId, Vec2>();
+  private readonly axisY = new THREE.Vector3(0, 1, 0);
+  private readonly axisZ = new THREE.Vector3(0, 0, 1);
+  private readonly quatB = new THREE.Quaternion();
 
   // Pre-allocated scratch math objects
   private readonly dummyMatrix = new THREE.Matrix4();
@@ -327,6 +389,93 @@ export class Effects {
       });
     }
 
+    // 6b. Claw/bite swing arcs: 120-degree sector lying in the XZ plane, centered on +Z, tilted per swing
+    this.arcGeo = new THREE.RingGeometry(0.55, 1.0, 14, 1, -Math.PI / 2 - CLAW_ARC_LENGTH / 2, CLAW_ARC_LENGTH);
+    this.arcGeo.rotateX(-Math.PI / 2);
+    this.arcMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.95,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending,
+    });
+    this.arcMesh = new THREE.InstancedMesh(this.arcGeo, this.arcMat, MAX_ARCS);
+    this.arcMesh.frustumCulled = false;
+    this.arcMesh.count = 0;
+    this.arcMesh.setColorAt(0, this.tempColor.setHex(0xffffff));
+    this.rootGroup.add(this.arcMesh);
+    for (let i = 0; i < MAX_ARCS; i++) {
+      this.arcs.push({
+        active: false, age: 0, duration: 0.2, x: 0, y: 1.1, z: 0, yaw: 0, tilt: 0, scale: 1, colorHex: 0xffffff,
+      });
+    }
+
+    // 6c. Light pillars: open cylinder, base at y=0, additive and faded through instance color
+    this.pillarGeo = new THREE.CylinderGeometry(1, 1, 1, 18, 1, true);
+    this.pillarGeo.translate(0, 0.5, 0);
+    this.pillarMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.7,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending,
+    });
+    this.pillarMesh = new THREE.InstancedMesh(this.pillarGeo, this.pillarMat, MAX_PILLARS);
+    this.pillarMesh.frustumCulled = false;
+    this.pillarMesh.count = 0;
+    this.pillarMesh.setColorAt(0, this.tempColor.setHex(0xffffff));
+    this.rootGroup.add(this.pillarMesh);
+    for (let i = 0; i < MAX_PILLARS; i++) {
+      this.pillars.push({ active: false, age: 0, duration: 1.5, x: 0, z: 0, radius: 1, height: 10, colorHex: 0xffffff });
+    }
+
+    // 6d. Frenzy aura (two additive rings around the Alpha)
+    this.auraGeo = new THREE.RingGeometry(0.86, 1.0, 36);
+    this.auraGeo.rotateX(-Math.PI / 2);
+    this.auraMat = new THREE.MeshBasicMaterial({
+      color: 0xff2a1a,
+      transparent: true,
+      opacity: 0.7,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending,
+    });
+    this.auraOuter = new THREE.Mesh(this.auraGeo, this.auraMat);
+    this.auraInner = new THREE.Mesh(this.auraGeo, this.auraMat);
+    this.auraOuter.visible = false;
+    this.auraInner.visible = false;
+    this.auraOuter.position.y = 0.07;
+    this.auraInner.position.y = 0.075;
+    this.rootGroup.add(this.auraOuter, this.auraInner);
+
+    // 6e. Move-order marker: cyan ring + inner dot ring + bobbing arrow
+    this.moveGroup = new THREE.Group();
+    this.moveGroup.name = 'MoveOrderMarker';
+    this.moveGroup.visible = false;
+    this.moveRingGeo = new THREE.RingGeometry(0.8, 1.0, 28);
+    this.moveRingGeo.rotateX(-Math.PI / 2);
+    this.moveDotGeo = new THREE.RingGeometry(0.0, 0.32, 14);
+    this.moveDotGeo.rotateX(-Math.PI / 2);
+    this.moveArrowGeo = new THREE.ConeGeometry(0.3, 0.6, 4);
+    this.moveArrowGeo.rotateX(Math.PI);
+    this.moveMat = new THREE.MeshBasicMaterial({
+      color: 0x7fd8ff,
+      transparent: true,
+      opacity: 0.85,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    this.moveRing = new THREE.Mesh(this.moveRingGeo, this.moveMat);
+    this.moveRing.position.y = 0.06;
+    const moveDot = new THREE.Mesh(this.moveDotGeo, this.moveMat);
+    moveDot.position.y = 0.065;
+    this.moveArrow = new THREE.Mesh(this.moveArrowGeo, this.moveMat);
+    this.moveArrow.position.y = 1.3;
+    this.moveGroup.add(this.moveRing, moveDot, this.moveArrow);
+    this.rootGroup.add(this.moveGroup);
+
     // 7. Persistent Attack Order Marker (pulsing red/orange world ring + downward chevron)
     this.orderMarkerGroup = new THREE.Group();
     this.orderMarkerGroup.name = 'AttackOrderMarker';
@@ -490,6 +639,86 @@ export class Effects {
           this.spawnRing(ev.pos.x, 0.08, ev.pos.z, 0.4, 3.2, 0.55, 0x8ff542, 1.2);
           break;
         }
+        case 'attackSwing': {
+          const fx = Math.sin(ev.facing);
+          const fz = Math.cos(ev.facing);
+          if (ev.combo <= 0) {
+            // Bite: small bright jaw flash in front of the Alpha
+            this.spawnArc(ev.pos.x + fx * 1.0, 1.15, ev.pos.z + fz * 1.0, ev.facing, 0.0, 0.5, ev.hit ? 0xffffff : 0x9aa090, 0.16);
+            if (ev.hit) this.spawnBurst(ev.pos.x + fx * 1.2, 1.1, ev.pos.z + fz * 1.2, 5, 0xf2f0e0, 3.0, 0.1, 0.25);
+          } else {
+            const finisher = ev.combo >= 3;
+            const tilt = finisher ? Math.PI / 2 : ev.combo === 1 ? -0.6 : 0.6;
+            const col = finisher ? 0xffe27a : 0xb8ff6a;
+            const dim = ev.hit ? 1 : 0.55;
+            this.tempColor.setHex(col).multiplyScalar(dim);
+            this.spawnArc(
+              ev.pos.x + fx * 0.6, finisher ? 1.5 : 1.15, ev.pos.z + fz * 0.6, ev.facing, tilt,
+              finisher ? 1.7 : 1.35, this.tempColor.getHex(), finisher ? 0.3 : 0.22,
+            );
+            if (ev.hit) {
+              this.spawnBurst(ev.pos.x + fx * 1.6, 1.1, ev.pos.z + fz * 1.6, finisher ? 10 : 6, col, 3.6, 0.1, 0.3);
+              if (finisher) this.requestShake(0.2);
+            }
+          }
+          break;
+        }
+        case 'frenzyStart': {
+          this.spawnRing(ev.pos.x, 0.08, ev.pos.z, 0.8, ev.radius, 0.7, 0xff2a1a, 0.1, true, 1.0);
+          this.spawnRing(ev.pos.x, 0.12, ev.pos.z, 0.5, ev.radius * 0.6, 0.55, 0xff7a3a, 0.2);
+          this.spawnBurst(ev.pos.x, 1.0, ev.pos.z, 18, 0xff3a22, 6.0, 0.16, 0.55, 3.0);
+          this.spawnPillar(ev.pos.x, ev.pos.z, 1.4, 6.0, 0.8, 0xff2a1a);
+          this.auraTimer = 0;
+          this.requestShake(0.26);
+          break;
+        }
+        case 'frenzyEnd': {
+          const lp = state.leader.pos;
+          this.spawnRing(lp.x, 0.08, lp.z, 5.0, 0.8, 0.5, 0x8a2a1a, 0.0);
+          break;
+        }
+        case 'bruteEvolved': {
+          this.spawnRing(ev.pos.x, 0.09, ev.pos.z, 0.5, 4.2, 0.6, 0xd9a441, 0.05, true, 1.0);
+          this.spawnBurst(ev.pos.x, 0.6, ev.pos.z, 20, 0x8a7a5a, 5.0, 0.2, 0.7, 4.0);
+          this.spawnBurst(ev.pos.x, 1.0, ev.pos.z, 10, 0xff5a24, 4.0, 0.14, 0.5, 1.0);
+          this.spawnPillar(ev.pos.x, ev.pos.z, 0.9, 5.0, 0.9, 0xd9a441);
+          this.requestShake(0.22);
+          break;
+        }
+        case 'strongholdCaptured': {
+          const c = this.strongholdPos.get(ev.strongholdId);
+          const cx = c ? c.x : state.leader.pos.x;
+          const cz = c ? c.z : state.leader.pos.z;
+          this.spawnPillar(cx, cz, 3.0, 28, 2.4, 0x5eff7a);
+          this.spawnPillar(cx, cz, 1.4, 34, 2.0, 0xe6ffd0);
+          this.spawnRing(cx, 0.1, cz, 1.0, 16, 1.0, 0x5eff7a, 0.2, true, 1.0);
+          this.spawnRing(cx, 0.4, cz, 1.0, 11, 1.2, 0xb8ff8a, 2.5);
+          this.spawnRing(cx, 0.8, cz, 1.0, 8, 1.4, 0xe6ffd0, 5.0);
+          this.spawnBurst(cx, 1.0, cz, 40, 0x7dff6a, 9.0, 0.22, 1.1, -1.5);
+          this.spawnBurst(cx, 2.0, cz, 24, 0xe6ffd0, 6.0, 0.18, 1.0, -0.5);
+          this.requestShake(0.4);
+          break;
+        }
+        case 'moveOrder': {
+          this.spawnRing(ev.point.x, 0.07, ev.point.z, 2.2, 0.4, 0.35, 0x7fd8ff, 0.0);
+          this.spawnBurst(ev.point.x, 0.2, ev.point.z, 5, 0xbfe9ff, 2.2, 0.09, 0.3);
+          break;
+        }
+        case 'nestActivated': {
+          this.spawnPillar(ev.pos.x, ev.pos.z, 1.2, 12, 1.6, 0x62f0d0);
+          this.spawnRing(ev.pos.x, 0.09, ev.pos.z, 0.6, 7.5, 0.9, 0x62f0d0, 0.15, true, 1.0);
+          this.spawnRing(ev.pos.x, 0.5, ev.pos.z, 0.6, 4.5, 1.0, 0xc8fff0, 1.6);
+          this.spawnBurst(ev.pos.x, 0.8, ev.pos.z, 18, 0x62f0d0, 5.0, 0.15, 0.9, -1.0);
+          break;
+        }
+        case 'leaderRespawned': {
+          this.spawnPillar(ev.pos.x, ev.pos.z, 1.6, 14, 1.4, 0xb8ff6a);
+          this.spawnRing(ev.pos.x, 0.09, ev.pos.z, 0.5, 6.0, 0.8, 0xb8ff6a, 0.2, true, 1.0);
+          this.spawnRing(ev.pos.x, 0.4, ev.pos.z, 0.5, 3.5, 0.9, 0xeaffc8, 2.0);
+          this.spawnBurst(ev.pos.x, 0.8, ev.pos.z, 24, 0x9be35a, 6.0, 0.18, 0.8, -1.2);
+          this.requestShake(0.15);
+          break;
+        }
         case 'guardAlert': {
           let elev = 0;
           let gx = ev.pos.x;
@@ -509,6 +738,12 @@ export class Effects {
           break;
       }
     }
+  }
+
+  /** Provide world data so stronghold-capture effects can find their stronghold (call once per layout). */
+  setWorld(layout: DistrictLayout): void {
+    this.strongholdPos.clear();
+    for (const sh of layout.strongholds) this.strongholdPos.set(sh.id, sh.center);
   }
 
   setOrderMarker(pos: Vec3 | null): void {
@@ -541,7 +776,7 @@ export class Effects {
     this.spawnRing(pos.x, pos.y + 0.05, pos.z, 0.1, 1.1, 0.36, 0xd4e2f0, 0.05);
   }
 
-  update(dt: number, state?: GameState): void {
+  update(dt: number, state?: GameState, alpha = 1): void {
     this.time += dt;
     this.shakeMagnitude = Math.max(0, this.shakeMagnitude - dt * 1.45);
 
@@ -561,6 +796,63 @@ export class Effects {
       chevron.position.y = 2.5 + 0.28 * Math.sin(this.time * 6.5);
       chevron.rotation.y = this.time * 3.0;
     }
+
+    this.updateAura(dt, state, alpha);
+    this.updateMoveMarker(dt, state);
+
+    // 0. Claw / bite arcs
+    let arcCount = 0;
+    for (let i = 0; i < MAX_ARCS; i++) {
+      const a = this.arcs[i];
+      if (!a.active) continue;
+      a.age += dt;
+      if (a.age >= a.duration) {
+        a.active = false;
+        continue;
+      }
+      const u = a.age / a.duration;
+      const grow = a.scale * (0.75 + 0.45 * (1 - (1 - u) * (1 - u)));
+      this.posVec.set(a.x, a.y, a.z);
+      this.quat.setFromAxisAngle(this.axisY, a.yaw);
+      this.quatB.setFromAxisAngle(this.axisZ, a.tilt);
+      this.quat.multiply(this.quatB);
+      this.scaleVec.set(grow, grow, grow);
+      this.dummyMatrix.compose(this.posVec, this.quat, this.scaleVec);
+      this.arcMesh.setMatrixAt(arcCount, this.dummyMatrix);
+      this.tempColor.setHex(a.colorHex).multiplyScalar((1 - u) * (1 - u) * 1.4 + 0.05);
+      this.arcMesh.setColorAt(arcCount, this.tempColor);
+      arcCount++;
+    }
+    this.arcMesh.count = arcCount;
+    this.arcMesh.instanceMatrix.needsUpdate = true;
+    if (this.arcMesh.instanceColor) this.arcMesh.instanceColor.needsUpdate = true;
+
+    // 0b. Light pillars
+    let pillarCount = 0;
+    for (let i = 0; i < MAX_PILLARS; i++) {
+      const pl = this.pillars[i];
+      if (!pl.active) continue;
+      pl.age += dt;
+      if (pl.age >= pl.duration) {
+        pl.active = false;
+        continue;
+      }
+      const u = pl.age / pl.duration;
+      const rise = Math.min(1, u * 4);
+      const h = pl.height * (1 - (1 - rise) * (1 - rise));
+      const r = pl.radius * (1 + 0.35 * u);
+      this.posVec.set(pl.x, 0, pl.z);
+      this.quat.identity();
+      this.scaleVec.set(r, Math.max(0.01, h), r);
+      this.dummyMatrix.compose(this.posVec, this.quat, this.scaleVec);
+      this.pillarMesh.setMatrixAt(pillarCount, this.dummyMatrix);
+      this.tempColor.setHex(pl.colorHex).multiplyScalar((1 - u) * 0.9);
+      this.pillarMesh.setColorAt(pillarCount, this.tempColor);
+      pillarCount++;
+    }
+    this.pillarMesh.count = pillarCount;
+    this.pillarMesh.instanceMatrix.needsUpdate = true;
+    if (this.pillarMesh.instanceColor) this.pillarMesh.instanceColor.needsUpdate = true;
 
     // 1. Update Tracers
     let tracerCount = 0;
@@ -722,6 +1014,55 @@ export class Effects {
     }
   }
 
+  private updateAura(dt: number, state: GameState | undefined, alpha: number): void {
+    const left = state ? state.progression.frenzyTimeLeft : 0;
+    if (!state || left <= 0 || !state.leader.alive) {
+      this.auraOuter.visible = false;
+      this.auraInner.visible = false;
+      return;
+    }
+    const l = state.leader;
+    const x = l.prevPos.x + (l.pos.x - l.prevPos.x) * alpha;
+    const z = l.prevPos.z + (l.pos.z - l.prevPos.z) * alpha;
+    const fade = Math.min(1, left / 1.0);
+    const pulse = 0.5 + 0.5 * Math.sin(this.time * 9.0);
+    this.auraOuter.visible = true;
+    this.auraInner.visible = true;
+    this.auraOuter.position.set(x, 0.07, z);
+    this.auraInner.position.set(x, 0.075, z);
+    this.auraOuter.scale.setScalar((2.0 + 0.5 * pulse) * (0.4 + 0.6 * fade));
+    this.auraInner.scale.setScalar(1.3 + 0.25 * (1 - pulse));
+    this.auraMat.opacity = 0.35 + 0.35 * pulse * fade;
+    // Periodic red pulses spreading toward the buffed cohort
+    this.auraTimer -= dt;
+    if (this.auraTimer <= 0) {
+      this.auraTimer = 1.1;
+      this.spawnRing(x, 0.08, z, 1.5, Math.min(BALANCE.frenzy.radius, 12), 0.8, 0xff2a1a, 0.0, false, 0.7);
+    }
+  }
+
+  private updateMoveMarker(dt: number, state: GameState | undefined): void {
+    const order = state ? state.order : null;
+    if (order && order.type === 'move' && state) {
+      this.moveGroup.position.set(order.point.x, 0, order.point.z);
+      const remaining = order.expiresAt - state.time;
+      const expiryFade = remaining < 1.5 ? Math.max(0, remaining / 1.5) : 1;
+      this.moveAlpha = Math.min(this.moveAlpha + dt * 6, expiryFade);
+      if (this.moveAlpha > expiryFade) this.moveAlpha = expiryFade;
+    } else {
+      this.moveAlpha = Math.max(0, this.moveAlpha - dt * 3.5);
+    }
+    if (this.moveAlpha <= 0.001) {
+      this.moveGroup.visible = false;
+      return;
+    }
+    this.moveGroup.visible = true;
+    this.moveMat.opacity = 0.85 * this.moveAlpha;
+    this.moveRing.scale.setScalar(1.0 + 0.12 * Math.sin(this.time * 6.0));
+    this.moveArrow.position.y = 1.25 + 0.2 * Math.sin(this.time * 5.0);
+    this.moveArrow.rotation.y = this.time * 2.5;
+  }
+
   takeShake(): number {
     return this.shakeMagnitude;
   }
@@ -738,6 +1079,17 @@ export class Effects {
     for (let i = 0; i < MAX_MUZZLES; i++) this.muzzles[i].active = false;
     for (let i = 0; i < MAX_PARTICLES; i++) this.particles[i].active = false;
     for (let i = 0; i < MAX_RINGS; i++) this.rings[i].active = false;
+    for (let i = 0; i < MAX_ARCS; i++) this.arcs[i].active = false;
+    for (let i = 0; i < MAX_PILLARS; i++) this.pillars[i].active = false;
+    this.arcMesh.count = 0;
+    this.pillarMesh.count = 0;
+    this.auraOuter.visible = false;
+    this.auraInner.visible = false;
+    this.auraTimer = 0;
+    this.moveAlpha = 0;
+    this.moveGroup.visible = false;
+    this.nextArcIdx = 0;
+    this.nextPillarIdx = 0;
     for (let i = 0; i < MAX_SWIRLS; i++) {
       this.swirls[i].active = false;
       this.swirls[i].group.visible = false;
@@ -793,6 +1145,19 @@ export class Effects {
     this.alertBarGeo.dispose();
     this.alertDotGeo.dispose();
     this.alertMat.dispose();
+
+    this.arcGeo.dispose();
+    this.arcMat.dispose();
+    this.arcMesh.dispose();
+    this.pillarGeo.dispose();
+    this.pillarMat.dispose();
+    this.pillarMesh.dispose();
+    this.auraGeo.dispose();
+    this.auraMat.dispose();
+    this.moveRingGeo.dispose();
+    this.moveDotGeo.dispose();
+    this.moveArrowGeo.dispose();
+    this.moveMat.dispose();
 
     this.orderRingGeo.dispose();
     this.orderInnerGeo.dispose();
@@ -896,6 +1261,38 @@ export class Effects {
     slot.riseSpeed = riseSpeed;
     slot.thick = thick;
     slot.brightness = brightness;
+  }
+
+  private spawnArc(
+    x: number, y: number, z: number, yaw: number, tilt: number, scale: number, colorHex: number, duration: number,
+  ): void {
+    const slot = this.arcs[this.nextArcIdx];
+    this.nextArcIdx = (this.nextArcIdx + 1) % MAX_ARCS;
+    slot.active = true;
+    slot.age = 0;
+    slot.duration = duration;
+    slot.x = x;
+    slot.y = y;
+    slot.z = z;
+    slot.yaw = yaw;
+    slot.tilt = tilt;
+    slot.scale = scale;
+    slot.colorHex = colorHex;
+  }
+
+  private spawnPillar(
+    x: number, z: number, radius: number, height: number, duration: number, colorHex: number,
+  ): void {
+    const slot = this.pillars[this.nextPillarIdx];
+    this.nextPillarIdx = (this.nextPillarIdx + 1) % MAX_PILLARS;
+    slot.active = true;
+    slot.age = 0;
+    slot.duration = duration;
+    slot.x = x;
+    slot.z = z;
+    slot.radius = radius;
+    slot.height = height;
+    slot.colorHex = colorHex;
   }
 
   private spawnSwirl(x: number, z: number): void {

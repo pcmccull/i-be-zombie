@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { BALANCE } from '../config/balance';
-import type { AnimAction, ZombieAgent } from '../core/types';
+import type { AnimAction, GameEvent, ZombieAgent } from '../core/types';
 import {
   composeZombiePartMatrix,
   computePose,
@@ -13,6 +13,10 @@ import {
 } from './LowPolyCharacters';
 
 const TWO_PI = Math.PI * 2;
+
+/** Brute Evolution siege units are drawn at this scale (uniform) with broader shoulders. */
+const BRUTE_SCALE = 1.5;
+const BRUTE_WIDTH = 1.22;
 
 function lerpAngle(a: number, b: number, t: number): number {
   let diff = ((b - a) % TWO_PI) + TWO_PI;
@@ -60,6 +64,21 @@ export class HordeRenderer {
   private readonly colorRecruitGen0 = new THREE.Color(0xc8ff47);
   private readonly colorRecruitCascade = new THREE.Color(0x5effb8);
   private readonly colorRecruitDeepCascade = new THREE.Color(0xffe84a);
+  private readonly colorFrenzy = new THREE.Color(0xff2a1a);
+  private readonly colorBruteSkin = new THREE.Color(0x3f5240);
+  private readonly colorBruteShirt = new THREE.Color(0x3a2f34);
+  private readonly colorBrutePants = new THREE.Color(0x24262b);
+  private readonly colorBruteAcc = new THREE.Color(0x8a7a5a);
+
+  // Render-radius culling + frenzy view state (set by setView before update)
+  private hasFocus = false;
+  private focusX = 0;
+  private focusZ = 0;
+  private cullRadius2 = BALANCE.population.activeRadius * BALANCE.population.activeRadius;
+  private frenzyTimeLeft = 0;
+  private readonly frenzyCohort = new Set<number>();
+  /** Zombies actually drawn last update (after culling). */
+  drawnCount = 0;
 
   private readonly pose: Pose = {
     bodyY: 0,
@@ -145,27 +164,72 @@ export class HordeRenderer {
     this.group.add(this.markerMesh);
   }
 
+  /**
+   * Per-frame view context (call before update). Zombies farther than `radius` (default
+   * BALANCE.population.activeRadius) from (focusX, focusZ), and dormant ones, are not drawn.
+   * `frenzyTimeLeft` is state.progression.frenzyTimeLeft.
+   */
+  setView(focusX: number, focusZ: number, frenzyTimeLeft: number, radius: number = BALANCE.population.activeRadius): void {
+    this.hasFocus = true;
+    this.focusX = focusX;
+    this.focusZ = focusZ;
+    this.cullRadius2 = radius * radius;
+    this.frenzyTimeLeft = frenzyTimeLeft;
+    if (frenzyTimeLeft <= 0 && this.frenzyCohort.size > 0) this.frenzyCohort.clear();
+  }
+
+  /** Snapshots the buffed follower cohort on frenzyStart (events only; no per-frame cost). */
+  consume(events: readonly GameEvent[], zombies: readonly ZombieAgent[]): void {
+    for (let i = 0; i < events.length; i++) {
+      const ev = events[i];
+      if (ev.type === 'frenzyStart') {
+        this.frenzyCohort.clear();
+        const r2 = ev.radius * ev.radius;
+        for (let k = 0; k < zombies.length; k++) {
+          const z = zombies[k];
+          if (z.state !== 'follower') continue;
+          const dx = z.pos.x - ev.pos.x;
+          const dz = z.pos.z - ev.pos.z;
+          if (dx * dx + dz * dz <= r2) this.frenzyCohort.add(z.id);
+        }
+      } else if (ev.type === 'frenzyEnd') {
+        this.frenzyCohort.clear();
+      }
+    }
+  }
+
   update(
     zombies: readonly ZombieAgent[],
     alpha: number,
     time: number,
     rushActive: boolean,
   ): void {
-    const count = Math.min(zombies.length, this.maxInstances);
+    let count = 0;
     let shadowIdx = 0;
     let markerIdx = 0;
+    const frenzyOn = this.frenzyTimeLeft > 0;
+    const frenzyFade = frenzyOn ? Math.min(1, this.frenzyTimeLeft / 1.0) : 0;
 
     const corpseFadeStart = Math.max(0, BALANCE.walker.corpseFadeTime - 1.5);
 
-    for (let i = 0; i < count; i++) {
-      const z = zombies[i];
+    for (let zi = 0; zi < zombies.length && count < this.maxInstances; zi++) {
+      const z = zombies[zi];
+      if (z.dormant) continue;
+      if (this.hasFocus) {
+        const cdx = z.pos.x - this.focusX;
+        const cdz = z.pos.z - this.focusZ;
+        if (cdx * cdx + cdz * cdz > this.cullRadius2) continue;
+      }
+      const i = count++;
 
       const ix = z.prevPos.x + (z.pos.x - z.prevPos.x) * alpha;
       const iz = z.prevPos.z + (z.pos.z - z.prevPos.z) * alpha;
       const facing = lerpAngle(z.prevFacing, z.facing, alpha);
       const speed = Math.hypot(z.vel.x, z.vel.z);
       const phase = (z.id * 2.39996) % TWO_PI;
-      const scale = scaleFromId(z.id);
+      const brute = z.brute === true;
+      const scale = scaleFromId(z.id) * (brute ? BRUTE_SCALE : 1);
+      const width = brute ? BRUTE_WIDTH : 1;
 
       let anim: AnimAction = z.anim;
       let sinkY = 0;
@@ -210,10 +274,27 @@ export class HordeRenderer {
           this.colorShirt.lerp(this.colorRush, pulse * 0.85);
           this.colorAcc.lerp(this.colorRush, pulse);
         }
+        if (frenzyOn && this.frenzyCohort.has(z.id)) {
+          const pulse = (0.3 + 0.12 * Math.sin(time * 12 + phase)) * frenzyFade;
+          this.colorSkin.lerp(this.colorFrenzy, pulse);
+          this.colorShirt.lerp(this.colorFrenzy, pulse * 0.8);
+          this.colorAcc.lerp(this.colorFrenzy, pulse);
+        }
       } else if (z.state === 'ambient') {
         // Ambient zombies slightly grayer/muted
         this.colorSkin.lerp(this.colorAmbientMute, 0.3);
         this.colorShirt.lerp(this.colorAmbientMute, 0.25);
+      }
+
+      if (brute && z.state !== 'dead') {
+        // Hulking siege unit: much darker skin and gear, tinted red while frenzied
+        this.colorSkin.lerp(this.colorBruteSkin, 0.78);
+        this.colorShirt.lerp(this.colorBruteShirt, 0.8);
+        this.colorPants.lerp(this.colorBrutePants, 0.8);
+        this.colorAcc.lerp(this.colorBruteAcc, 0.7);
+        if (frenzyOn && this.frenzyCohort.has(z.id)) {
+          this.colorSkin.lerp(this.colorFrenzy, 0.18 * frenzyFade);
+        }
       }
 
       if ((z.recruitFlash ?? 0) > 0) {
@@ -243,7 +324,7 @@ export class HordeRenderer {
       for (let pIdx = 0; pIdx < ZOMBIE_PART_NAMES.length; pIdx++) {
         const partName = ZOMBIE_PART_NAMES[pIdx];
         const instMesh = this.partMeshes[partName];
-        composeZombiePartMatrix(partName, this.rootMatrix, this.pose, scale, this.partMatrix);
+        composeZombiePartMatrix(partName, this.rootMatrix, this.pose, scale, this.partMatrix, width);
         instMesh.setMatrixAt(i, this.partMatrix);
 
         let partColor = this.colorShirt;
@@ -261,7 +342,7 @@ export class HordeRenderer {
       if (z.state !== 'dead') {
         this.posVec.set(ix, 0.018, iz);
         this.quat.identity();
-        this.discScale.setScalar(scale);
+        this.discScale.setScalar(scale * width);
         this.discMatrix.compose(this.posVec, this.quat, this.discScale);
         this.shadowMesh.setMatrixAt(shadowIdx++, this.discMatrix);
       }
@@ -270,18 +351,20 @@ export class HordeRenderer {
       if (z.state === 'follower') {
         this.posVec.set(ix, 0.026, iz);
         this.quat.identity();
-        const ringScale = rushActive
+        const ringScale = rushActive || (frenzyOn && this.frenzyCohort.has(z.id))
           ? scale * (1.08 + 0.1 * Math.sin(time * 12 + phase))
           : scale;
         this.discScale.setScalar(ringScale);
         this.discMatrix.compose(this.posVec, this.quat, this.discScale);
         this.markerMesh.setMatrixAt(markerIdx, this.discMatrix);
-        this.colorMarker.setHex(rushActive ? 0xff5a24 : 0x7ee852);
+        const frenzied = frenzyOn && this.frenzyCohort.has(z.id);
+        this.colorMarker.setHex(rushActive || frenzied ? 0xff5a24 : brute ? 0xd9a441 : 0x7ee852);
         this.markerMesh.setColorAt(markerIdx, this.colorMarker);
         markerIdx++;
       }
     }
 
+    this.drawnCount = count;
     for (let pIdx = 0; pIdx < ZOMBIE_PART_NAMES.length; pIdx++) {
       const partName = ZOMBIE_PART_NAMES[pIdx];
       const instMesh = this.partMeshes[partName];

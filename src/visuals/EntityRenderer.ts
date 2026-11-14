@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { BALANCE } from '../config/balance';
 import type {
   AnimAction,
   EntityId,
@@ -12,6 +13,7 @@ import {
   computePose,
   createGuardRig,
   createLeaderRig,
+  LEADER_GLOW,
   type CharacterRig,
   type Pose,
   type PoseParams,
@@ -48,6 +50,14 @@ export class EntityRenderer {
   private readonly guardsMap = new Map<EntityId, GuardVisualEntry>();
   private readonly convertedGuardIds = new Set<EntityId>();
   private lastStateTime = -1;
+  // Render-radius culling (setView) and leader death/respawn animation timers
+  private hasFocus = false;
+  private focusX = 0;
+  private focusZ = 0;
+  private cullRadius2 = BALANCE.population.activeRadius * BALANCE.population.activeRadius;
+  private leaderWasAlive = true;
+  private leaderDeadTime = 0;
+  private leaderRiseTime = 99;
   private hoveredGuardId: EntityId | null = null;
   private readonly targetedGuardIds = new Set<EntityId>();
 
@@ -197,6 +207,9 @@ export class EntityRenderer {
       const ev = events[i];
       if (ev.type === 'conversionStart' || ev.type === 'converted') {
         this.convertedGuardIds.add(ev.guardId);
+      } else if (ev.type === 'leaderRespawned') {
+        this.leaderRiseTime = 0;
+        this.leaderWasAlive = true;
       }
     }
   }
@@ -206,15 +219,29 @@ export class EntityRenderer {
     this.lastStateTime = -1;
     this.hoveredGuardId = null;
     this.targetedGuardIds.clear();
+    this.leaderWasAlive = true;
+    this.leaderDeadTime = 0;
+    this.leaderRiseTime = 99;
   }
 
-  update(state: GameState, alpha: number, time: number, _dt: number): void {
+  /**
+   * Render-radius culling: humans farther than `radius` (default BALANCE.population.activeRadius)
+   * from the focus (camera target), and dormant humans, are hidden. Call before update().
+   */
+  setView(focusX: number, focusZ: number, radius: number = BALANCE.population.activeRadius): void {
+    this.hasFocus = true;
+    this.focusX = focusX;
+    this.focusZ = focusZ;
+    this.cullRadius2 = radius * radius;
+  }
+
+  update(state: GameState, alpha: number, time: number, dt: number): void {
     if (this.lastStateTime >= 0 && state.time < this.lastStateTime) {
       this.convertedGuardIds.clear();
     }
     this.lastStateTime = state.time;
 
-    this.updateLeader(state, alpha, time);
+    this.updateLeader(state, alpha, time, dt);
     this.updateGuards(state, alpha, time);
   }
 
@@ -307,7 +334,7 @@ export class EntityRenderer {
     }
   }
 
-  private updateLeader(state: GameState, alpha: number, time: number): void {
+  private updateLeader(state: GameState, alpha: number, time: number, dt: number): void {
     const leader = state.leader;
     const lx = leader.prevPos.x + (leader.pos.x - leader.prevPos.x) * alpha;
     const lz = leader.prevPos.z + (leader.pos.z - leader.prevPos.z) * alpha;
@@ -317,10 +344,40 @@ export class EntityRenderer {
     this.leaderRig.root.position.set(lx, 0, lz);
     this.leaderRig.root.rotation.y = facing;
 
-    const anim: AnimAction = !leader.alive ? 'dead' : leader.anim;
+    // Death fall + respawn rise are driven by renderer-side timers (leader.animTime is not reset on death)
+    if (!leader.alive) {
+      if (this.leaderWasAlive) this.leaderDeadTime = 0;
+      this.leaderDeadTime += dt;
+    } else if (!this.leaderWasAlive) {
+      this.leaderRiseTime = 0;
+    }
+    this.leaderWasAlive = leader.alive;
+    if (leader.alive && this.leaderRiseTime < BALANCE.conversion.riseDuration) this.leaderRiseTime += dt;
+    const rising = leader.alive && this.leaderRiseTime < BALANCE.conversion.riseDuration;
+
+    let anim: AnimAction = !leader.alive ? 'dead' : rising ? 'rise' : leader.anim;
+    let animTime = !leader.alive ? this.leaderDeadTime : rising ? this.leaderRiseTime : leader.animTime;
+    const attacking = leader.alive && !rising && (leader.attackPhase === 'windup' || leader.attackPhase === 'recovery');
+    if (attacking && anim === 'attack') anim = 'idle'; // legacy clip would fight the phase overlay
+    if (attacking) {
+      const step = leader.comboStep;
+      const windup = step <= 0 ? BALANCE.alpha.biteWindup : BALANCE.alpha.clawWindup;
+      const recovery =
+        step <= 0
+          ? BALANCE.alpha.biteRecovery
+          : BALANCE.alpha.clawRecovery[Math.min(step, BALANCE.alpha.clawRecovery.length) - 1];
+      const dur = Math.max(0.01, leader.attackPhase === 'windup' ? windup : recovery);
+      this.scratchParams.attackT = 1 - Math.max(0, Math.min(1, leader.attackTimer / dur));
+    } else {
+      this.scratchParams.attackT = 0;
+    }
+    this.scratchParams.attackPhase = attacking ? leader.attackPhase : 'ready';
+    this.scratchParams.comboStep = leader.comboStep;
+    this.scratchParams.hitStun = leader.alive && !rising ? leader.hitStun : 0;
+    this.scratchParams.stagger = 0;
     this.scratchParams.kind = 'leader';
     this.scratchParams.anim = anim;
-    this.scratchParams.animTime = leader.animTime;
+    this.scratchParams.animTime = animTime;
     this.scratchParams.speed = speed;
     this.scratchParams.time = time;
     this.scratchParams.phase = 0;
@@ -328,18 +385,21 @@ export class EntityRenderer {
     computePose(this.scratchParams, this.scratchPose);
     applyPose(this.leaderRig, this.scratchPose);
 
-    // Hit flash emissive
+    // Hit flash emissive > frenzy glow > subtle Alpha glow
+    const frenzy = state.progression.frenzyTimeLeft > 0;
     const leaderMat = this.leaderRig.materials[0] as THREE.MeshLambertMaterial | undefined;
     if (leaderMat) {
       if (leader.hitFlash > 0) {
         leaderMat.emissive.setHex(0xaa5544);
+      } else if (frenzy) {
+        leaderMat.emissive.setHex(Math.sin(time * 10) > 0 ? 0x6a1208 : 0x4a0c06);
       } else {
-        leaderMat.emissive.setHex(0x000000);
+        leaderMat.emissive.setHex(LEADER_GLOW);
       }
     }
 
-    // Pulsing dark-green ground highlight ring (flashes fiery orange during Rush)
-    const rushActive = state.abilities.rushTimeLeft > 0;
+    // Pulsing dark-green ground highlight ring (flashes fiery orange during Frenzy / legacy Rush)
+    const rushActive = frenzy || state.abilities.rushTimeLeft > 0;
     const pulse = 1.0 + 0.08 * Math.sin(time * (rushActive ? 10.0 : 4.2));
     this.leaderOuterRing.scale.setScalar(pulse);
     this.leaderInnerRing.scale.setScalar(1.0 - 0.06 * Math.sin(time * 4.2));
@@ -355,7 +415,23 @@ export class EntityRenderer {
       const g = state.guards[i];
       activeIds.add(g.id);
 
+      // Render-radius culling: dormant or far humans are not drawn (rigs are created lazily on first show)
+      let culled = g.dormant === true;
+      if (!culled && this.hasFocus) {
+        const cdx = g.pos.x - this.focusX;
+        const cdz = g.pos.z - this.focusZ;
+        culled = cdx * cdx + cdz * cdz > this.cullRadius2;
+      }
       let entry = this.guardsMap.get(g.id);
+      if (culled) {
+        if (entry) {
+          entry.rig.root.visible = false;
+          entry.pickProxy.visible = false;
+          entry.pickProxy.userData.target = null;
+          entry.pickProxy.position.y = -1000;
+        }
+        continue;
+      }
       if (!entry) {
         entry = this.createGuardEntry(g, i);
         this.guardsMap.set(g.id, entry);
@@ -401,7 +477,10 @@ export class EntityRenderer {
       const role = g.role ?? 'soldier';
       const post = g.post ?? 'checkpoint';
       this.scratchParams.kind =
-        role === 'civilian' ? 'civilian' : post === 'barricade' ? 'police' : 'guard';
+        role === 'civilian' ? 'civilian' : role === 'police' || post === 'barricade' ? 'police' : 'guard';
+      this.scratchParams.attackPhase = undefined;
+      this.scratchParams.hitStun = 0;
+      this.scratchParams.stagger = isDead ? 0 : g.staggerTime ?? 0;
       this.scratchParams.anim = anim;
       this.scratchParams.animTime = g.animTime;
       this.scratchParams.speed = speed;

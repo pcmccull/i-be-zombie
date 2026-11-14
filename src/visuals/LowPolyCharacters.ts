@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { BALANCE } from '../config/balance';
-import type { AnimAction, GuardState, HumanPost, HumanRole } from '../core/types';
+import type { AnimAction, GuardState, HumanPost, HumanRole, LeaderAttackPhase } from '../core/types';
 
 export type CharacterKind = 'leader' | 'walker' | 'guard' | 'civilian' | 'police';
 
@@ -26,7 +26,20 @@ export interface PoseParams {
   time: number;
   phase: number;
   guardState?: GuardState;
+  /** Leader only: direct-attack state machine (see LeaderState). */
+  attackPhase?: LeaderAttackPhase;
+  /** 0..1 progress through the current windup/recovery. */
+  attackT?: number;
+  /** 0 = bite, 1..3 = claw combo hit index. */
+  comboStep?: number;
+  /** Leader hit stun seconds remaining. */
+  hitStun?: number;
+  /** Human stagger seconds remaining (claw finisher). */
+  stagger?: number;
 }
+
+/** Subtle baseline emissive of the Alpha (hit flash / frenzy override it, EntityRenderer restores it). */
+export const LEADER_GLOW = 0x1b3d0c;
 
 export interface Pose {
   bodyY: number;
@@ -221,6 +234,140 @@ export function getZombiePartGeometries(): Record<ZombiePartName, THREE.BufferGe
   return cachedZombieGeometries;
 }
 
+function mix(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+function easeOut(t: number): number {
+  return 1 - (1 - t) * (1 - t);
+}
+
+/** Humans knocked off balance by a claw finisher: lean back and wobble. */
+function applyStagger(p: PoseParams, out: Pose): void {
+  const st = p.stagger ?? 0;
+  if (st <= 0) return;
+  const f = Math.min(1, st / 0.25);
+  const wob = Math.sin(p.time * 11 + p.phase);
+  out.bodyPitch = -0.3 * f + out.bodyPitch * (1 - f);
+  out.bodyRoll += wob * 0.16 * f;
+  out.headPitch = -0.25 * f;
+  out.headYaw = wob * 0.3 * f;
+  out.armLPitch = mix(out.armLPitch, -0.5, f);
+  out.armRPitch = mix(out.armRPitch, -0.5, f);
+  out.armLRoll = mix(out.armLRoll, 0.7, f);
+  out.armRRoll = mix(out.armRRoll, -0.7, f);
+  out.lunge = -0.1 * f;
+}
+
+/**
+ * Alpha direct attack overlay: bite lunge, alternating claw swipes (hit 1 = right, 2 = left),
+ * overhead finisher (hit 3). Windup telegraphs, recovery is the follow-through.
+ */
+function applyLeaderAttack(p: PoseParams, out: Pose): void {
+  const phase = p.attackPhase;
+  if (phase !== 'windup' && phase !== 'recovery') return;
+  const t = Math.max(0, Math.min(1, p.attackT ?? 0));
+  const step = p.comboStep ?? 0;
+  const winding = phase === 'windup';
+
+  if (step <= 0) {
+    // Bite: rear back, then lunge head-first.
+    if (winding) {
+      const e = easeOut(t);
+      out.bodyPitch += -0.32 * e;
+      out.headPitch += -0.4 * e;
+      out.lunge = -0.14 * e;
+      out.armLPitch = mix(out.armLPitch, -1.5, e);
+      out.armRPitch = mix(out.armRPitch, -1.5, e);
+      out.armLRoll = 0.5 * e;
+      out.armRRoll = -0.5 * e;
+    } else {
+      const s = (1 - t) * (1 - t);
+      out.bodyPitch += 0.55 * s;
+      out.headPitch += 0.5 * s;
+      out.lunge = 0.5 * s;
+      out.armLPitch = mix(out.armLPitch, -1.7, s);
+      out.armRPitch = mix(out.armRPitch, -1.7, s);
+      out.armLRoll = 0.2 * s;
+      out.armRRoll = -0.2 * s;
+    }
+    return;
+  }
+
+  if (step === 3) {
+    // Overhead finisher: both claws raised, then slammed down.
+    if (winding) {
+      const e = easeOut(t);
+      out.bodyPitch += -0.3 * e;
+      out.headPitch += -0.3 * e;
+      out.lunge = -0.1 * e;
+      out.armLPitch = mix(out.armLPitch, -3.05, e);
+      out.armRPitch = mix(out.armRPitch, -3.05, e);
+      out.armLRoll = 0.3;
+      out.armRRoll = -0.3;
+    } else {
+      const slam = Math.min(1, t / 0.35);
+      const hold = 1 - Math.max(0, (t - 0.35) / 0.65);
+      out.bodyPitch += 0.62 * hold;
+      out.headPitch += 0.35 * hold;
+      out.lunge = 0.42 * hold;
+      const arm = mix(-3.05, -0.35, easeOut(slam));
+      out.armLPitch = mix(out.armLPitch, arm, hold);
+      out.armRPitch = mix(out.armRPitch, arm, hold);
+      out.armLRoll = 0.15;
+      out.armRRoll = -0.15;
+    }
+    return;
+  }
+
+  // Claw swipes: right arm (step 1) or left arm (step 2) cuts across the body.
+  const right = step === 1;
+  const side = right ? -1 : 1; // outward roll sign for the swinging arm
+  let pitch: number;
+  let roll: number;
+  let twist: number;
+  if (winding) {
+    const e = easeOut(t);
+    pitch = mix(-0.7, -2.3, e);
+    roll = side * mix(0.14, 0.95, e);
+    twist = -side * 0.22 * e;
+    out.lunge = -0.06 * e;
+  } else {
+    const sweep = easeOut(Math.min(1, t / 0.6));
+    const hold = 1 - t;
+    pitch = mix(-2.3, -0.9, sweep);
+    roll = side * mix(0.95, -0.75, sweep);
+    twist = side * 0.28 * hold;
+    out.lunge = 0.25 * hold;
+  }
+  out.bodyRoll += twist * 0.5;
+  out.bodyPitch += 0.12;
+  out.headYaw = twist;
+  if (right) {
+    out.armRPitch = pitch;
+    out.armRRoll = roll;
+    out.armLPitch = -0.95;
+  } else {
+    out.armLPitch = pitch;
+    out.armLRoll = roll;
+    out.armRPitch = -0.95;
+  }
+}
+
+function applyLeaderHitStun(p: PoseParams, out: Pose): void {
+  const hs = p.hitStun ?? 0;
+  if (hs <= 0) return;
+  const f = Math.min(1, hs / Math.max(0.01, BALANCE.alpha.hitStunTime));
+  out.bodyPitch = -0.42 * f + out.bodyPitch * (1 - f);
+  out.headPitch = -0.45 * f;
+  out.lunge = -0.2 * f;
+  out.bodyRoll += Math.sin(p.time * 40) * 0.1 * f;
+  out.armLPitch = mix(out.armLPitch, -0.35, f);
+  out.armRPitch = mix(out.armRPitch, -0.35, f);
+  out.armLRoll = mix(out.armLRoll, 0.8, f);
+  out.armRRoll = mix(out.armRRoll, -0.8, f);
+}
+
 export function computePose(p: PoseParams, out: Pose): Pose {
   const { kind, anim, animTime, speed, time, phase } = p;
 
@@ -346,6 +493,7 @@ export function computePose(p: PoseParams, out: Pose): Pose {
       out.headPitch -= 0.25 * flinch;
       out.bodyRoll += 0.18 * flinch;
     }
+    applyStagger(p, out);
     return out;
   }
 
@@ -397,6 +545,7 @@ export function computePose(p: PoseParams, out: Pose): Pose {
       out.bodyRoll += 0.18 * flinch;
     }
 
+    applyStagger(p, out);
     return out;
   }
 
@@ -413,7 +562,7 @@ export function computePose(p: PoseParams, out: Pose): Pose {
   const idleSway = Math.sin(time * 2.1 + phase);
   const idleBreath = Math.cos(time * 1.7 + phase);
 
-  const baseHunch = isLeader ? 0.15 : 0.21;
+  const baseHunch = isLeader ? 0.27 : 0.21;
   const asymRoll = isLeader ? -0.05 : (phase > Math.PI ? 0.09 : -0.09);
 
   if (speed > 0.15 || anim === 'walk' || anim === 'run') {
@@ -478,6 +627,11 @@ export function computePose(p: PoseParams, out: Pose): Pose {
     out.lunge = -0.12 * flinch;
   }
 
+  if (isLeader) {
+    applyLeaderAttack(p, out);
+    applyLeaderHitStun(p, out);
+  }
+
   return out;
 }
 
@@ -513,6 +667,7 @@ export function composeZombiePartMatrix(
   pose: Pose,
   scale: number,
   out: THREE.Matrix4,
+  widthScale = 1,
 ): THREE.Matrix4 {
   const fallAngle = pose.deathTilt * (Math.PI * 0.48);
 
@@ -520,7 +675,7 @@ export function composeZombiePartMatrix(
   _posVec.set(0, (pose.bodyY + pose.deathTilt * 0.16) * scale, pose.lunge * scale);
   _euler.set(pose.bodyPitch + fallAngle, 0, pose.bodyRoll, 'XYZ');
   _quat.setFromEuler(_euler);
-  _scaleVec.set(scale, scale, scale);
+  _scaleVec.set(scale * widthScale, scale, scale);
   _bodyMat.compose(_posVec, _quat, _scaleVec);
   out.multiplyMatrices(rootMatrix, _bodyMat);
 
@@ -573,14 +728,15 @@ export function createLeaderRig(): CharacterRig {
 
   const body = new THREE.Group();
   // Scale slightly taller (~1.85 m)
-  body.scale.setScalar(1.075);
+  body.scale.setScalar(1.22);
   root.add(body);
 
   const mat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
+  mat.emissive.setHex(LEADER_GLOW);
   const materials: THREE.Material[] = [mat];
 
-  const skinCol = 0x4f6b3a;
-  const jacketCol = 0x7c3326;
+  const skinCol = 0x56803a;
+  const jacketCol = 0x6b1f2e;
   const jacketTrimCol = 0x4d1e16;
   const shirtCol = 0x34383b;
   const pantsCol = 0x2a313b;
@@ -624,6 +780,12 @@ export function createLeaderRig(): CharacterRig {
     makePartBox(0.24, 0.15, 0.32, 0.22, 0.23, 0, padCol, 0, 0, -0.25),
     makePartBox(0.08, 0.14, 0.08, 0.25, 0.34, 0, 0xb8a47e, 0, 0, -0.2),
     makePartBox(0.47, 0.1, 0.29, 0, -0.17, 0, jacketTrimCol),
+    // Second (right) shoulder plate and a ridge of bone spikes down the back: reads as the Alpha from afar
+    makePartBox(0.22, 0.13, 0.3, -0.22, 0.23, 0, padCol, 0, 0, 0.25),
+    makePartBox(0.07, 0.16, 0.07, -0.25, 0.35, 0, 0xb8a47e, 0, 0, 0.2),
+    makePartBox(0.07, 0.17, 0.08, 0, 0.26, -0.18, 0xd9cfae, 0.5),
+    makePartBox(0.07, 0.15, 0.08, 0, 0.08, -0.19, 0xd9cfae, 0.5),
+    makePartBox(0.07, 0.13, 0.08, 0, -0.1, -0.18, 0xd9cfae, 0.5),
   ]);
 
   const pelvis = makePartGroup('pelvis', 0, JOINT_PELVIS_Y, 0, [
@@ -791,7 +953,7 @@ export function createGuardRig(
     return { root, body, head, torso, pelvis, armL, armR, legL, legR, materials };
   }
 
-  if (post === 'barricade') {
+  if (role === 'police' || post === 'barricade') {
     // Police officer look: light-blue shirt + dark navy pants + peaked police cap + compact pistol
     const policeNavy = 0x223252;
     const policeShirt = 0x6ca0dc;
@@ -851,9 +1013,10 @@ export function createGuardRig(
     return { root, body, head, torso, pelvis, armL, armR, legL, legR, materials };
   }
 
-  const navyCol = 0x2c3e66;
+  // Soldier: olive-drab fatigues, orange hi-vis vest, tactical helmet, rifle
+  const navyCol = 0x4f5a34;
   const vestCol = 0xe0782a;
-  const helmetCol = 0x233152;
+  const helmetCol = 0x3a4528;
 
   const head = makePartGroup('head', 0, JOINT_HEAD_Y, 0, [
     makePartBox(0.27, 0.28, 0.27, 0, 0.15, 0, skinCol),
