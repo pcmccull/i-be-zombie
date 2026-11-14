@@ -247,8 +247,10 @@ export function abilitySlotView(state: GameState, slot: number): SlotView {
   if (!def.activatable) {
     return { slot, key, abilityId: id, name: def.name, kind: 'passive', remainingFrac: 0, seconds: 0, cost, caption: 'EQUIPPED' };
   }
-  if (id === 'horde_frenzy' && state.progression.frenzyTimeLeft > 0.01) {
-    const left = state.progression.frenzyTimeLeft;
+  const activeLeft = id === 'horde_frenzy' ? state.progression.frenzyTimeLeft
+    : id === 'rush' ? state.abilities.rushTimeLeft : 0;
+  if (activeLeft > 0.01) {
+    const left = activeLeft;
     return {
       slot, key, abilityId: id, name: def.name, kind: 'active',
       remainingFrac: Math.max(0, Math.min(1, left / Math.max(0.001, def.duration))),

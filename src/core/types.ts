@@ -160,14 +160,14 @@ export const DISTRICT_IDS: readonly DistrictId[] = ['suburbs', 'police', 'shoppi
 export type TerritoryStatus = 'unknown' | 'human' | 'contested' | 'infected';
 export type StrongholdId = 'suburb_checkpoint' | 'police_station' | 'mall_security' | 'industrial_yard';
 /** 'pounce' is data-only this milestone (no unlock source). */
-export type AbilityId = 'bite' | 'infect' | 'alpha_claws' | 'horde_frenzy' | 'pounce' | 'brute_evolution';
+export type AbilityId = 'bite' | 'infect' | 'rush' | 'alpha_claws' | 'horde_frenzy' | 'pounce' | 'brute_evolution';
 export type AbilityType = 'alpha' | 'horde' | 'passive';
 
 export interface AbilityDef {
   id: AbilityId;
   name: string;
   type: AbilityType;
-  /** Stronghold whose capture unlocks it; null = innate (bite/infect) or not obtainable (pounce). */
+  /** Stronghold whose capture unlocks it; null = innate (bite/infect), starter (rush) or not obtainable (pounce). */
   source: StrongholdId | null;
   /** 'slot' = must be equipped in one of the 4 slots (Q/E/R/F) to work; 'innate' = always on, never slotted. */
   slotBehavior: 'slot' | 'innate';

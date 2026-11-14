@@ -11,6 +11,11 @@ export const ABILITIES: Readonly<Record<AbilityId, AbilityDef>> = {
     id: 'infect', name: 'Infect', type: 'passive', source: null, slotBehavior: 'innate', activatable: false,
     cooldown: 0, biomassCost: 0, duration: 0, description: 'Humans you kill yourself always rise as followers.',
   },
+  rush: {
+    id: 'rush', name: 'Rush', type: 'horde', source: null, slotBehavior: 'slot', activatable: true,
+    cooldown: BALANCE.rush.cooldown, biomassCost: 0, duration: BALANCE.rush.duration,
+    description: 'Short burst: the whole horde runs 45% faster and attacks 25% faster for 4 s - fast enough to run down fleeing civilians.',
+  },
   alpha_claws: {
     id: 'alpha_claws', name: 'Alpha Claws', type: 'alpha', source: 'police_station', slotBehavior: 'slot', activatable: false,
     cooldown: 0, biomassCost: 0, duration: 0,
@@ -33,4 +38,6 @@ export const ABILITIES: Readonly<Record<AbilityId, AbilityDef>> = {
 };
 
 export const INNATE_ABILITIES: readonly AbilityId[] = ['bite', 'infect'];
+/** Slot abilities every open-world game starts with (unlocked, equipped from slot Q onward). */
+export const STARTER_ABILITIES: readonly AbilityId[] = ['rush'];
 export const SLOT_KEYS: readonly string[] = ['Q', 'E', 'R', 'F'];

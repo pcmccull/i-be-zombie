@@ -41,7 +41,7 @@ export function canActivate(state: GameState, id: AbilityId): AbilityDenyReason 
   if (!state.leader.alive || state.leader.hp <= 0 || state.phase !== 'playing') return 'locked';
   if (!isUnlocked(state, id) || !isEquipped(state, id)) return 'locked';
   // Pounce is registry data only in this milestone; never spend for an absent effect.
-  if (!def.activatable || (id !== 'horde_frenzy' && id !== 'brute_evolution')) return 'locked';
+  if (!def.activatable || (id !== 'rush' && id !== 'horde_frenzy' && id !== 'brute_evolution')) return 'locked';
   if ((state.progression.cooldowns[id] ?? 0) > 0) return 'cooldown';
   const cost = id === 'brute_evolution' ? BALANCE.brute.costPerBrute : def.biomassCost;
   if (state.progression.biomass < cost) return 'biomass';
@@ -70,6 +70,14 @@ export function activateAbility(ctx: SimContext, id: AbilityId): boolean {
       const z = targets[i];
       ctx.emit({ type: 'bruteEvolved', zombieId: z.id, pos: { ...z.pos } });
     }
+  } else if (id === 'rush') {
+    // Reuses the horde Rush timers: HordeSystem ticks rushTimeLeft (emits rushEnd), applies the speed boost and the
+    // civilian chase rule; CombatSystem applies the attack-rate boost.
+    p.biomass -= def.biomassCost;
+    p.cooldowns[id] = def.cooldown;
+    state.abilities.rushTimeLeft = BALANCE.rush.duration;
+    state.abilities.rushCooldown = BALANCE.rush.cooldown;
+    ctx.emit({ type: 'rushStart' });
   } else {
     p.biomass -= def.biomassCost;
     p.cooldowns[id] = def.cooldown;

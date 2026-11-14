@@ -22,6 +22,9 @@ Implemented from [`docs/3_open_world.md`](docs/3_open_world.md). The task board 
   a nest there, and autosaves.
 - **Fog of war is separate from territory.** Walking reveals the map, but a district only changes owner when you capture its
   stronghold. Unexplored, human, contested and infected areas each look different on the minimap and the world map (`M`).
+- **Rush (starter, slot Q).** For 4 s the whole horde runs 45% faster and attacks 25% faster, which is fast enough to run down
+  civilians who otherwise outrun it. The cooldown is 15 s and it costs nothing. It is unlocked from the start, and older saves get it
+  in their first empty slot.
 - **Mutations and biomass.** You earn biomass by infecting, killing armed humans, breaking structures and capturing strongholds.
   - **Alpha Claws:** while equipped, LMB becomes a three-hit combo whose finisher staggers.
   - **Horde Frenzy:** nearby followers get +40% speed and +50% attack rate for 8 s.
@@ -60,7 +63,7 @@ also save from the pause menu (`Esc`), which has **Reset Save** to start over.
 ### 10-minute demo path
 
 1. **0:00–0:30, outbreak.** Walk toward the bus and the nearby walkers. Walking within 9 m recruits passively, and `Space` (Rally)
-   pulls in everything within 15 m. LMB a civilian to infect it. A scripted run reaches about 20 followers by 30 s.
+   pulls in everything within 15 m. Press `Q` (Rush) to run down fleeing civilians, then LMB them to infect. A scripted run reaches about 20 followers by 30 s.
 2. **0:30–2:00, Suburb Police Checkpoint.** RMB the holding-pen gate. The horde breaks it, the 20 zombies inside join, and the horde
    moves on to the police. Kill the last defender (RMB it, or LMB it yourself).
    - Capture: suburbs turn green, a new nest activates, and "SAVED" flashes.
@@ -88,7 +91,7 @@ Implemented in [`src/core/InputController.ts`](src/core/InputController.ts) and 
 | **RMB** on ground | Horde move order (marker; reverts to follow on arrival or after 20 s) |
 | `Space` / `Shift+RMB` | Rally / regroup: pull in and recruit nearby walkers (8 s cooldown) |
 | `G` | Recall: everyone follows |
-| `Q` `E` `R` `F` | Activate the equipped mutation slot |
+| `Q` `E` `R` `F` | Activate the equipped slot. `Q` starts as **Rush**; captures fill E/R/F with Frenzy, Claws and Brutes |
 | `M` | World map. Click it to set or clear a waypoint |
 | `Esc` | Pause menu: Continue, Save, Reset Save (with confirmation), Sound |
 | `N` | Mute / unmute |
