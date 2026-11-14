@@ -90,6 +90,9 @@ export class CheckpointVisual {
   private readonly pointLights: THREE.PointLight[] = [];
   private readonly disposableGeometries: THREE.BufferGeometry[] = [];
   private readonly disposableMaterials: THREE.Material[] = [];
+  private readonly gateCx: number;
+  private readonly gateCz: number;
+  private readonly gatePickY: number;
 
   private highlighted = false;
 
@@ -126,6 +129,9 @@ export class CheckpointVisual {
     const gateH = 3.0;
     const gateCx = 0.5 * (gateRect.minX + gateRect.maxX);
     const gateCz = 0.5 * (gateRect.minZ + gateRect.maxZ);
+    this.gateCx = gateCx;
+    this.gateCz = gateCz;
+    this.gatePickY = (gateH + 1.0) * 0.5;
 
     this.buildGateSegments(gateCx, gateCz, gateW, gateH, gateD);
     this.buildGateRubble(gateCx, gateCz, gateW, gateD);
@@ -165,7 +171,7 @@ export class CheckpointVisual {
       }),
     );
     this.gatePickMesh = new THREE.Mesh(pickGeom, pickMat);
-    this.gatePickMesh.position.set(gateCx, (gateH + 1.0) * 0.5, gateCz);
+    this.gatePickMesh.position.set(this.gateCx, this.gatePickY, this.gateCz);
     this.gatePickMesh.name = 'GatePickProxy';
     this.gatePickMesh.userData.target = { kind: 'gate' };
     this.group.add(this.gatePickMesh);
@@ -182,14 +188,18 @@ export class CheckpointVisual {
     if (gate.destroyed) {
       this.gateIntactGroup.visible = false;
       this.gateRubbleGroup.visible = true;
+      this.gateHighlightMesh.visible = false;
+      this.gateSparkMesh.visible = false;
       this.gatePickMesh.visible = false;
       this.gatePickMesh.userData.target = null;
+      this.gatePickMesh.position.set(this.gateCx, -1000, this.gateCz);
       return;
     }
 
     this.gateIntactGroup.visible = true;
     this.gateRubbleGroup.visible = false;
     this.gatePickMesh.visible = true;
+    this.gatePickMesh.position.set(this.gateCx, this.gatePickY, this.gateCz);
     if (!this.gatePickMesh.userData.target) {
       this.gatePickMesh.userData.target = { kind: 'gate' };
     }

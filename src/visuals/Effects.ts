@@ -289,7 +289,7 @@ export class Effects {
       this.swirls.push({
         active: false,
         age: 0,
-        duration: BALANCE.conversion.delay,
+        duration: BALANCE.conversion.riseDuration,
         x: 0,
         z: 0,
         group: grp,
@@ -316,7 +316,7 @@ export class Effects {
         duration: 1.2,
         guardId: -1,
         x: 0,
-        y: 2.35,
+        y: 2.6,
         z: 0,
         group: grp,
       });
@@ -430,13 +430,17 @@ export class Effects {
         }
         case 'guardAlert': {
           let elev = 0;
+          let gx = ev.pos.x;
+          let gz = ev.pos.z;
           for (let gIdx = 0; gIdx < state.guards.length; gIdx++) {
             if (state.guards[gIdx].id === ev.guardId) {
               elev = state.guards[gIdx].elevation;
+              gx = state.guards[gIdx].pos.x;
+              gz = state.guards[gIdx].pos.z;
               break;
             }
           }
-          this.spawnAlert(ev.guardId, ev.pos.x, elev + 2.3, ev.pos.z);
+          this.spawnAlert(ev.guardId, gx, elev + 2.6, gz);
           break;
         }
         default:
@@ -459,7 +463,7 @@ export class Effects {
     this.spawnRing(pos.x, pos.y + 0.05, pos.z, 0.1, 1.1, 0.36, 0xd4e2f0, 0.05);
   }
 
-  update(dt: number): void {
+  update(dt: number, state?: GameState): void {
     this.time += dt;
     this.shakeMagnitude = Math.max(0, this.shakeMagnitude - dt * 1.45);
 
@@ -604,6 +608,17 @@ export class Effects {
         al.active = false;
         al.group.visible = false;
         continue;
+      }
+      if (state) {
+        for (let gIdx = 0; gIdx < state.guards.length; gIdx++) {
+          const g = state.guards[gIdx];
+          if (g.id === al.guardId) {
+            al.x = g.pos.x;
+            al.y = g.elevation + 2.6;
+            al.z = g.pos.z;
+            break;
+          }
+        }
       }
       const bounce = Math.sin(al.age * 14.0) * 0.12 * (1.0 - al.age / al.duration);
       al.group.position.set(al.x, al.y + bounce, al.z);
@@ -771,7 +786,7 @@ export class Effects {
     this.nextSwirlIdx = (this.nextSwirlIdx + 1) % MAX_SWIRLS;
     slot.active = true;
     slot.age = 0;
-    slot.duration = BALANCE.conversion.delay;
+    slot.duration = BALANCE.conversion.riseDuration;
     slot.x = x;
     slot.z = z;
     slot.group.position.set(x, 0.05, z);

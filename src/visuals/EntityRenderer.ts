@@ -1,8 +1,8 @@
 import * as THREE from 'three';
-import { BALANCE } from '../config/balance';
 import type {
   AnimAction,
   EntityId,
+  GameEvent,
   GameState,
   GuardAgent,
   TargetRef,
@@ -49,6 +49,8 @@ export class EntityRenderer {
   private readonly leaderInnerRingMat: THREE.MeshBasicMaterial;
 
   private readonly guardsMap = new Map<EntityId, GuardVisualEntry>();
+  private readonly convertedGuardIds = new Set<EntityId>();
+  private lastStateTime = -1;
   private hoveredGuardId: EntityId | null = null;
   private targetedGuardId: EntityId | null = null;
 
@@ -65,6 +67,7 @@ export class EntityRenderer {
   private readonly hpBgMat: THREE.MeshBasicMaterial;
   private readonly hpFillGeo: THREE.BufferGeometry;
 
+  private readonly sharedGeometries = new Set<THREE.BufferGeometry>();
   private readonly disposableGeometries: THREE.BufferGeometry[] = [];
   private readonly disposableMaterials: THREE.Material[] = [];
 
@@ -199,7 +202,28 @@ export class EntityRenderer {
     this.hpFillGeo.translate(0.48, 0, 0.005);
   }
 
+  consume(events: readonly GameEvent[]): void {
+    for (let i = 0; i < events.length; i++) {
+      const ev = events[i];
+      if (ev.type === 'conversionStart' || ev.type === 'converted') {
+        this.convertedGuardIds.add(ev.guardId);
+      }
+    }
+  }
+
+  reset(): void {
+    this.convertedGuardIds.clear();
+    this.lastStateTime = -1;
+    this.hoveredGuardId = null;
+    this.targetedGuardId = null;
+  }
+
   update(state: GameState, alpha: number, time: number, _dt: number): void {
+    if (this.lastStateTime >= 0 && state.time < this.lastStateTime) {
+      this.convertedGuardIds.clear();
+    }
+    this.lastStateTime = state.time;
+
     this.updateLeader(state, alpha, time);
     this.updateGuards(state, alpha, time);
   }
@@ -213,6 +237,37 @@ export class EntityRenderer {
   }
 
   dispose(): void {
+    this.leaderRig.root.traverse((obj) => {
+      if (obj instanceof THREE.Mesh) {
+        const geom = obj.geometry as THREE.BufferGeometry | undefined;
+        if (geom) {
+          geom.dispose();
+        }
+      }
+    });
+    for (const m of this.leaderRig.materials) {
+      m.dispose();
+    }
+
+    for (const entry of this.guardsMap.values()) {
+      this.disposeGuardEntry(entry, false);
+    }
+    this.guardsMap.clear();
+
+    this.pickGeo.dispose();
+    this.pickMat.dispose();
+    this.factionDiscGeo.dispose();
+    this.factionDiscMat.dispose();
+    this.targetRingGeo.dispose();
+    this.targetRingMat.dispose();
+    this.hoverRingGeo.dispose();
+    this.hoverRingMat.dispose();
+    this.hpBgGeo.dispose();
+    this.hpBgMat.dispose();
+    this.hpFillGeo.dispose();
+    this.leaderOuterRingMat.dispose();
+    this.leaderInnerRingMat.dispose();
+
     for (const g of this.disposableGeometries) {
       g.dispose();
     }
@@ -221,13 +276,15 @@ export class EntityRenderer {
     }
     this.disposableGeometries.length = 0;
     this.disposableMaterials.length = 0;
-    this.guardsMap.clear();
+    this.sharedGeometries.clear();
+    this.convertedGuardIds.clear();
     this.pickables.length = 0;
     this.rootGroup.clear();
     this.scene.remove(this.rootGroup);
   }
 
   private trackGeometry<T extends THREE.BufferGeometry>(g: T): T {
+    this.sharedGeometries.add(g);
     this.disposableGeometries.push(g);
     return g;
   }
@@ -235,6 +292,30 @@ export class EntityRenderer {
   private trackMaterial<T extends THREE.Material>(m: T): T {
     this.disposableMaterials.push(m);
     return m;
+  }
+
+  private disposeGuardEntry(entry: GuardVisualEntry, keepShared: boolean): void {
+    entry.rig.root.traverse((obj) => {
+      if (obj instanceof THREE.Mesh) {
+        const geom = obj.geometry as THREE.BufferGeometry | undefined;
+        if (geom && (!keepShared || !this.sharedGeometries.has(geom))) {
+          geom.dispose();
+        }
+      }
+    });
+    for (const m of entry.rig.materials) {
+      m.dispose();
+    }
+    entry.hpFillMat.dispose();
+    entry.pickProxy.visible = false;
+    entry.pickProxy.userData.target = null;
+    entry.pickProxy.position.y = -1000;
+    this.rootGroup.remove(entry.rig.root);
+    this.rootGroup.remove(entry.pickProxy);
+    const pickIdx = this.pickables.indexOf(entry.pickProxy);
+    if (pickIdx !== -1) {
+      this.pickables.splice(pickIdx, 1);
+    }
   }
 
   private updateLeader(state: GameState, alpha: number, time: number): void {
@@ -299,35 +380,26 @@ export class EntityRenderer {
       // Check whether dead guard should be hidden (converted or faded after 20 s)
       let hideCorpse = false;
       let sinkOffset = 0;
-      if (isDead && g.deathTime !== null) {
-        const deathAge = state.time - g.deathTime;
-        const stillPending = state.pendingConversions.some((pc) => pc.guardId === g.id);
-        if (!stillPending && deathAge >= BALANCE.conversion.delay - 0.05) {
-          // If a converted zombie rose near this guard's position, hide the guard corpse
-          for (let zIdx = 0; zIdx < state.zombies.length; zIdx++) {
-            const z = state.zombies[zIdx];
-            if (z.isConverted) {
-              const dist = Math.hypot(z.pos.x - g.pos.x, z.pos.z - g.pos.z);
-              if (dist < 4.5) {
-                hideCorpse = true;
-                break;
-              }
-            }
-          }
-        }
-        if (!hideCorpse) {
+      if (isDead) {
+        if (this.convertedGuardIds.has(g.id)) {
+          hideCorpse = true;
+        } else if (g.deathTime !== null) {
+          const deathAge = state.time - g.deathTime;
           if (deathAge > 20.0) {
             hideCorpse = true;
           } else if (deathAge > 18.5) {
             sinkOffset = -((deathAge - 18.5) / 1.5) * 0.65;
           }
         }
+      } else {
+        this.convertedGuardIds.delete(g.id);
       }
 
       if (hideCorpse) {
         entry.rig.root.visible = false;
         entry.pickProxy.visible = false;
         entry.pickProxy.userData.target = null;
+        entry.pickProxy.position.set(gx, -1000, gz);
         continue;
       }
 
@@ -366,6 +438,7 @@ export class EntityRenderer {
       if (isDead) {
         entry.pickProxy.visible = false;
         entry.pickProxy.userData.target = null;
+        entry.pickProxy.position.set(gx, -1000, gz);
         entry.factionDisc.visible = false;
         entry.targetRing.visible = false;
         entry.hoverRing.visible = false;
@@ -407,12 +480,7 @@ export class EntityRenderer {
     // Clean up any guard rigs no longer in state.guards (e.g. after a reset with new IDs)
     for (const [id, entry] of this.guardsMap.entries()) {
       if (!activeIds.has(id)) {
-        this.rootGroup.remove(entry.rig.root);
-        this.rootGroup.remove(entry.pickProxy);
-        const pickIdx = this.pickables.indexOf(entry.pickProxy);
-        if (pickIdx !== -1) {
-          this.pickables.splice(pickIdx, 1);
-        }
+        this.disposeGuardEntry(entry, true);
         this.guardsMap.delete(id);
       }
     }
