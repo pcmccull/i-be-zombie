@@ -1,12 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 import { BALANCE } from '../src/config/balance';
 import { emptyInput } from '../src/core/types';
-import type { GameEvent, Vec2 } from '../src/core/types';
+import type { GameEvent, StrongholdId, Vec2 } from '../src/core/types';
 import { createZombie } from '../src/entities/Zombie';
+import { createGuard } from '../src/entities/HumanGuard';
 import { Simulation } from '../src/sim/Simulation';
 import { damageGate, damageGuard, damageZombie } from '../src/systems/CombatSystem';
 import { recruitZombie } from '../src/systems/HordeSystem';
 import { updateHumanAI } from '../src/systems/HumanAISystem';
+import { flatSimulation, zombie } from './r2-fixtures';
+import { buildDistrictLayout } from '../src/world/districtLayout';
 
 const dt = BALANCE.sim.fixedDt, input = emptyInput();
 function add(sim: Simulation, pos: Vec2, follower = true, rising = false) {
@@ -230,5 +233,198 @@ describe('civilian and barricade humans', () => {
     const events = run(world, 1);
     expect(events.filter(e => e.type === 'guardAlert').every(e => e.role !== undefined)).toBe(true);
     expect(world.state.guards.filter(g => g.post === 'checkpoint').every(g => g.state === 'PATROL')).toBe(true);
+  });
+});
+
+describe('open-world human roles and posts', () => {
+  function policeFixture() {
+    const sim = flatSimulation();
+    const g = createGuard(sim.ctx.newId(), { role: 'police', post: 'patrol', pos: { x: 0, z: 0 },
+      facing: 0, tower: null, waypoints: [{ x: 0, z: 0 }, { x: 10, z: 0 }] }, sim.ctx.collision);
+    sim.state.guards = [g]; sim.state.leader.pos = { x: 0, z: 10 };
+    g.state = 'COMBAT'; sim.ctx.rng = { next: () => 0 };
+    return { sim, g };
+  }
+
+  it('creates police with pistol health, waits to aim, and uses pistol damage and cadence', () => {
+    const { sim, g } = policeFixture();
+    expect(g.hp).toBe(BALANCE.police.maxHp); expect(g.maxHp).toBe(BALANCE.police.maxHp);
+    expect(run(sim, BALANCE.police.aimDelay - 0.05).filter(e => e.type === 'shot')).toHaveLength(0);
+    expect(run(sim, 0.2).filter(e => e.type === 'shot')).toHaveLength(1);
+    expect(sim.state.leader.hp).toBe(BALANCE.leader.maxHp - BALANCE.police.damage);
+    const remaining = g.attackCooldown;
+    expect(remaining).toBeGreaterThan(0);
+    expect(run(sim, remaining - dt).filter(e => e.type === 'shot')).toHaveLength(0);
+    expect(run(sim, 2 * dt).filter(e => e.type === 'shot')).toHaveLength(1);
+  });
+
+  it('uses police accuracy and range, and re-aims after acquiring a different target', () => {
+    const { sim, g } = policeFixture(); sim.ctx.rng = { next: () => 0.6 };
+    expect(run(sim, 0.7).filter(e => e.type === 'shot')).toMatchObject([{ hit: false }]);
+    expect(sim.state.leader.hp).toBe(BALANCE.leader.maxHp);
+    sim.state.leader.pos.z = BALANCE.police.range + 0.5;
+    g.attackCooldown = 0;
+    expect(run(sim, 1).filter(e => e.type === 'shot')).toHaveLength(0);
+    expect(g.target).toBeNull();
+    const z = add(sim, { x: 0, z: 10 });
+    expect(run(sim, BALANCE.police.aimDelay - 0.1).filter(e => e.type === 'shot')).toHaveLength(0);
+    expect(run(sim, 0.3).filter(e => e.type === 'shot')).toHaveLength(1);
+    expect(g.target).toEqual({ kind: 'zombie', id: z.id });
+  });
+
+  it('freezes all dormant human state and consumes stagger without movement, perception, or shots', () => {
+    const { sim, g } = policeFixture(); g.vel.x = 1;
+    g.dormant = true; const before = structuredClone(g);
+    expect(run(sim, 1).filter(e => e.type === 'shot' || e.type === 'guardAlert')).toHaveLength(0);
+    // The test runner advances only render timers outside the AI.
+    expect({ ...g, animTime: before.animTime }).toEqual(before);
+    g.dormant = false; g.staggerTime = BALANCE.alpha.staggerTime;
+    const pos = { ...g.pos }, perception = g.perceptionTimer;
+    expect(run(sim, BALANCE.alpha.staggerTime).filter(e => e.type === 'shot')).toHaveLength(0);
+    expect(g.pos).toEqual(pos); expect(g.vel).toEqual({ x: 0, z: 0 });
+    expect(g.perceptionTimer).toBe(perception); expect(g.staggerTime).toBeCloseTo(0);
+    expect(run(sim, 0.8).filter(e => e.type === 'shot')).toHaveLength(1);
+  });
+
+  it('alerts only same-stronghold defenders and nearby armed patrols, skipping dormant allies', () => {
+    const { sim, g } = policeFixture();
+    g.post = 'stronghold'; g.strongholdId = 'police_station'; g.state = 'PATROL'; g.perceptionTimer = -1;
+    const ally = (post: 'stronghold' | 'patrol', strongholdId: StrongholdId | null) => {
+      const a = createGuard(sim.ctx.newId(), { role: 'police', post, strongholdId, pos: { x: 2, z: 0 },
+        facing: Math.PI, tower: null, waypoints: [] }, sim.ctx.collision);
+      a.perceptionTimer = 10; sim.state.guards.push(a); return a;
+    };
+    const same = ally('stronghold', 'police_station'), other = ally('stronghold', 'mall_security');
+    const patrol = ally('patrol', null), reinforcement = ally('patrol', 'police_station');
+    const distant = ally('patrol', null); distant.pos.x = BALANCE.guard.alertAssistRadius + 1;
+    const dormant = ally('stronghold', 'police_station'); dormant.dormant = true;
+    run(sim, dt);
+    for (const a of [g, same, patrol, reinforcement]) expect(a.state).toBe('ALERT');
+    for (const a of [other, distant, dormant]) expect(a.state).toBe('PATROL');
+  });
+
+  it('routes reinforcement patrols toward the stronghold and resumes the waypoint after losing contact', () => {
+    const { sim, g } = policeFixture(); sim.state.leader.pos = { x: -50, z: 0 };
+    g.state = 'PATROL'; g.waypoints = [{ x: 0, z: 0 }, { x: 20, z: 0 }];
+    g.strongholdId = 'police_station';
+    run(sim, BALANCE.guard.patrolIdleTime + 1);
+    expect(g.pos.x).toBeGreaterThan(1); expect(g.waypointIndex).toBe(1);
+    sim.state.leader.pos = { x: g.pos.x, z: 10 }; g.state = 'COMBAT';
+    run(sim, 0.2); expect(g.target).toEqual({ kind: 'leader' });
+    sim.state.leader.pos = { x: -50, z: 0 };
+    run(sim, BALANCE.guard.loseTargetTime + 0.2);
+    expect(g.state).toBe('PATROL'); expect(g.target).toBeNull();
+    const x = g.pos.x; run(sim, 0.5); expect(g.pos.x).toBeGreaterThan(x);
+  });
+
+  it('keeps low-health stronghold retreats and their complete route inside that stronghold', () => {
+    const { sim, g } = policeFixture(); sim.state.leader.pos = { x: -50, z: 0 };
+    g.post = 'stronghold'; g.strongholdId = 'police_station'; g.hp = 10;
+    const bounds = { minX: -12, maxX: 12, minZ: -10, maxZ: 10 };
+    sim.ctx.layout.strongholds = [{ id: 'police_station', districtId: 'police', name: 'Station', bounds,
+      center: { x: 0, z: 0 }, defenseTier: 2, unlock: null, biomassReward: 0, objectives: [],
+      nestId: 'test', reinforcementPoints: [] }];
+    for (let i = 0; i < 3; i++) zombie(sim, i - 1, 4, { state: 'follower' });
+    run(sim, 0.2); expect(g.state).toBe('RETREAT'); expect(g.path.length).toBeGreaterThan(0);
+    for (const p of g.path) {
+      expect(p.x).toBeGreaterThanOrEqual(bounds.minX + g.radius);
+      expect(p.x).toBeLessThanOrEqual(bounds.maxX - g.radius);
+      expect(p.z).toBeGreaterThanOrEqual(bounds.minZ + g.radius);
+      expect(p.z).toBeLessThanOrEqual(bounds.maxZ - g.radius);
+    }
+    run(sim, 3); expect(g.pos.z).toBeGreaterThanOrEqual(bounds.minZ + g.radius);
+    expect(g.pos.z).toBeLessThanOrEqual(bounds.maxZ - g.radius);
+  });
+
+  it('continues engaging followers while the Alpha is respawning', () => {
+    const { sim, g } = policeFixture();
+    sim.state.phase = 'respawning'; sim.state.leader.alive = false;
+    const z = add(sim, { x: 0, z: 10 });
+    expect(run(sim, 0.8).filter(e => e.type === 'shot')).toHaveLength(1);
+    expect(g.target).toEqual({ kind: 'zombie', id: z.id });
+  });
+});
+
+describe('open-world layout humans', () => {
+  function world() {
+    const sim = new Simulation(buildDistrictLayout());
+    sim.state.guards = []; sim.state.zombies = []; sim.state.followerCount = 0;
+    return sim;
+  }
+  function runReal(sim: Simulation, seconds: number): GameEvent[] {
+    const events: GameEvent[] = [];
+    for (let i = 0; i < Math.round(seconds / dt); i++) {
+      sim.ctx.zombieHash.clear();
+      for (const z of sim.state.zombies) if (z.state !== 'dead') sim.ctx.zombieHash.insert(z.id, z.pos.x, z.pos.z);
+      updateHumanAI(sim.ctx, dt, input); sim.state.time += dt;
+      events.push(...sim.drainEvents());
+    }
+    return events;
+  }
+
+  it('reinforcement squads leave their spawn immediately and path to the stronghold center', () => {
+    const sim = world(), def = sim.ctx.layout.strongholds[0];
+    const point = def.reinforcementPoints[0];
+    sim.state.leader.pos = { x: point.x, z: point.z + 300 };
+    const g = createGuard(sim.ctx.newId(), { role: 'police', post: 'patrol', strongholdId: def.id, pos: point,
+      facing: 0, tower: null, waypoints: [point, def.center] }, sim.ctx.collision);
+    sim.state.guards.push(g);
+    expect(g.waypointIndex).toBe(1);
+    const start = Math.hypot(g.pos.x - def.center.x, g.pos.z - def.center.z);
+    runReal(sim, 10);
+    // The compound is sealed until breached, so the squad approaches as close as the street network allows.
+    expect(Math.hypot(g.pos.x - point.x, g.pos.z - point.z)).toBeGreaterThan(5);
+    expect(g.path.length).toBeGreaterThan(0);
+    const last = g.path[g.path.length - 1];
+    expect(Math.hypot(last.x - def.center.x, last.z - def.center.z)).toBeLessThan(start);
+    expect(Math.hypot(last.x - def.center.x, last.z - def.center.z)).toBeLessThanOrEqual(32.1);
+  });
+
+  it('reinforcement squads engage the Alpha on the way', () => {
+    const sim = world(), def = sim.ctx.layout.strongholds[0];
+    const point = def.reinforcementPoints[0];
+    const g = createGuard(sim.ctx.newId(), { role: 'police', post: 'patrol', strongholdId: def.id, pos: point,
+      facing: 0, tower: null, waypoints: [point, def.center] }, sim.ctx.collision);
+    sim.state.guards.push(g);
+    sim.state.leader.pos = { x: point.x + 0.01, z: point.z + 0.01 };
+    const events = runReal(sim, 4);
+    expect(events.some(e => e.type === 'guardAlert' && e.guardId === g.id)).toBe(true);
+    expect(events.some(e => e.type === 'shot' && e.guardId === g.id)).toBe(true);
+  });
+
+  it('stronghold defenders keep retreat routes inside the stronghold bounds', () => {
+    for (const def of buildDistrictLayout().strongholds) {
+      const sim = world(), b = def.bounds;
+      const g = createGuard(sim.ctx.newId(), { role: 'police', post: 'stronghold', strongholdId: def.id,
+        pos: def.center, facing: 0, tower: null, waypoints: [] }, sim.ctx.collision);
+      g.hp = 10; g.state = 'COMBAT'; sim.state.guards.push(g);
+      sim.state.leader.pos = { x: def.center.x + 200, z: def.center.z };
+      for (let i = 0; i < 3; i++) {
+        const z = createZombie(sim.ctx.newId(), { x: def.center.x + 2 + i * 0.3, z: def.center.z + 1 }, { state: 'follower',
+          variant: 0, spawnZone: -1, isConverted: true, rng: sim.ctx.rng });
+        sim.state.zombies.push(z);
+      }
+      runReal(sim, 0.3);
+      for (const p of g.path) {
+        expect(p.x).toBeGreaterThanOrEqual(b.minX); expect(p.x).toBeLessThanOrEqual(b.maxX);
+        expect(p.z).toBeGreaterThanOrEqual(b.minZ); expect(p.z).toBeLessThanOrEqual(b.maxZ);
+      }
+      runReal(sim, 3);
+      expect(g.pos.x).toBeGreaterThanOrEqual(b.minX); expect(g.pos.x).toBeLessThanOrEqual(b.maxX);
+      expect(g.pos.z).toBeGreaterThanOrEqual(b.minZ); expect(g.pos.z).toBeLessThanOrEqual(b.maxZ);
+    }
+  });
+
+  it('fleeing street civilians may leave their home area', () => {
+    const sim = world();
+    const sp = sim.ctx.layout.districts[0].spawnPoints[0];
+    const area = { minX: sp.x - 3, maxX: sp.x + 3, minZ: sp.z - 3, maxZ: sp.z + 3 };
+    const g = createGuard(sim.ctx.newId(), { role: 'civilian', post: 'street', pos: sp, facing: 0, tower: null,
+      homeArea: area, waypoints: [sp] }, sim.ctx.collision);
+    sim.state.guards.push(g);
+    sim.state.leader.pos = { x: sp.x + 2, z: sp.z };
+    runReal(sim, 3);
+    expect(g.state).toBe('RETREAT');
+    expect(g.pos.x).toBeLessThan(area.minX);
   });
 });
