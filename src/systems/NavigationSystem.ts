@@ -10,6 +10,7 @@ interface Planning {
   version: number; guardField: IFlowField | null;
 }
 const planning = new WeakMap<SimContext, Planning>();
+const successionFields = new WeakMap<SimContext, IFlowField>();
 const targetPos: Vec2 = { x: 0, z: 0 };
 
 function key(target: TargetRef | null): string {
@@ -38,6 +39,26 @@ function guardGoals(ctx: SimContext, g: GuardAgent): Vec2[] {
         !ctx.collision.segmentBlocked(snapped, g.pos, access)) points.push(snapped);
   }
   return points;
+}
+
+/** Only called when an ordered target dies: one shared reachability pass for the pack. */
+export function nearestReachableGuard(ctx: SimContext, origin: Vec2, radius: number): TargetRef | null {
+  const starts: Vec2[] = [];
+  for (const z of ctx.state.zombies) if (z.state === 'follower' && z.hp > 0) starts.push(z.pos);
+  if (!starts.length) return null;
+  const field = ctx.navGrid.buildFlowField(starts, successionFields.get(ctx));
+  successionFields.set(ctx, field);
+  let nearest = radius * radius;
+  let target: TargetRef | null = null;
+  for (const g of ctx.state.guards) {
+    if (g.state === 'DEAD' || g.hp <= 0) continue;
+    const d = distSq(origin, g.pos);
+    if (d > nearest || (d === nearest && target)) continue;
+    // Use the same validated melee approaches as attack navigation, including towers.
+    if (!guardGoals(ctx, g).some(p => field.distanceAt(p) < Infinity)) continue;
+    nearest = d; target = { kind: 'guard', id: g.id };
+  }
+  return target;
 }
 
 export function updateNavigation(ctx: SimContext, dt: number, _input: SimInput): void {

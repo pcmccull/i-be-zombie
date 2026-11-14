@@ -3,6 +3,7 @@ import type { SegmentOptions, SimContext } from '../core/contracts';
 import type { AnimAction, GameState, SimInput, TargetRef, Vec2, ZombieAgent } from '../core/types';
 import { distSq, wrapAngle } from '../utils/math';
 import { isTargetAlive, resolveTargetPos } from './CombatSystem';
+import { nearestReachableGuard } from './NavigationSystem';
 
 interface Recovery { x: number; z: number; nudgeLeft: number; nx: number; nz: number }
 interface Scratch {
@@ -87,7 +88,7 @@ export function applyHordeCommands(ctx: SimContext, dt: number, input: SimInput)
     memory.recallGrace = 2.5;
     for (const z of s.zombies) if (z.state === 'follower') z.engageTarget = null;
   }
-  if (s.leader.alive && input.attackTarget &&
+  if (!input.recall && s.leader.alive && input.attackTarget &&
       (input.attackTarget.kind === 'guard' || input.attackTarget.kind === 'gate') && isTargetAlive(ctx, input.attackTarget)) {
     s.order = { type: 'attack', target: { ...input.attackTarget } };
     ctx.emit({ type: 'orderChanged', order: s.order });
@@ -102,7 +103,17 @@ export function applyHordeCommands(ctx: SimContext, dt: number, input: SimInput)
     a.rushTimeLeft = BALANCE.rush.duration; a.rushCooldown = BALANCE.rush.cooldown;
     ctx.emit({ type: 'rushStart' });
   }
-  if (s.order.type === 'attack' && !isTargetAlive(ctx, s.order.target)) follow(ctx);
+  if (s.order.type === 'attack' && !isTargetAlive(ctx, s.order.target)) {
+    const old = s.order.target;
+    // Death invalidates resolveTargetPos, but the gate/guard still owns its last position.
+    const origin = old.kind === 'gate' ? s.gate.center : old.kind === 'guard'
+      ? s.guards.find(g => g.id === old.id)?.pos : undefined;
+    const next = origin ? nearestReachableGuard(ctx, origin, 25) : null;
+    if (next) {
+      s.order = { type: 'attack', target: next };
+      ctx.emit({ type: 'orderChanged', order: s.order });
+    } else follow(ctx);
+  }
 }
 
 function animate(z: ZombieAgent, anim: AnimAction): void {
