@@ -246,4 +246,4 @@ worker owns, and every change ends with `npx tsc --noEmit` + `npm test` green.
 - [x] **Wave A**: T002 world layout · T003 nav scale · T004 Alpha combat · T005 progression · T006 persistence
 - [x] **Wave B**: T007 horde · T008 humans/population · T009 conquest/respawn · T010 world render · T011 characters/FX
 - [x] **Wave C–E**: T012 sim integration · T013 UI/audio · T014 client integration · T015 docs (legacy fields kept as test fixture) · T016 playtest
-- [ ] **Verification**: V1 spec audit · V2 adversarial review · V3 final build/test report
+- [x] **Verification**: V1 spec audit · V2 adversarial review · F1 fixes · V3 final build/test report (PASS)

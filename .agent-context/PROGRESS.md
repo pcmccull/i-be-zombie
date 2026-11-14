@@ -3,7 +3,7 @@
 Spec: `docs/3_open_world.md`. Architecture/contracts: `.agent-context/ARCHITECTURE.md`. Conventions: `AGENTS.md`.
 Previous milestone (recruitment overhaul R0–R4): complete, committed (1eee817, fec178f, 1f274d1).
 
-## Active Milestone: OW — Open World. T001–T016 VERIFIED on branch `open-world`; Phase 3 verification gate running.
+## Active Milestone: OW — Open World. **COMPLETE** (all tasks VERIFIED; final verdict PASS — reports/FINAL-VERIFICATION.md). Not merged to master.
 
 Baseline (2026-11-14 10:31): `npx tsc --noEmit` 0 errors, `npm test` 25 files / 216 tests passing.
 
@@ -41,4 +41,4 @@ Every task ends with `npx tsc --noEmit` + `npm test` green and a report at `.age
 | V1 | F | Spec completeness audit (read-only, plan mode) | ~~agy~~ → claude-worker (read-only) | none | T016 | VERIFIED (no P1; P2: yard capture untested e2e, capturedPatrolFactor dead, thin browser/perf evidence) |
 | V2 | F | Adversarial bug/edge-case review (read-only) | ~~codex~~ → claude-worker (read-only) | none | T016 | VERIFIED (no P1; 3 P2 → F1) |
 | F1 | F | V1/V2 fixes: conversion cap 40, dead Alpha can't use abilities, contested status after load, yard capture e2e test, capturedPatrolFactor, cheap P3s | claude-worker | `src/systems/{Conversion,Progression,Conquest,Population,Horde}System.ts`, `src/persistence/*`, `src/visuals/EntityRenderer.ts`, tests for those | V1, V2 | VERIFIED (410/410; yard capture e2e passes; 7 regression tests) |
-| V3 | F | Full build + test run, `reports/FINAL-VERIFICATION.md` | claude-worker | `reports/FINAL-VERIFICATION.md` | V1, V2 fixes | IN_PROGRESS → reports/FINAL-VERIFICATION.md |
+| V3 | F | Full build + test run, `reports/FINAL-VERIFICATION.md` | claude-worker | `reports/FINAL-VERIFICATION.md` | V1, V2 fixes | VERIFIED (PASS: tsc 0, 410/410 x2, build OK, clean-HEAD 410/410) |
