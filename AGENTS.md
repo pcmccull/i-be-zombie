@@ -110,11 +110,11 @@ Agents only create/edit files listed in their task brief. **Never edit `src/core
 1. Copy `pos→prevPos`, `facing→prevFacing` for leader, zombies, guards.
 2. If `phase !== 'playing'`: only advance anim timers / corpse fades, then return.
 3. `applyHordeCommands` (attack/recall order changes, rally, rush activation, cooldown ticking)
-4. `updateLeader` (movement, stamina, leader auto-melee)
+4. `updateLeader` (movement, stamina; leader auto-melee is resolved in `updateCombat`)
 5. `updateNavigation` (flow fields / effective target; ≤ 5 Hz replans + immediate on order change / nav version change)
 6. `updateHorde` (spatial hash rebuild, passive recruit, ambient wander, follower steering & engagement selection)
 7. `updateHumanAI` (perception at 10 Hz, FSM, movement, shooting → damage helpers)
-8. `updateCombat` (zombie melee resolution, gate damage, deaths, corpse timers)
+8. `updateCombat` (follower + leader melee resolution, gate damage, deaths, corpse timers)
 9. `updateConversion`
 10. `checkVictory` (victory: gate destroyed AND all guards DEAD; defeat: leader dead) → set phase, emit once
 11. Tick `hitFlash`, `animTime`, `capReachedFlash`; `state.time += dt`.
