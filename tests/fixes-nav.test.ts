@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { BALANCE } from '../src/config/balance';
 import type { ColliderDef } from '../src/core/types';
+import { emptyInput } from '../src/core/types';
+import { Simulation } from '../src/sim/Simulation';
+import { updateNavigation } from '../src/systems/NavigationSystem';
 import { dist } from '../src/utils/math';
 import { CollisionWorld } from '../src/world/CollisionWorld';
 import { NavigationGrid } from '../src/world/NavigationGrid';
@@ -67,5 +71,76 @@ describe('navigation review regressions', () => {
     expect(nav.isWalkable(snapped)).toBe(true);
     expect(collision.isBlocked(snapped, 0.45)).toBe(false);
     expect(snapped).toEqual({ x: 0.5, z: 40.5 });
+  });
+});
+
+function worldSimulation(colliders: ColliderDef[] = []) {
+  const sim = new Simulation();
+  const bounds = { minX: -200, minZ: -160, maxX: 200, maxZ: 160 };
+  sim.ctx.layout = { ...sim.ctx.layout, bounds, colliders };
+  sim.ctx.collision = new CollisionWorld(bounds, colliders);
+  sim.ctx.navGrid = new NavigationGrid(sim.ctx.collision);
+  sim.ctx.crawlNavGrid = new NavigationGrid(sim.ctx.collision);
+  sim.state.leader.pos = { x: -150.625, z: -0.625 };
+  sim.state.gate.destroyed = true;
+  const guard = sim.state.guards[5];
+  guard.pos = { x: 150.625, z: -0.625 };
+  guard.shelter = 0; guard.towerColliderId = null;
+  return { sim, guard };
+}
+
+describe('bounded navigation planning regressions', () => {
+  it('bounds follow guidance but reaches distant main and squad guard orders', () => {
+    const { sim, guard } = worldSimulation();
+    const target = { kind: 'guard' as const, id: guard.id };
+    sim.state.order = { type: 'attack', target };
+    sim.state.squads = [{ id: 1, target }];
+    const build = vi.spyOn(sim.ctx.navGrid, 'buildFlowField');
+    updateNavigation(sim.ctx, BALANCE.sim.fixedDt, emptyInput());
+    const bound = Math.hypot(guard.pos.x - sim.state.leader.pos.x, guard.pos.z - sim.state.leader.pos.z) + 60;
+    expect(build.mock.calls.map(args => args[2])).toEqual([BALANCE.nav.flowFieldMaxDistance, bound, bound]);
+    expect(sim.ctx.nav.followField!.distanceAt(guard.pos)).toBe(Infinity);
+    expect(Number.isFinite(sim.ctx.nav.attackField!.distanceAt(sim.state.leader.pos))).toBe(true);
+    expect(Number.isFinite(sim.ctx.nav.squads.get(1)!.attackField!.distanceAt(sim.state.leader.pos))).toBe(true);
+    expect(sim.ctx.nav.effectiveTarget).toEqual(target);
+  });
+
+  it('bounds structure orders and keeps the configured minimum for close targets', () => {
+    const { sim, guard } = worldSimulation();
+    const structure = sim.state.structures[0];
+    const def = sim.ctx.layout.structures.find(d => d.id === structure.id)!;
+    structure.center = { x: 150.625, z: -0.625 };
+    def.approachOutside = [{ x: 148.125, z: -0.625 }];
+    const build = vi.spyOn(sim.ctx.navGrid, 'buildFlowField');
+    sim.state.order = { type: 'attack', target: { kind: 'structure', id: structure.id } };
+    updateNavigation(sim.ctx, BALANCE.sim.fixedDt, emptyInput());
+    expect(build.mock.calls.at(-1)![2]).toBe(361.25);
+    expect(Number.isFinite(sim.ctx.nav.attackField!.distanceAt(sim.state.leader.pos))).toBe(true);
+    guard.pos = { x: -140.625, z: -0.625 };
+    sim.state.order = { type: 'attack', target: { kind: 'guard', id: guard.id } };
+    updateNavigation(sim.ctx, BALANCE.sim.fixedDt, emptyInput());
+    expect(build.mock.calls.at(-1)![2]).toBe(BALANCE.nav.flowFieldMaxDistance);
+  });
+
+  it('redirects a distant enclosed guard to the gate beyond the follow-field bound', () => {
+    const gate = { ...box(140, -2, 141, 2), kind: 'gate' as const, tag: 'gate' };
+    const { sim, guard } = worldSimulation([box(140, -10, 160, -9), box(140, 9, 160, 10),
+      box(159, -10, 160, 10), box(140, -10, 141, -2), box(140, 2, 141, 10), gate]);
+    const cp = sim.ctx.layout.checkpoint;
+    cp.gate = { rect: gate, facing: -Math.PI / 2, tag: 'gate' };
+    cp.gateApproachOutside = [{ x: 138.125, z: -0.625 }];
+    cp.gateApproachInside = [{ x: 143.125, z: -0.625 }];
+    sim.state.gate.destroyed = false;
+    sim.state.gate.center = { x: 140.5, z: 0 };
+    sim.state.order = { type: 'attack', target: { kind: 'guard', id: guard.id } };
+    const build = vi.spyOn(sim.ctx.navGrid, 'buildFlowField');
+    updateNavigation(sim.ctx, BALANCE.sim.fixedDt, emptyInput());
+    expect(sim.ctx.nav.followField!.distanceAt(cp.gateApproachOutside[0])).toBe(Infinity);
+    expect(sim.ctx.nav.effectiveTarget).toEqual({ kind: 'gate' });
+    expect(Number.isFinite(sim.ctx.nav.attackField!.distanceAt(sim.state.leader.pos))).toBe(true);
+    expect(build).toHaveBeenCalledTimes(3); // Follow, guard, then the retained gate field.
+    sim.state.order = { type: 'attack', target: { kind: 'gate' } };
+    updateNavigation(sim.ctx, BALANCE.sim.fixedDt, emptyInput());
+    expect(build.mock.calls.at(-1)![2]).toBe(Math.hypot(291.125, 0.625) + 60);
   });
 });

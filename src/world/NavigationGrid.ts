@@ -3,6 +3,9 @@ import type { ICollisionWorld, IFlowField, INavigationGrid, SegmentOptions } fro
 import type { AABB, Collider, Vec2 } from '../core/types';
 import { clamp, copyVec, normalizeInPlace, set } from '../utils/math';
 
+const STEP_X = [-1, 0, 1, -1, 1, -1, 0, 1] as const;
+const STEP_Z = [-1, -1, -1, 0, 0, 1, 1, 1] as const;
+
 /** Indexed binary heap: one entry per cell, with allocation-free decrease-key. */
 class CellHeap {
   private readonly ids: Int32Array;
@@ -71,6 +74,10 @@ export class NavigationGrid implements INavigationGrid {
   private readonly parent: Int32Array;
   private readonly closed: Uint8Array;
   private readonly heap: CellHeap;
+  private readonly flowCells: Int32Array;
+  private readonly connections: Uint8Array;
+  private readonly neighborOffsets: Int32Array;
+  private readonly stepCosts: Float64Array;
   private readonly route: number[] = [];
   private readonly clearanceBox: AABB = { minX: 0, minZ: 0, maxX: 0, maxZ: 0 };
   private readonly clearanceCandidates: Collider[] = [];
@@ -93,6 +100,10 @@ export class NavigationGrid implements INavigationGrid {
     this.parent = new Int32Array(size);
     this.closed = new Uint8Array(size);
     this.heap = new CellHeap(size);
+    this.flowCells = new Int32Array(size);
+    this.connections = new Uint8Array(size);
+    this.neighborOffsets = Int32Array.from(STEP_X, (dx, i) => STEP_Z[i] * this.cols + dx);
+    this.stepCosts = Float64Array.from(STEP_X, (dx, i) => (dx && STEP_Z[i] ? Math.SQRT2 : 1) * cellSize);
     this.rebuild();
   }
 
@@ -118,6 +129,23 @@ export class NavigationGrid implements INavigationGrid {
       if (minX > maxX || minZ > maxZ) continue;
       for (let z = minZ; z <= maxZ; z++) {
         this.walkable.fill(0, z * this.cols + minX, z * this.cols + maxX + 1);
+      }
+    }
+    // Connectivity changes only on a rebuild, not on every shared-field replan.
+    // Cache the eight legal edges, including the no-corner-cutting rule.
+    this.connections.fill(0);
+    for (let z = 0; z < this.rows; z++) {
+      for (let x = 0; x < this.cols; x++) {
+        const id = z * this.cols + x;
+        if (!this.walkable[id]) continue;
+        let mask = 0;
+        for (let i = 0; i < 8; i++) {
+          const dx = STEP_X[i], dz = STEP_Z[i];
+          if (!this.open(x + dx, z + dz)) continue;
+          if (dx && dz && (!this.open(x + dx, z) || !this.open(x, z + dz))) continue;
+          mask |= 1 << i;
+        }
+        this.connections[id] = mask;
       }
     }
     this.version++;
@@ -319,7 +347,8 @@ export class NavigationGrid implements INavigationGrid {
     return path;
   }
 
-  buildFlowField(goals: readonly Vec2[], reuse?: IFlowField): FlowField {
+  buildFlowField(goals: readonly Vec2[], reuse?: IFlowField, maxDistance: number = Infinity): FlowField {
+    if (Number.isNaN(maxDistance) || maxDistance < 0) throw new RangeError('Invalid flow field distance');
     const b = this.collision.bounds;
     const field = reuse instanceof FlowField && reuse.matches(this.cols, this.rows, this.cellSize, b.minX, b.minZ, b.maxX, b.maxZ, this.collision)
       ? reuse : new FlowField(this.cols, this.rows, this.cellSize, b.minX, b.minZ, b.maxX, b.maxZ, this.collision);
@@ -338,30 +367,26 @@ export class NavigationGrid implements INavigationGrid {
       field.goalIndex[id] = g;
       this.heap.put(id, 0);
     }
+    let flowCount = 0;
     while (this.heap.size > 0) {
       const id = this.heap.pop();
+      this.flowCells[flowCount++] = id;
       this.closed[id] = 1;
-      const x = id % this.cols;
-      const z = Math.floor(id / this.cols);
       const current = this.cost[id];
       field.distance[id] = current;
-      for (let dz = -1; dz <= 1; dz++) {
-        const nz = z + dz;
-        if (nz < 0 || nz >= this.rows) continue;
-        for (let dx = -1; dx <= 1; dx++) {
-          const nx = x + dx;
-          if ((dx === 0 && dz === 0) || nx < 0 || nx >= this.cols) continue;
-          const neighbor = nz * this.cols + nx;
-          if (!this.walkable[neighbor] || this.closed[neighbor]) continue;
-          if (dx !== 0 && dz !== 0 && (!this.walkable[z * this.cols + nx] || !this.walkable[nz * this.cols + x])) continue;
-          const cost = current + (dx !== 0 && dz !== 0 ? Math.SQRT2 : 1) * this.cellSize;
-          if (cost >= this.cost[neighbor]) continue;
-          this.cost[neighbor] = cost;
-          this.heap.put(neighbor, cost);
-        }
+      const mask = this.connections[id];
+      for (let i = 0; i < 8; i++) {
+        if (!(mask & (1 << i))) continue;
+        const neighbor = id + this.neighborOffsets[i];
+        if (this.closed[neighbor]) continue;
+        const cost = current + this.stepCosts[i];
+        // Do not enqueue or expose a fringe beyond the requested path cost.
+        if (cost > maxDistance || cost >= this.cost[neighbor]) continue;
+        this.cost[neighbor] = cost;
+        this.heap.put(neighbor, cost);
       }
     }
-    field.buildDirections();
+    field.buildDirections(this.flowCells, flowCount, this.connections);
     return field;
   }
 }
@@ -411,40 +436,41 @@ export class FlowField implements IFlowField {
     this.goalIndex.fill(-1);
   }
 
-  buildDirections(): void {
-    for (let z = 0; z < this.rows; z++) {
-      for (let x = 0; x < this.cols; x++) {
-        const id = z * this.cols + x;
-        if (!Number.isFinite(this.distance[id])) continue;
-        const goal = this.goalIndex[id];
-        let vx = 0;
-        let vz = 0;
-        if (goal >= 0) {
-          vx = this.goals[goal].x - (this.minX + (x + 0.5) * this.cellSize);
-          vz = this.goals[goal].z - (this.minZ + (z + 0.5) * this.cellSize);
-        } else {
-          let best = this.distance[id];
-          for (let dz = -1; dz <= 1; dz++) {
-            const nz = z + dz;
-            if (nz < 0 || nz >= this.rows) continue;
-            for (let dx = -1; dx <= 1; dx++) {
-              const nx = x + dx;
-              if ((dx === 0 && dz === 0) || nx < 0 || nx >= this.cols) continue;
-              if (dx !== 0 && dz !== 0 && (!this.walkable[z * this.cols + nx] || !this.walkable[nz * this.cols + x])) continue;
-              const distance = this.distance[nz * this.cols + nx];
-              if (distance < best) {
-                best = distance;
-                vx = dx;
-                vz = dz;
-              }
-            }
+  buildDirections(cells?: Int32Array, count: number = cells?.length ?? this.distance.length,
+      connections?: Uint8Array): void {
+    // Bounded builds visit a fraction of the world; skip scanning every raster row.
+    for (let i = 0; i < count; i++) {
+      const id = cells ? cells[i] : i;
+      if (!Number.isFinite(this.distance[id])) continue;
+      const goal = this.goalIndex[id];
+      let vx = 0;
+      let vz = 0;
+      if (goal >= 0) {
+        vx = this.goals[goal].x - (this.minX + (id % this.cols + 0.5) * this.cellSize);
+        vz = this.goals[goal].z - (this.minZ + (Math.floor(id / this.cols) + 0.5) * this.cellSize);
+      } else {
+        let best = this.distance[id];
+        const mask = connections ? connections[id] : 255;
+        for (let j = 0; j < 8; j++) {
+          if (!(mask & (1 << j))) continue;
+          const dx = STEP_X[j], dz = STEP_Z[j];
+          if (!connections) {
+            const x = id % this.cols, z = Math.floor(id / this.cols);
+            const nx = x + dx, nz = z + dz;
+            if (nx < 0 || nz < 0 || nx >= this.cols || nz >= this.rows) continue;
+            if (dx && dz && (!this.walkable[z * this.cols + nx] || !this.walkable[nz * this.cols + x])) continue;
+          }
+          const distance = this.distance[id + dz * this.cols + dx];
+          if (distance < best) {
+            best = distance; vx = dx; vz = dz;
           }
         }
-        const length = Math.hypot(vx, vz);
-        if (length > 0) {
-          this.directionX[id] = vx / length;
-          this.directionZ[id] = vz / length;
-        }
+      }
+      // Non-goal directions are grid steps, so their lengths are known exactly.
+      const length = goal >= 0 ? Math.hypot(vx, vz) : vx !== 0 && vz !== 0 ? Math.SQRT2 : 1;
+      if (length > 0) {
+        this.directionX[id] = vx / length;
+        this.directionZ[id] = vz / length;
       }
     }
   }

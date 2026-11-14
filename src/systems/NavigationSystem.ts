@@ -92,7 +92,8 @@ export function updateNavigation(ctx: SimContext, dt: number, _input: SimInput):
   const versionChanged = p.version !== ctx.navGrid.version || p.grid !== grid;
   if (!ctx.nav.followField || versionChanged ||
       (distSq(ctx.state.leader.pos, p.followPos) > 4 && p.elapsed - p.followAt >= interval - 1e-9)) {
-    ctx.nav.followField = grid.buildFlowField([ctx.state.leader.pos], ctx.nav.followField ?? undefined);
+    ctx.nav.followField = grid.buildFlowField([ctx.state.leader.pos], ctx.nav.followField ?? undefined,
+      BALANCE.nav.flowFieldMaxDistance);
     p.followPos.x = ctx.state.leader.pos.x; p.followPos.z = ctx.state.leader.pos.z; p.followAt = p.elapsed;
   }
   const order = ctx.state.order;
@@ -129,6 +130,9 @@ function planAttack(ctx: SimContext, p: Planning, plan: AttackPlan, target: Targ
   if (!(changed || versionChanged || !plan.attackField || drift)) return;
   let effective: TargetRef = target;
   let field: IFlowField | null = plan.attackField;
+  let gatePlanned = false;
+  const maxDistance = Math.max(BALANCE.nav.flowFieldMaxDistance,
+    Math.sqrt(distSq(ctx.state.leader.pos, targetPos)) + 60);
   if (target.kind === 'guard') {
     const id = target.id;
     const guard = ctx.state.guards.find(g => g.id === id)!;
@@ -136,16 +140,24 @@ function planAttack(ctx: SimContext, p: Planning, plan: AttackPlan, target: Targ
     if (shelter && !shelter.destroyed) {
       effective = { kind: 'structure', id: shelter.id };
     } else {
-      plan.guardField = grid.buildFlowField(guardGoals(ctx, guard), plan.guardField ?? undefined);
+      plan.guardField = grid.buildFlowField(guardGoals(ctx, guard), plan.guardField ?? undefined, maxDistance);
       field = plan.guardField;
       if (!ctx.state.gate.destroyed && field.distanceAt(ctx.state.leader.pos) === Infinity) {
         // Both sides must connect to their respective gate approaches: an unrelated
         // inaccessible enclosure must never redirect an order to the gate.
-        const outsideReachable = ctx.layout.checkpoint.gateApproachOutside.some(g =>
-          ctx.nav.followField!.distanceAt(g) < Infinity);
         const guardField = field;
         const insideReachable = ctx.layout.checkpoint.gateApproachInside.some(g => guardField.distanceAt(g) < Infinity);
-        if (outsideReachable && insideReachable) effective = { kind: 'gate' };
+        if (insideReachable) {
+          // The short follow field may not reach a distant gate. Test access using
+          // the explicit order's larger bound, retaining the field if redirected.
+          const reuse = plan.attackField === plan.guardField ? undefined : plan.attackField ?? undefined;
+          const gateField = grid.buildFlowField(ctx.layout.checkpoint.gateApproachOutside, reuse, maxDistance);
+          if (gateField.distanceAt(ctx.state.leader.pos) < Infinity) {
+            effective = { kind: 'gate' };
+            field = gateField;
+            gatePlanned = true;
+          }
+        }
       }
     }
   }
@@ -153,12 +165,12 @@ function planAttack(ctx: SimContext, p: Planning, plan: AttackPlan, target: Targ
     const id = effective.id;
     const def = ctx.layout.structures.find(d => d.id === id)!;
     field = grid.buildFlowField(def.approachOutside,
-      plan.attackField === plan.guardField ? undefined : plan.attackField ?? undefined);
+      plan.attackField === plan.guardField ? undefined : plan.attackField ?? undefined, maxDistance);
   }
-  if (effective.kind === 'gate' && (target.kind !== 'gate' || changed || versionChanged || !field)) {
+  if (effective.kind === 'gate' && !gatePlanned && (target.kind !== 'gate' || changed || versionChanged || !field)) {
     // Never reuse the guard's reachability field as gate storage.
     const reuse = plan.attackField === plan.guardField ? undefined : plan.attackField ?? undefined;
-    field = grid.buildFlowField(ctx.layout.checkpoint.gateApproachOutside, reuse);
+    field = grid.buildFlowField(ctx.layout.checkpoint.gateApproachOutside, reuse, maxDistance);
   }
   plan.effectiveTarget = effective; plan.attackField = field;
   plan.orderKey = orderKey;

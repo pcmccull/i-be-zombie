@@ -225,6 +225,38 @@ describe('FlowField', () => {
     expect(other.buildFlowField([{ x: 10, z: 10 }], field)).not.toBe(field);
   });
 
+  it('includes the exact distance limit, excludes the next step, and handles zero and fractional bounds', () => {
+    const nav = new NavigationGrid(new CollisionWorld(bounds, []), 1, 0.4);
+    const goal = { x: 0.5, z: 0.5 };
+    const field = nav.buildFlowField([goal], undefined, 2);
+    const out = { x: 9, z: 9 };
+    expect(field.distanceAt({ x: 2.5, z: 0.5 })).toBe(2);
+    expect(field.sample({ x: 2.5, z: 0.5 }, out)).toBe(true);
+    expect(field.distanceAt({ x: 2.5, z: 1.5 })).toBe(Infinity);
+    expect(field.sample({ x: 2.5, z: 1.5 }, out)).toBe(false);
+    expect(out).toEqual({ x: 0, z: 0 });
+    nav.buildFlowField([goal], field, Math.SQRT2 - 0.01);
+    expect(field.distanceAt({ x: 1.5, z: 0.5 })).toBe(1);
+    expect(field.distanceAt({ x: 1.5, z: 1.5 })).toBe(Infinity);
+    nav.buildFlowField([goal], field, 0);
+    expect(field.distanceAt(goal)).toBe(0);
+    expect(field.distanceAt({ x: 1.5, z: 0.5 })).toBe(Infinity);
+    expect(field.sample(goal, out)).toBe(true);
+    expect(out).toEqual({ x: 0, z: 0 });
+    expect(() => nav.buildFlowField([goal], field, -1)).toThrow(RangeError);
+    expect(() => nav.buildFlowField([goal], field, NaN)).toThrow(RangeError);
+  });
+
+  it('bounds path cost around obstacles rather than straight-line distance', () => {
+    const nav = new NavigationGrid(new CollisionWorld(bounds, [box(0, -10, 1, 10)]), 1, 0.4);
+    const goal = { x: -2.5, z: 0.5 }, acrossWall = { x: 2.5, z: 0.5 };
+    const full = nav.buildFlowField([goal]);
+    expect(full.distanceAt(acrossWall)).toBeGreaterThan(20);
+    const field = nav.buildFlowField([goal], undefined, 10);
+    expect(field.distanceAt(acrossWall)).toBe(Infinity);
+    expect(field.distanceAt({ x: -5.5, z: 0.5 })).toBe(3);
+  });
+
   it('returns false and zero for empty goals, deep obstacles and points outside the grid', () => {
     const nav = new NavigationGrid(new CollisionWorld(bounds, [box(-8, -8, 8, 8)]));
     const field = nav.buildFlowField([{ x: -15, z: -15 }]);
