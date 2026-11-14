@@ -24,6 +24,9 @@ export class AudioSystem {
   private lastDeathTime = -1;
   private lastAlertTime = -1;
   private lastScreamTime = -1;
+  private lastSwingTime = -1;
+  private lastDeniedTime = -1;
+  private lastDiscoverTime = -1;
 
   // Previous momentum tier so the tier-up drum plays only on increase
   private prevMomentumTier: MomentumTier = 'dormant';
@@ -220,6 +223,60 @@ export class AudioSystem {
           case 'defeat':
           case 'leaderDied': {
             this.playDefeatSting(now);
+            break;
+          }
+          case 'attackSwing': {
+            if (now - this.lastSwingTime >= 0.08) {
+              this.lastSwingTime = now;
+              this.playAttackSwing(now, ev.combo ?? 0, ev.hit);
+            }
+            break;
+          }
+          case 'abilityUsed': {
+            this.playAbilityUsed(now, ev.abilityId);
+            break;
+          }
+          case 'abilityDenied': {
+            if (now - this.lastDeniedTime >= 0.15) {
+              this.lastDeniedTime = now;
+              this.playDeniedBlip(now);
+            }
+            break;
+          }
+          case 'abilityUnlocked': {
+            this.playAbilityUnlocked(now);
+            break;
+          }
+          case 'strongholdCaptured': {
+            this.playStrongholdSting(now);
+            break;
+          }
+          case 'objectiveComplete': {
+            this.playObjectiveDing(now);
+            break;
+          }
+          case 'districtDiscovered': {
+            if (now - this.lastDiscoverTime >= 0.5) {
+              this.lastDiscoverTime = now;
+              this.playDiscoveryChime(now);
+            }
+            break;
+          }
+          case 'reinforcements': {
+            this.playSiren(now);
+            break;
+          }
+          case 'leaderRespawned': {
+            this.playRespawnRise(now);
+            break;
+          }
+          case 'nestActivated': {
+            this.playNestActivated(now);
+            break;
+          }
+          case 'bruteEvolved': {
+            this.playTone('sawtooth', 70, 42, now, 0.4, 0.34);
+            this.playNoiseBurst(now, 0.25, 'lowpass', 500, 90, 0.3);
             break;
           }
           default:
@@ -480,5 +537,79 @@ export class AudioSystem {
     for (let i = 0; i < notes.length; i++) {
       this.playTone('sawtooth', notes[i], notes[i] * 0.96, t + i * 0.18, 0.48, 0.28);
     }
+  }
+  private playAttackSwing(t: number, combo: number, hit: boolean): void {
+    if (combo <= 0) {
+      // Bite: short wet snap
+      this.playNoiseBurst(t, 0.09, 'bandpass', 900, 380, 0.22);
+      this.playTone('sawtooth', 190, 90, t, 0.1, 0.2);
+    } else {
+      // Claw: rising swish, heavier on the combo finisher
+      this.playNoiseBurst(t, 0.16, 'highpass', 500, 2600, 0.26);
+      this.playTone('triangle', 420, 240, t, 0.12, 0.14);
+      if (combo >= 3) this.playTone('sawtooth', 120, 55, t + 0.04, 0.22, 0.3);
+    }
+    if (hit) this.playTone('square', 160, 70, t + 0.03, 0.07, 0.14);
+  }
+
+  private playAbilityUsed(t: number, id: string): void {
+    if (id === 'horde_frenzy') {
+      this.playRushRoar(t);
+      this.playTone('sawtooth', 70, 160, t, 0.5, 0.26);
+    } else if (id === 'brute_evolution') {
+      this.playTone('sawtooth', 62, 38, t, 0.55, 0.38);
+      this.playTone('triangle', 96, 44, t + 0.05, 0.45, 0.3);
+      this.playNoiseBurst(t, 0.4, 'lowpass', 420, 80, 0.32);
+    } else {
+      this.playTone('triangle', 330, 520, t, 0.12, 0.2);
+    }
+  }
+
+  private playDeniedBlip(t: number): void {
+    this.playTone('sine', 240, 170, t, 0.11, 0.16);
+  }
+
+  private playAbilityUnlocked(t: number): void {
+    const notes = [392.0, 493.88, 587.33, 783.99];
+    for (let i = 0; i < notes.length; i++) {
+      this.playTone('triangle', notes[i], notes[i] * 1.005, t + 0.4 + i * 0.09, 0.3, 0.24);
+    }
+  }
+
+  private playStrongholdSting(t: number): void {
+    const notes = [196.0, 261.63, 329.63, 392.0, 523.25];
+    for (let i = 0; i < notes.length; i++) {
+      this.playTone('triangle', notes[i], notes[i] * 1.01, t + i * 0.11, 0.5, 0.3);
+      this.playTone('sawtooth', notes[i] / 2, notes[i] / 2, t + i * 0.11, 0.4, 0.1);
+    }
+    this.playNoiseBurst(t, 0.5, 'lowpass', 1200, 150, 0.3);
+  }
+
+  private playObjectiveDing(t: number): void {
+    this.playTone('sine', 660, 662, t, 0.22, 0.26);
+    this.playTone('sine', 990, 992, t + 0.1, 0.3, 0.24);
+  }
+
+  private playDiscoveryChime(t: number): void {
+    this.playTone('sine', 523.25, 524, t, 0.5, 0.14);
+    this.playTone('sine', 783.99, 785, t + 0.12, 0.6, 0.12);
+  }
+
+  private playSiren(t: number): void {
+    for (let i = 0; i < 4; i++) {
+      this.playTone('square', 620, 880, t + i * 0.36, 0.34, 0.12);
+    }
+  }
+
+  private playRespawnRise(t: number): void {
+    this.playTone('sine', 80, 320, t, 0.7, 0.34);
+    this.playTone('triangle', 160, 640, t + 0.05, 0.6, 0.2);
+    this.playNoiseBurst(t, 0.6, 'bandpass', 200, 1400, 0.3);
+  }
+
+  private playNestActivated(t: number): void {
+    this.playTone('sine', 110, 150, t, 0.6, 0.36);
+    this.playTone('triangle', 330, 332, t + 0.15, 0.4, 0.2);
+    this.playTone('triangle', 495, 497, t + 0.3, 0.5, 0.2);
   }
 }

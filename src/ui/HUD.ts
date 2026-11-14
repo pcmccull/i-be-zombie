@@ -1,6 +1,10 @@
 import './hud.css';
+import './hudOpenWorld.css';
 import { BALANCE } from '../config/balance';
+import type { SimContext } from '../core/contracts';
 import type {
+  AbilityId,
+  DistrictLayout,
   GameEvent,
   GamePhase,
   GameState,
@@ -8,7 +12,26 @@ import type {
   StructureKind,
   StructureState,
   TargetRef,
+  Vec2,
 } from '../core/types';
+import { objectiveStatus } from '../systems/ConquestSystem';
+import { DebugOverlay } from './DebugOverlay';
+import { Minimap } from './Minimap';
+import { NestPanel } from './NestPanel';
+import { PauseMenu, type PauseCallbacks } from './PauseMenu';
+import { WorldMap } from './WorldMap';
+import {
+  abilitySlotView,
+  bruteCount,
+  districtName,
+  followerCap,
+  nearbyEquipNest,
+  selectObjectiveStronghold,
+  strongholdName,
+  toastForEvent,
+  type ToastSpec,
+} from './uiHelpers';
+import { ABILITIES } from '../content/abilities';
 
 export interface HudExtras {
   fps: number;
@@ -16,6 +39,12 @@ export interface HudExtras {
   showDebug: boolean;
   hoverLabel: string | null;
   pointerLocked?: boolean;
+  /** Active map waypoint (Game owns it); drawn on minimap + world map. */
+  waypoint?: Vec2 | null;
+  /** Last frame time in ms (F3 overlay). */
+  frameMs?: number;
+  /** Number of render chunks currently loaded (F3 overlay). */
+  loadedChunks?: number;
 }
 
 const TIER_RANK: Record<MomentumTier, number> = {
@@ -38,6 +67,10 @@ export function structureHudLabel(kind: StructureKind): string {
       return 'ALLEY GATE';
     case 'storeDoor':
       return 'STORE DOOR';
+    case 'stationDoor':
+      return 'STATION DOOR';
+    case 'securityShutter':
+      return 'SECURITY SHUTTER';
     case 'penGate':
     default:
       return 'PEN GATE';
@@ -52,10 +85,36 @@ function structureBarTitle(kind: StructureKind): string {
       return 'Alley Gate';
     case 'storeDoor':
       return 'Store Door';
+    case 'stationDoor':
+      return 'Station Door';
+    case 'securityShutter':
+      return 'Security Shutter';
     case 'penGate':
     default:
       return 'Pen Gate';
   }
+}
+
+function helpRows(openWorld: boolean): string {
+  const rows: [string, string][] = openWorld
+    ? [
+        ['W A S D / Arrows', 'Move relative to camera'],
+        ['Shift', 'Sprint while stamina allows'],
+        ['Left-Click', 'Alpha attack: bite (3-hit claw combo with Alpha Claws). First click captures the mouse'],
+        ['Right-Click target', 'Horde attack order (Ctrl+RMB adds / removes a split target)'],
+        ['Right-Click ground', 'Horde move order (marker; reverts to follow)'],
+        ['Space', 'Rally / regroup: pull and recruit nearby walkers'],
+        ['G', 'Recall: the whole horde follows you'],
+        ['Q E R F', 'Activate the mutation in that slot (Horde Frenzy, Brute Evolution...)'],
+        ['Nest', 'Stand near an active nest to change your slot loadout'],
+        ['M', 'World map: click to set / clear a waypoint'],
+        ['Esc', 'Pause menu: save, reset save, sound'],
+        ['Mouse (captured)', 'Orbit & tilt camera; C recenters, V look back, Z / X turn, wheel zooms'],
+        ['Tab', 'Toggle this controls panel'],
+        ['F3', 'Toggle debug overlay'],
+      ]
+    : [];
+  return rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('');
 }
 
 function formatTime(seconds: number): string {
@@ -74,7 +133,22 @@ export class HUD {
   private readonly hpFillEl: HTMLDivElement;
   private readonly staminaValueEl: HTMLSpanElement;
   private readonly staminaFillEl: HTMLDivElement;
-  private readonly debugBoxEl: HTMLDivElement;
+  private readonly bioValueEl: HTMLSpanElement;
+  private readonly trackerEl: HTMLDivElement;
+  private readonly bruteEl: HTMLDivElement;
+  private readonly slotsEl: HTMLDivElement;
+  private readonly slotEls: {
+    root: HTMLDivElement;
+    name: HTMLSpanElement;
+    key: HTMLSpanElement;
+    state: HTMLDivElement;
+    sweep: HTMLDivElement;
+  }[] = [];
+  private readonly savedTickEl: HTMLDivElement;
+  private readonly respawnOverlayEl: HTMLDivElement;
+  private readonly respawnCountEl: HTMLDivElement;
+  private readonly respawnSubEl: HTMLDivElement;
+  private readonly debugOverlay: DebugOverlay;
 
   // Top-center elements
   private readonly objectiveSubEl: HTMLDivElement;
@@ -82,7 +156,7 @@ export class HUD {
   private readonly gateLabelEl: HTMLSpanElement;
   private readonly gateValueEl: HTMLSpanElement;
   private readonly gateFillEl: HTMLDivElement;
-  private readonly toastEl: HTMLDivElement;
+  private readonly toastStackEl: HTMLDivElement;
 
   // Top-right elements
   private readonly hordeCountEl: HTMLDivElement;
@@ -116,6 +190,7 @@ export class HUD {
 
   // Help & Overlays
   private readonly helpPanelEl: HTMLDivElement;
+  private readonly helpTableBodyEl: HTMLElement;
   private readonly introOverlayEl: HTMLDivElement;
   private readonly victoryOverlayEl: HTMLDivElement;
   private readonly victoryStatsEl: HTMLDivElement;
@@ -126,7 +201,28 @@ export class HUD {
 
   private _introVisible = true;
   private helpVisible = false;
-  private toastTimeoutId: number | null = null;
+  private readonly toastTimers = new Set<number>();
+  private savedTimer: number | null = null;
+
+  // Open-world state (null layout = legacy single-district mode)
+  private layout: DistrictLayout | null = null;
+  private minimap: Minimap | null = null;
+  private worldMap: WorldMap | null = null;
+  private pauseMenu: PauseMenu | null = null;
+  private nestPanel: NestPanel | null = null;
+  private readonly waypointCallbacks: ((p: Vec2 | null) => void)[] = [];
+  private readonly equipCallbacks: ((slot: number, ability: AbilityId | null) => void)[] = [];
+  private pendingPauseCallbacks: PauseCallbacks = {};
+  private muted = false;
+  private readonly deniedUntilMs: number[] = [0, 0, 0, 0];
+  private readonly prevSlotSig: string[] = ['', '', '', ''];
+  private readonly prevSlotDenied: boolean[] = [false, false, false, false];
+  private prevBioText = '';
+  private prevBruteText = '';
+  private prevTrackerSig = '';
+  private lastTrackerMs = -1e9;
+  private prevRespawnText = '';
+  private prevRespawnVisible = false;
   private readonly restartCallbacks: (() => void)[] = [];
   private readonly introDismissCallbacks: (() => void)[] = [];
 
@@ -174,8 +270,6 @@ export class HUD {
   private prevRushState = '';
   private prevRushPct = -1;
   private prevRushMode = '';
-  private prevDebugVisible = false;
-  private prevDebugText = '';
   private prevPhase: GamePhase = 'playing';
 
   private readonly onIntroClick = (): void => {
@@ -217,12 +311,18 @@ export class HUD {
             <div class="ibz-bar-fill ibz-stamina-fill" data-ref="stamFill"></div>
           </div>
         </div>
+        <div class="ibz-bar-row ibz-ow-only">
+          <div class="ibz-bar-header">
+            <span class="ibz-bar-label">Biomass</span>
+            <span class="ibz-bar-value" data-ref="bioVal">0</span>
+          </div>
+        </div>
       </div>
 
-      <div class="ibz-debug-box" data-ref="debugBox"></div>
+      <div class="ibz-panel ibz-ow-only ibz-tracker" data-ref="tracker"></div>
 
       <div class="ibz-top-center">
-        <div class="ibz-panel ibz-objective-card">
+        <div class="ibz-panel ibz-objective-card ibz-legacy-only">
           <div class="ibz-objective-title">CAPTURE THE CHECKPOINT</div>
           <div class="ibz-objective-sub" data-ref="objSub">Free the bus horde</div>
         </div>
@@ -235,7 +335,7 @@ export class HUD {
             <div class="ibz-bar-fill ibz-gate-fill" data-ref="gateFill"></div>
           </div>
         </div>
-        <div class="ibz-toast" data-ref="toast"></div>
+        <div class="ibz-toast-stack" data-ref="toastStack"></div>
       </div>
 
       <div class="ibz-panel ibz-top-right">
@@ -243,6 +343,7 @@ export class HUD {
           <span class="ibz-horde-floater" data-ref="hordeFloater">+1</span>
           <div class="ibz-horde-count" data-ref="hordeCount">HORDE 5 / 100</div>
         </div>
+        <div class="ibz-brutes ibz-ow-only" data-ref="brutes"></div>
         <div class="ibz-cap-flash" data-ref="capFlash">HORDE FULL</div>
         <div class="ibz-momentum-box" data-ref="momBox">
           <div class="ibz-momentum-header">
@@ -253,7 +354,7 @@ export class HUD {
             <div class="ibz-momentum-fill is-dormant" data-ref="momFill"></div>
           </div>
         </div>
-        <div class="ibz-guards-count" data-ref="guardsCount">GUARDS 8 / 8</div>
+        <div class="ibz-guards-count ibz-legacy-only" data-ref="guardsCount">GUARDS 8 / 8</div>
       </div>
 
       <div class="ibz-hover-label" data-ref="hoverLabel"></div>
@@ -268,7 +369,7 @@ export class HUD {
       </div>
 
       <div class="ibz-bottom-center">
-        <div class="ibz-panel ibz-ability-card" data-ref="rallyCard">
+        <div class="ibz-panel ibz-ability-card ibz-legacy-only" data-ref="rallyCard">
           <div class="ibz-ability-top">
             <span class="ibz-key-badge">E</span>
             <span class="ibz-ability-name">RALLY</span>
@@ -277,7 +378,7 @@ export class HUD {
           <div class="ibz-ability-cd-fill" data-ref="rallyFill"></div>
         </div>
 
-        <div class="ibz-panel ibz-ability-card" data-ref="rushCard">
+        <div class="ibz-panel ibz-ability-card ibz-legacy-only" data-ref="rushCard">
           <div class="ibz-ability-top">
             <span class="ibz-key-badge">SPACE</span>
             <span class="ibz-ability-name">RUSH</span>
@@ -285,7 +386,11 @@ export class HUD {
           <div class="ibz-ability-state" data-ref="rushState">READY</div>
           <div class="ibz-ability-cd-fill" data-ref="rushFill"></div>
         </div>
+
+        <div class="ibz-slots ibz-ow-only" data-ref="slots"></div>
       </div>
+
+      <div class="ibz-saved-tick" data-ref="savedTick">SAVED</div>
 
       <div class="ibz-panel ibz-bottom-right" data-ref="bottomRight">
         Click to capture mouse &middot; WASD move &middot; Shift sprint &middot; LMB select/unselect targets &middot; RMB follow &middot; Drag/Z/X look &middot; V look back &middot; Tab help
@@ -340,6 +445,14 @@ export class HUD {
         </div>
       </div>
 
+      <div class="ibz-overlay ibz-respawn" data-ref="respawnOverlay">
+        <div class="ibz-modal is-defeat">
+          <h1 class="ibz-modal-title">THE ALPHA FALLS</h1>
+          <p class="ibz-modal-pitch" data-ref="respawnSub">The horde remembers. You will rise again at your nest.</p>
+          <div class="ibz-respawn-count" data-ref="respawnCount">4</div>
+        </div>
+      </div>
+
       <div class="ibz-overlay" data-ref="victoryOverlay">
         <div class="ibz-modal">
           <h1 class="ibz-modal-title">CHECKPOINT OVERRUN</h1>
@@ -370,13 +483,20 @@ export class HUD {
     this.hpFillEl = q('hpFill');
     this.staminaValueEl = q('stamVal');
     this.staminaFillEl = q('stamFill');
-    this.debugBoxEl = q('debugBox');
+    this.bioValueEl = q('bioVal');
+    this.trackerEl = q('tracker');
+    this.bruteEl = q('brutes');
+    this.slotsEl = q('slots');
+    this.savedTickEl = q('savedTick');
+    this.respawnOverlayEl = q('respawnOverlay');
+    this.respawnCountEl = q('respawnCount');
+    this.respawnSubEl = q('respawnSub');
     this.objectiveSubEl = q('objSub');
     this.gateBarEl = q('gateBar');
     this.gateLabelEl = q('gateLabel');
     this.gateValueEl = q('gateVal');
     this.gateFillEl = q('gateFill');
-    this.toastEl = q('toast');
+    this.toastStackEl = q('toastStack');
     this.hordeCountEl = q('hordeCount');
     this.hordeFloaterEl = q('hordeFloater');
     this.capFlashEl = q('capFlash');
@@ -398,6 +518,7 @@ export class HUD {
     this.rushFillEl = q('rushFill');
     this.bottomRightEl = q('bottomRight');
     this.helpPanelEl = q('helpPanel');
+    this.helpTableBodyEl = this.helpPanelEl.querySelector('tbody') as HTMLElement;
     this.introOverlayEl = q('introOverlay');
     this.victoryOverlayEl = q('victoryOverlay');
     this.victoryStatsEl = q('victoryStats');
@@ -409,6 +530,177 @@ export class HUD {
     this.introOverlayEl.addEventListener('pointerdown', this.onIntroClick);
     this.victoryBtn.addEventListener('click', this.onRestartClick);
     this.defeatBtn.addEventListener('click', this.onRestartClick);
+
+    const keys = ['Q', 'E', 'R', 'F'];
+    for (let i = 0; i < 4; i++) {
+      const el = document.createElement('div');
+      el.className = 'ibz-panel ibz-slot is-empty';
+      el.innerHTML = `<div class="ibz-slot-sweep"></div>
+        <div class="ibz-slot-top"><span class="ibz-key-badge">${keys[i]}</span><span class="ibz-slot-name">Empty</span></div>
+        <div class="ibz-slot-state">EQUIP AT A NEST</div>`;
+      this.slotsEl.appendChild(el);
+      this.slotEls.push({
+        root: el,
+        name: el.querySelector('.ibz-slot-name') as HTMLSpanElement,
+        key: el.querySelector('.ibz-key-badge') as HTMLSpanElement,
+        state: el.querySelector('.ibz-slot-state') as HTMLDivElement,
+        sweep: el.querySelector('.ibz-slot-sweep') as HTMLDivElement,
+      });
+    }
+    this.debugOverlay = new DebugOverlay(this.container);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Open-world API (T013). All optional: without setWorld() the HUD behaves as the legacy single-district HUD.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Switch the HUD to open-world mode and (re)bind it to the world layout. Call once after the Simulation exists
+   * and again after any restart/reset-with-new-simulation (layout object may be the same; static map layers are invalidated).
+   * `firstRun` = no save was loaded: the intro card shows the full controls onboarding.
+   */
+  setWorld(layout: DistrictLayout, opts: { firstRun?: boolean } = {}): void {
+    this.layout = layout;
+    this.container.classList.add('is-open-world');
+    if (!this.minimap) {
+      this.minimap = new Minimap(this.container, layout);
+      this.worldMap = new WorldMap(this.container, layout);
+      this.worldMap.onWaypoint((p) => {
+        for (const cb of this.waypointCallbacks) cb(p);
+      });
+      this.nestPanel = new NestPanel(this.container);
+      this.nestPanel.onEquip((slot, ability) => {
+        for (const cb of this.equipCallbacks) cb(slot, ability);
+      });
+      this.pauseMenu = new PauseMenu(this.container);
+      this.pauseMenu.setCallbacks(this.pendingPauseCallbacks);
+      this.pauseMenu.setMuted(this.muted);
+    } else {
+      this.minimap.setLayout(layout);
+      this.worldMap?.setLayout(layout);
+    }
+    this.prevTrackerSig = '';
+    this.lastTrackerMs = -1e9;
+    this.prevPointerLocked = null;
+    this.setIntroContent(opts.firstRun !== false);
+    this.helpTableBodyEl.innerHTML = helpRows(true);
+  }
+
+  get isOpenWorld(): boolean {
+    return this.layout !== null;
+  }
+
+  /** Waypoint set/cleared from the world map (null = clear). Game stores it and passes it back via HudExtras.waypoint. */
+  onWaypoint(cb: (p: Vec2 | null) => void): void {
+    this.waypointCallbacks.push(cb);
+  }
+
+  /** Nest panel loadout change request. Game forwards it as SimInput.equip = { slot, ability } on the next step. */
+  onEquip(cb: (slot: number, ability: AbilityId | null) => void): void {
+    this.equipCallbacks.push(cb);
+  }
+
+  /** Pause menu button callbacks (Continue / Save / Reset Save [confirmed] / mute toggle). Safe to call before setWorld. */
+  setPauseCallbacks(cb: PauseCallbacks): void {
+    this.pendingPauseCallbacks = cb;
+    this.pauseMenu?.setCallbacks(cb);
+  }
+
+  get isPauseVisible(): boolean {
+    return this.pauseMenu?.visible ?? false;
+  }
+
+  showPause(): void {
+    this.worldMap?.hide();
+    this.pauseMenu?.show();
+  }
+
+  hidePause(): void {
+    this.pauseMenu?.hide();
+  }
+
+  togglePause(): void {
+    if (this.isPauseVisible) this.hidePause();
+    else this.showPause();
+  }
+
+  /** Brief message inside the pause menu ("Saved", "Save failed"...). */
+  notifyPause(msg: string): void {
+    this.pauseMenu?.notify(msg);
+  }
+
+  /** Keep the pause menu's mute button label in sync with AudioSystem.muted. */
+  setMuted(m: boolean): void {
+    this.muted = m;
+    this.pauseMenu?.setMuted(m);
+  }
+
+  get isMapVisible(): boolean {
+    return this.worldMap?.visible ?? false;
+  }
+
+  showMap(): void {
+    if (this.isPauseVisible) return;
+    this.worldMap?.show();
+  }
+
+  hideMap(): void {
+    this.worldMap?.hide();
+  }
+
+  toggleMap(): void {
+    if (this.isMapVisible) this.hideMap();
+    else this.showMap();
+  }
+
+  /** True while the nest loadout panel is on screen (leader near an active nest). */
+  get isNestPanelVisible(): boolean {
+    return this.nestPanel?.visible ?? false;
+  }
+
+  /** Forward a key (event.key) here while isNestPanelVisible: 1-4 select slot, [ ] cycle. Returns true if consumed. */
+  handleNestKey(key: string): boolean {
+    return this.nestPanel?.handleKey(key) ?? false;
+  }
+
+  /** True when any interactive overlay (pause menu, world map, intro) wants the mouse cursor. */
+  get isModalOpen(): boolean {
+    return this.isPauseVisible || this.isMapVisible || this._introVisible;
+  }
+
+  /** Small "SAVED" tick (also shown automatically on the `autosave` event). */
+  showSaved(): void {
+    this.savedTickEl.classList.add('is-visible');
+    if (this.savedTimer !== null) window.clearTimeout(this.savedTimer);
+    this.savedTimer = window.setTimeout(() => {
+      this.savedTickEl.classList.remove('is-visible');
+      this.savedTimer = null;
+    }, 1400);
+  }
+
+  private setIntroContent(firstRun: boolean): void {
+    const modal = this.introOverlayEl.querySelector('.ibz-modal');
+    if (!modal) return;
+    modal.innerHTML = firstRun
+      ? `<h1 class="ibz-modal-title">I BE ZOMBIE</h1>
+          <p class="ibz-modal-pitch">
+            You are the Alpha. Infect the suburbs, lead a horde of up to ${BALANCE.openWorld.maxFollowers},
+            conquer four human strongholds and take over the city.
+          </p>
+          <div class="ibz-intro-keys">
+            <div><strong>WASD / Shift</strong> Move / sprint</div>
+            <div><strong>LMB</strong> Bite &amp; claw (Alpha attack)</div>
+            <div><strong>RMB</strong> Horde attack / move order</div>
+            <div><strong>Space</strong> Rally the horde</div>
+            <div><strong>Q E R F</strong> Mutation slots</div>
+            <div><strong>M</strong> World map</div>
+            <div><strong>G</strong> Recall horde to follow</div>
+            <div><strong>Esc</strong> Pause &amp; save</div>
+          </div>
+          <div class="ibz-begin-prompt">Move or click to begin</div>`
+      : `<h1 class="ibz-modal-title">I BE ZOMBIE</h1>
+          <p class="ibz-modal-pitch">Your conquest continues. The horde is waiting at the nest.</p>
+          <div class="ibz-begin-prompt">Move or click to continue</div>`;
   }
 
   get introVisible(): boolean {
@@ -462,9 +754,15 @@ export class HUD {
     this.momTierEl.classList.remove('is-tier-up');
     this.prevMomGainActive = false;
     this.prevMomTierUpActive = false;
-    this.toastEl.classList.remove('is-visible');
+    this.clearToasts();
     this.helpVisible = false;
     this.helpPanelEl.classList.remove('is-visible');
+    this.prevTrackerSig = '';
+    this.lastTrackerMs = -1e9;
+    this.minimap?.invalidate();
+    this.worldMap?.hide();
+    this.pauseMenu?.hide();
+    for (let i = 0; i < 4; i++) this.deniedUntilMs[i] = 0;
   }
 
   consume(events: readonly GameEvent[]): void {
@@ -482,15 +780,28 @@ export class HUD {
           this.showToast(`ATTACK ORDER: ${this.describeTargetLabel(ev.order.target)}`);
         }
       } else if (ev.type === 'capReached') {
-        this.showToast('HORDE CAPACITY REACHED (100)');
+        this.showToast(`HORDE CAPACITY REACHED (${followerCap(this.layout)})`);
       } else if (ev.type === 'gateDestroyed') {
         this.showToast('CHECKPOINT GATE BREACHED!');
       } else if (ev.type === 'structureDestroyed') {
         this.showToast(`${structureHudLabel(ev.kind)} BREACHED!`);
       } else if (ev.type === 'converted') {
-        this.showToast('HUMAN CONVERTED TO HORDE!');
+        if (!this.layout) this.showToast('HUMAN CONVERTED TO HORDE!');
       } else if (ev.type === 'rushStart') {
         this.showToast('HORDE RUSH ACTIVATED!');
+      } else if (ev.type === 'frenzyStart') {
+        this.showToast('HORDE FRENZY!', 'good');
+      } else if (ev.type === 'bruteEvolved') {
+        this.showToast('A follower evolves into a Brute', 'good');
+      } else if (ev.type === 'autosave') {
+        this.showSaved();
+      } else if (ev.type === 'abilityDenied') {
+        this.flashDenied(ev.abilityId);
+        const t = toastForEvent(ev);
+        if (t) this.pushToast(t);
+      } else if (this.layout && ev.type !== 'momentumGain' && ev.type !== 'momentumTier') {
+        const t = toastForEvent(ev);
+        if (t) this.pushToast(t);
       } else if (ev.type === 'momentumGain') {
         this.momGainFlashUntilMs = nowMs + 420;
       } else if (ev.type === 'momentumTier') {
@@ -502,6 +813,15 @@ export class HUD {
           this.momTierUpUntilMs = nowMs + 650;
         }
       }
+    }
+  }
+
+  private flashDenied(id: AbilityId | null): void {
+    const until = performance.now() + 600;
+    const eq = this.lastState?.progression.equipped;
+    for (let i = 0; i < 4; i++) {
+      const slotId = eq ? (eq[i] ?? null) : null;
+      if (id === null ? slotId === null : slotId === id) this.deniedUntilMs[i] = until;
     }
   }
 
@@ -593,7 +913,7 @@ export class HUD {
       this.hordeFloaterEl.classList.remove('is-visible');
     }
 
-    const hordeText = `HORDE ${state.followerCount} / ${BALANCE.horde.maxFollowers}`;
+    const hordeText = `HORDE ${state.followerCount} / ${followerCap(this.layout)}`;
     if (hordeText !== this.prevHordeText) {
       this.prevHordeText = hordeText;
       this.hordeCountEl.textContent = hordeText;
@@ -695,7 +1015,11 @@ export class HUD {
 
     if (locked !== this.prevPointerLocked) {
       this.prevPointerLocked = locked;
-      this.bottomRightEl.innerHTML = locked
+      this.bottomRightEl.innerHTML = this.layout
+        ? locked
+          ? 'WASD move &middot; LMB attack &middot; RMB horde order &middot; Space rally &middot; QERF mutations &middot; M map &middot; Esc pause'
+          : 'Click to capture mouse &middot; WASD move &middot; LMB attack &middot; RMB horde order &middot; Space rally &middot; QERF mutations &middot; M map &middot; Esc pause'
+        : locked
         ? 'WASD move &middot; Shift sprint &middot; Mouse look &middot; LMB select/unselect targets &middot; RMB follow &middot; V look back &middot; Esc to release mouse &middot; Tab help'
         : 'Click to capture mouse &middot; WASD move &middot; Shift sprint &middot; LMB select/unselect targets &middot; RMB follow &middot; Drag/Z/X look &middot; V look back &middot; Tab help';
     }
@@ -719,78 +1043,96 @@ export class HUD {
       this.orderPillEl.classList.toggle('is-attack', isAttack);
     }
 
+    if (!this.layout) {
     // 6. Bottom-Center Ability Cards (E RALLY & SPACE RUSH)
-    const rallyCd = state.abilities.rallyCooldown;
-    const rallyOnCd = rallyCd > 0.01;
-    const rallyStateText = rallyOnCd ? `${rallyCd.toFixed(1)}s` : 'READY';
-    const rallyPct = rallyOnCd
-      ? Math.max(0, Math.min(100, Math.round((1 - rallyCd / BALANCE.rally.cooldown) * 100)))
-      : 100;
-    if (rallyStateText !== this.prevRallyState) {
-      this.prevRallyState = rallyStateText;
-      this.rallyStateEl.textContent = rallyStateText;
-    }
-    if (rallyPct !== this.prevRallyPct) {
-      this.prevRallyPct = rallyPct;
-      this.rallyFillEl.style.transform = `scaleX(${rallyPct / 100})`;
-    }
-    if (rallyOnCd !== this.prevRallyCd) {
-      this.prevRallyCd = rallyOnCd;
-      this.rallyCardEl.classList.toggle('is-cooldown', rallyOnCd);
+      const rallyCd = state.abilities.rallyCooldown;
+      const rallyOnCd = rallyCd > 0.01;
+      const rallyStateText = rallyOnCd ? `${rallyCd.toFixed(1)}s` : 'READY';
+      const rallyPct = rallyOnCd
+        ? Math.max(0, Math.min(100, Math.round((1 - rallyCd / BALANCE.rally.cooldown) * 100)))
+        : 100;
+      if (rallyStateText !== this.prevRallyState) {
+        this.prevRallyState = rallyStateText;
+        this.rallyStateEl.textContent = rallyStateText;
+      }
+      if (rallyPct !== this.prevRallyPct) {
+        this.prevRallyPct = rallyPct;
+        this.rallyFillEl.style.transform = `scaleX(${rallyPct / 100})`;
+      }
+      if (rallyOnCd !== this.prevRallyCd) {
+        this.prevRallyCd = rallyOnCd;
+        this.rallyCardEl.classList.toggle('is-cooldown', rallyOnCd);
+      }
+
+      const rushActive = state.abilities.rushTimeLeft > 0.01;
+      const rushCd = state.abilities.rushCooldown;
+      let rushMode = 'ready';
+      let rushStateText = 'READY';
+      let rushPct = 100;
+      if (rushActive) {
+        rushMode = 'active';
+        rushStateText = `ACTIVE ${state.abilities.rushTimeLeft.toFixed(1)}s`;
+        rushPct = Math.max(
+          0,
+          Math.min(100, Math.round((state.abilities.rushTimeLeft / BALANCE.rush.duration) * 100)),
+        );
+      } else if (rushCd > 0.01) {
+        rushMode = 'cd';
+        rushStateText = `${rushCd.toFixed(1)}s`;
+        rushPct = Math.max(
+          0,
+          Math.min(100, Math.round((1 - rushCd / BALANCE.rush.cooldown) * 100)),
+        );
+      }
+      if (rushStateText !== this.prevRushState) {
+        this.prevRushState = rushStateText;
+        this.rushStateEl.textContent = rushStateText;
+      }
+      if (rushPct !== this.prevRushPct) {
+        this.prevRushPct = rushPct;
+        this.rushFillEl.style.transform = `scaleX(${rushPct / 100})`;
+      }
+      if (rushMode !== this.prevRushMode) {
+        this.prevRushMode = rushMode;
+        this.rushCardEl.classList.toggle('is-active', rushMode === 'active');
+        this.rushCardEl.classList.toggle('is-cooldown', rushMode === 'cd');
+      }
+
     }
 
-    const rushActive = state.abilities.rushTimeLeft > 0.01;
-    const rushCd = state.abilities.rushCooldown;
-    let rushMode = 'ready';
-    let rushStateText = 'READY';
-    let rushPct = 100;
-    if (rushActive) {
-      rushMode = 'active';
-      rushStateText = `ACTIVE ${state.abilities.rushTimeLeft.toFixed(1)}s`;
-      rushPct = Math.max(
-        0,
-        Math.min(100, Math.round((state.abilities.rushTimeLeft / BALANCE.rush.duration) * 100)),
-      );
-    } else if (rushCd > 0.01) {
-      rushMode = 'cd';
-      rushStateText = `${rushCd.toFixed(1)}s`;
-      rushPct = Math.max(
-        0,
-        Math.min(100, Math.round((1 - rushCd / BALANCE.rush.cooldown) * 100)),
-      );
-    }
-    if (rushStateText !== this.prevRushState) {
-      this.prevRushState = rushStateText;
-      this.rushStateEl.textContent = rushStateText;
-    }
-    if (rushPct !== this.prevRushPct) {
-      this.prevRushPct = rushPct;
-      this.rushFillEl.style.transform = `scaleX(${rushPct / 100})`;
-    }
-    if (rushMode !== this.prevRushMode) {
-      this.prevRushMode = rushMode;
-      this.rushCardEl.classList.toggle('is-active', rushMode === 'active');
-      this.rushCardEl.classList.toggle('is-cooldown', rushMode === 'cd');
-    }
-
-    // 7. F3 Debug Panel
-    if (extras.showDebug !== this.prevDebugVisible) {
-      this.prevDebugVisible = extras.showDebug;
-      this.debugBoxEl.classList.toggle('is-visible', extras.showDebug);
-    }
+    // 7. F3 debug overlay + open-world widgets
+    this.debugOverlay.setVisible(extras.showDebug);
     if (extras.showDebug) {
-      let liveZombies = 0;
-      for (let i = 0; i < state.zombies.length; i++) {
-        if (state.zombies[i].state !== 'dead') liveZombies++;
+      this.debugOverlay.update(state, {
+        fps: extras.fps,
+        frameMs: extras.frameMs,
+        drawCalls: extras.drawCalls,
+        loadedChunks: extras.loadedChunks,
+      });
+    }
+    if (this.layout) this.updateOpenWorld(state, extras, nowMs);
+
+    // 8. Respawn overlay (open world) + legacy Victory / Defeat Overlays
+    const respawnVisible = this.layout !== null && state.phase === 'respawning';
+    if (respawnVisible !== this.prevRespawnVisible) {
+      this.prevRespawnVisible = respawnVisible;
+      this.respawnOverlayEl.classList.toggle('is-visible', respawnVisible);
+      if (respawnVisible) {
+        this.hideIntro();
+        this.worldMap?.hide();
+        const nest = this.layout?.nests.find((n) => n.id === state.activeNestId);
+        const where = nest ? districtName(nest.districtId) : 'your nest';
+        this.respawnSubEl.textContent = `The horde remembers. You will rise again at the ${where} nest.`;
       }
-      const debugText = `FPS: ${Math.round(extras.fps)} | Draw Calls: ${extras.drawCalls}\nLive Zombies: ${liveZombies} | Followers: ${state.followerCount}\nCheckpoint Guards Alive: ${aliveCheckpointGuards}`;
-      if (debugText !== this.prevDebugText) {
-        this.prevDebugText = debugText;
-        this.debugBoxEl.innerHTML = debugText.replace(/\n/g, '<br/>');
+    }
+    if (respawnVisible) {
+      const t = `${Math.max(0, Math.ceil(state.leader.respawnTimer))}`;
+      if (t !== this.prevRespawnText) {
+        this.prevRespawnText = t;
+        this.respawnCountEl.textContent = t;
       }
     }
 
-    // 8. Victory / Defeat Overlays
     if (state.phase !== this.prevPhase) {
       this.prevPhase = state.phase;
       if (state.phase === 'victory') {
@@ -811,16 +1153,103 @@ export class HUD {
   }
 
   dispose(): void {
-    if (this.toastTimeoutId !== null) {
-      window.clearTimeout(this.toastTimeoutId);
-      this.toastTimeoutId = null;
-    }
+    this.clearToasts();
+    if (this.savedTimer !== null) window.clearTimeout(this.savedTimer);
+    this.savedTimer = null;
+    this.minimap?.dispose();
+    this.worldMap?.dispose();
+    this.pauseMenu?.dispose();
+    this.nestPanel?.dispose();
+    this.debugOverlay.dispose();
+    this.waypointCallbacks.length = 0;
+    this.equipCallbacks.length = 0;
     this.introOverlayEl.removeEventListener('pointerdown', this.onIntroClick);
     this.victoryBtn.removeEventListener('click', this.onRestartClick);
     this.defeatBtn.removeEventListener('click', this.onRestartClick);
     this.restartCallbacks.length = 0;
     this.introDismissCallbacks.length = 0;
     this.root.innerHTML = '';
+  }
+
+  private updateOpenWorld(state: GameState, extras: HudExtras, nowMs: number): void {
+    const layout = this.layout;
+    if (!layout) return;
+
+    // Biomass + brutes
+    const bioText = `${Math.floor(state.progression.biomass)}`;
+    if (bioText !== this.prevBioText) {
+      this.prevBioText = bioText;
+      this.bioValueEl.textContent = bioText;
+    }
+    const brutes = bruteCount(state);
+    const bruteText = brutes > 0 ? `BRUTES ${brutes}` : '';
+    if (bruteText !== this.prevBruteText) {
+      this.prevBruteText = bruteText;
+      this.bruteEl.textContent = bruteText;
+    }
+
+    // Ability slots Q E R F
+    for (let i = 0; i < this.slotEls.length; i++) {
+      const v = abilitySlotView(state, i);
+      const denied = nowMs < this.deniedUntilMs[i];
+      const deg = Math.round(v.remainingFrac * 360);
+      const sig = `${v.kind}|${v.name}|${v.caption}|${deg}`;
+      const el = this.slotEls[i];
+      if (sig !== this.prevSlotSig[i]) {
+        this.prevSlotSig[i] = sig;
+        el.name.textContent = v.name;
+        el.state.textContent = v.caption.toUpperCase();
+        el.sweep.style.setProperty('--cd', `${deg}deg`);
+        el.root.title = v.abilityId ? ABILITIES[v.abilityId].description : 'Empty slot - equip a mutation at a nest';
+        el.root.classList.toggle('is-empty', v.kind === 'empty');
+        el.root.classList.toggle('is-cooldown', v.kind === 'cooldown');
+        el.root.classList.toggle('is-active', v.kind === 'active');
+        el.root.classList.toggle('is-nobiomass', v.kind === 'nobiomass');
+      }
+      if (denied !== this.prevSlotDenied[i]) {
+        this.prevSlotDenied[i] = denied;
+        el.root.classList.toggle('is-denied', denied);
+      }
+    }
+
+    this.updateTracker(state, nowMs);
+
+    this.minimap?.update(state, extras.waypoint ?? null, nowMs);
+    if (this.worldMap?.visible) this.worldMap.update(state, extras.waypoint ?? null, nowMs);
+    this.nestPanel?.update(state, nearbyEquipNest(state, layout) !== null);
+  }
+
+  private updateTracker(state: GameState, nowMs: number): void {
+    const layout = this.layout;
+    if (!layout || nowMs - this.lastTrackerMs < 250) return;
+    this.lastTrackerMs = nowMs;
+    const def = selectObjectiveStronghold(layout, state, state.leader.pos);
+    let sig = 'none';
+    let html = '';
+    if (!def) {
+      sig = 'all';
+      html = '<div class="ibz-tracker-title">All strongholds captured</div><div class="ibz-tracker-sub">The city is yours</div>';
+    } else if (!state.districts[def.districtId]?.discovered) {
+      sig = 'explore';
+      html = '<div class="ibz-tracker-title">Explore the city</div><div class="ibz-tracker-sub">Find a human stronghold to attack</div>';
+    } else {
+      const sh = state.strongholds.find((x) => x.id === def.id);
+      const statuses = objectiveStatus({ state, layout } as unknown as SimContext, def.id);
+      sig = `${def.id}|${sh?.contested ? 1 : 0}|${statuses.map((o) => `${o.done ? 1 : 0}${Math.round(o.progress * 100)}`).join(',')}`;
+      if (sig !== this.prevTrackerSig) {
+        html = `<div class="ibz-tracker-title">${strongholdName(def.id)}</div>
+          <div class="ibz-tracker-sub${sh?.contested ? ' is-contested' : ''}">TIER ${def.defenseTier}${sh?.contested ? ' - CONTESTED' : ''} &middot; ${districtName(def.districtId)}</div>`;
+        for (const o of statuses) {
+          html += `<div class="ibz-obj-row${o.done ? ' is-done' : ''}"><div class="ibz-obj-label">${o.label}</div>
+            <div class="ibz-obj-bar"><div style="width:${Math.round(o.progress * 100)}%"></div></div></div>`;
+        }
+        const reward = def.unlock ? `Unlocks ${ABILITIES[def.unlock].name}` : 'No mutation reward';
+        html += `<div class="ibz-tracker-reward">${reward} &middot; +${def.biomassReward} biomass</div>`;
+      }
+    }
+    if (sig === this.prevTrackerSig) return;
+    this.prevTrackerSig = sig;
+    this.trackerEl.innerHTML = html;
   }
 
   private chooseObjectiveText(state: GameState): string {
@@ -936,16 +1365,27 @@ export class HUD {
     return 'TARGET';
   }
 
-  private showToast(msg: string): void {
-    this.toastEl.textContent = msg;
-    this.toastEl.classList.add('is-visible');
-    if (this.toastTimeoutId !== null) {
-      window.clearTimeout(this.toastTimeoutId);
-    }
-    this.toastTimeoutId = window.setTimeout(() => {
-      this.toastEl.classList.remove('is-visible');
-      this.toastTimeoutId = null;
-    }, 1800);
+  private showToast(msg: string, kind: ToastSpec['kind'] = 'info'): void {
+    this.pushToast({ text: msg, kind });
+  }
+
+  private pushToast(spec: ToastSpec): void {
+    const el = document.createElement('div');
+    el.className = `ibz-toast is-visible${spec.kind === 'good' ? ' is-good' : spec.kind === 'warn' ? ' is-warn' : ''}`;
+    el.textContent = spec.text;
+    this.toastStackEl.appendChild(el);
+    while (this.toastStackEl.childElementCount > 4) this.toastStackEl.firstElementChild?.remove();
+    const id = window.setTimeout(() => {
+      this.toastTimers.delete(id);
+      el.remove();
+    }, this.layout ? 3600 : 1800);
+    this.toastTimers.add(id);
+  }
+
+  private clearToasts(): void {
+    for (const id of this.toastTimers) window.clearTimeout(id);
+    this.toastTimers.clear();
+    this.toastStackEl.innerHTML = '';
   }
 
   private buildStatsHtml(state: GameState): string {
