@@ -38,10 +38,19 @@ describe('horde commands and guidance', () => {
     sim.step(dt, { ...emptyInput(), attackTarget: { kind: 'guard', id: guard.id } });
     guard.state = 'DEAD'; guard.hp = 0;
     sim.step(dt, emptyInput());
-    expect(sim.state.order.type).toBe('follow'); expect(z.engageTarget).toBeNull();
+    // §15.15 (+ B1 succession): the dead target is never kept; a successor must be a different living guard.
+    const succ = sim.state.order;
+    if (succ.type === 'attack') {
+      expect(succ.target.kind).toBe('guard');
+      const next = sim.state.guards.find(g => succ.target.kind === 'guard' && g.id === succ.target.id)!;
+      expect(next.id).not.toBe(guard.id); expect(next.state).not.toBe('DEAD');
+    }
+    expect(z.engageTarget).not.toEqual({ kind: 'guard', id: guard.id });
     sim.step(dt, { ...emptyInput(), attackTarget: { kind: 'gate' } });
     sim.state.gate.destroyed = true; sim.state.gate.hp = 0;
-    sim.step(dt, emptyInput()); expect(sim.state.order.type).toBe('follow');
+    sim.step(dt, emptyInput());
+    const afterGate = sim.state.order;
+    expect(afterGate.type === 'follow' || (afterGate.type === 'attack' && afterGate.target.kind === 'guard')).toBe(true);
     expect(sim.drainEvents().filter(e => e.type === 'orderChanged').length).toBeGreaterThanOrEqual(6);
   });
 

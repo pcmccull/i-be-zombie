@@ -140,6 +140,34 @@ describe('combat: design §15.7–8', () => {
 });
 
 describe('full assault balance', () => {
+  it.each([20, 40, 60])('runs a player-like assault with a parked leader and N=%i', n => {
+    const sim = new Simulation(); sim.state.zombies = [];
+    const area = sim.ctx.layout.checkpoint.stagingArea;
+    const parked = { x: (area.minX + area.maxX) / 2, z: (area.minZ + area.maxZ) / 2 };
+    sim.state.leader.pos = { ...parked };
+    for (let i = 0; i < n; i++) add(sim, { x: parked.x - 5 + i % 10 * 1.1, z: parked.z - 5 + Math.floor(i / 10) * 1.1 });
+    for (let step = 0; step < 300 / dt && sim.state.phase === 'playing'; step++) {
+      let target: TargetRef | null = step === 0 ? { kind: 'gate' } : null;
+      if (step > 0 && sim.state.order.type === 'follow') {
+        let nearest = Infinity;
+        for (const g of sim.state.guards) {
+          const d = (g.pos.x - sim.state.gate.center.x) ** 2 + (g.pos.z - sim.state.gate.center.z) ** 2;
+          if (g.state !== 'DEAD' && g.hp > 0 && d < nearest) { nearest = d; target = { kind: 'guard', id: g.id }; }
+        }
+      }
+      sim.step(dt, { ...input, attackTarget: target, rush: sim.state.abilities.rushCooldown <= dt });
+      sim.drainEvents();
+      if (!sim.state.followerCount && !sim.state.zombies.some(z => z.state === 'rising') && !sim.state.pendingConversions.length) break;
+    }
+    const outcome = !sim.state.followerCount && sim.state.phase === 'playing' ? 'horde exhausted' : sim.state.phase;
+    console.log(`Player-like assault N=${n}: ${outcome}, time=${sim.state.time.toFixed(2)}s, losses=${sim.state.stats.losses}, survivors=${sim.state.followerCount}, guards=${sim.state.stats.guardsKilled}/8, gateHP=${sim.state.gate.hp}, conversions=${sim.state.stats.conversions}`);
+    if (n === 60) {
+      expect(sim.state.phase).toBe('victory'); expect(sim.state.time).toBeLessThanOrEqual(300);
+      expect(sim.state.stats.losses).toBeLessThan(50); expect(sim.state.leader.pos).toEqual(parked);
+      expect(sim.state.followerCount).toBe(countFollowers(sim.state));
+    }
+  }, 15000);
+
   it.each([12, 40, 60])('runs a complete real-district assault with N=%i', n => {
     const sim = new Simulation(); sim.state.zombies = [];
     const area = sim.ctx.layout.checkpoint.stagingArea;

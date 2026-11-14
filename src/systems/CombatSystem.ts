@@ -144,6 +144,23 @@ function melee(ctx: SimContext, target: TargetRef, amount: number): void {
   } else if (target.kind === 'gate') damageGate(ctx, amount);
 }
 
+function followerSwingTarget(ctx: SimContext, z: ZombieAgent): TargetRef | null {
+  // Engagement remains the steering target. Self-defense never redirects the route.
+  if (z.engageTarget && canMelee(ctx, z.pos, BALANCE.walker.attackRange, z.engageTarget)) return z.engageTarget;
+  if (ctx.state.order.type !== 'attack') return null;
+  let target: TargetRef | null = null;
+  let nearest = Infinity;
+  for (const g of ctx.state.guards) {
+    if (g.state === 'DEAD' || g.hp <= 0) continue;
+    const ref = guardTarget(g);
+    const d = (g.pos.x - z.pos.x) ** 2 + (g.pos.z - z.pos.z) ** 2;
+    if (d < nearest && canMelee(ctx, z.pos, BALANCE.walker.attackRange, ref)) {
+      nearest = d; target = ref;
+    }
+  }
+  return target;
+}
+
 export function updateCombat(ctx: SimContext, dt: number, _input: SimInput): void {
   if (ctx.state.phase !== 'playing') return;
   const leader = ctx.state.leader;
@@ -155,13 +172,15 @@ export function updateCombat(ctx: SimContext, dt: number, _input: SimInput): voi
     if (z.state === 'dead') {
       z.stateTime += dt;
       if (z.stateTime > BALANCE.walker.corpseFadeTime) continue;
-    } else if (z.state === 'follower' && z.hp > 0 && z.engageTarget &&
-        z.attackCooldown <= 1e-9 && canMelee(ctx, z.pos, BALANCE.walker.attackRange, z.engageTarget)) {
-      melee(ctx, z.engageTarget, BALANCE.walker.attackDamage);
-      z.attackCooldown = BALANCE.walker.attackCooldown /
-        (ctx.state.abilities.rushTimeLeft > 0 ? BALANCE.rush.attackRateMultiplier : 1);
-      z.anim = 'attack'; z.animTime = 0;
-      ctx.emit({ type: 'melee', attacker: 'zombie', attackerId: z.id, target: z.engageTarget, pos: { ...z.pos } });
+    } else if (z.state === 'follower' && z.hp > 0 && z.attackCooldown <= 1e-9) {
+      const target = followerSwingTarget(ctx, z);
+      if (target) {
+        melee(ctx, target, BALANCE.walker.attackDamage);
+        z.attackCooldown = BALANCE.walker.attackCooldown /
+          (ctx.state.abilities.rushTimeLeft > 0 ? BALANCE.rush.attackRateMultiplier : 1);
+        z.anim = 'attack'; z.animTime = 0;
+        ctx.emit({ type: 'melee', attacker: 'zombie', attackerId: z.id, target, pos: { ...z.pos } });
+      }
     }
     zombies[write++] = z;
   }
