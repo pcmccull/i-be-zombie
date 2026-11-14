@@ -1281,6 +1281,8 @@ export class Landmarks {
       alleyGate: 2.8,
       storeDoor: 2.6,
       penGate: 2.2,
+      stationDoor: 3.2,
+      securityShutter: 3,
     };
 
     const pickMat = this.trackMaterial(

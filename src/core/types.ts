@@ -53,7 +53,7 @@ export interface Collider extends ColliderDef {
   enabled: boolean;
 }
 
-export type BuildingStyle = 'apartment' | 'storefront' | 'warehouse' | 'office' | 'garage';
+export type BuildingStyle = 'apartment' | 'storefront' | 'warehouse' | 'office' | 'garage' | 'house' | 'mall' | 'civic';
 
 export interface BuildingDef {
   footprint: AABB;
@@ -114,10 +114,10 @@ export interface SpawnZone {
 }
 
 /** Destructible landmark obstruction (environmental recruitment opportunities). */
-export type StructureKind = 'busDoor' | 'alleyGate' | 'storeDoor' | 'penGate';
+export type StructureKind = 'busDoor' | 'alleyGate' | 'storeDoor' | 'penGate' | 'stationDoor' | 'securityShutter';
 
 /** Which landmark a structure / zone / human belongs to (visuals + HUD labels). */
-export type LandmarkKind = 'bus' | 'alley' | 'store' | 'barricade';
+export type LandmarkKind = 'bus' | 'alley' | 'store' | 'barricade' | 'station' | 'mall';
 
 export interface StructureDef {
   /** Stable id >= 1, unique within the layout (0 means "none" elsewhere). */

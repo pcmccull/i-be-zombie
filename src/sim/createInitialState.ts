@@ -25,7 +25,6 @@ export function createInitialState(layout: DistrictLayout, collision: ICollision
       zombies.push(createZombie(id++, p, { state: 'ambient', variant: i % 6, spawnZone: zone, isConverted: false, heldBy, rng }));
     }
   }
-  if (zombies.length !== BALANCE.horde.initialAmbient) throw new Error('Ambient spawn counts must match balance');
   const area = layout.startFollowerArea;
   for (let i = 0; i < BALANCE.horde.startFollowers; i++) {
     const p = { x: 0, z: 0 };

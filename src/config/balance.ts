@@ -126,6 +126,8 @@ export const BALANCE = {
     alleyGate: { maxHp: 140 },
     storeDoor: { maxHp: 110 },
     penGate: { maxHp: 120 },
+    stationDoor: { maxHp: 240 }, // police station front doors (tier 2)
+    securityShutter: { maxHp: 170 }, // mall security office shutter (tier 1)
     releaseScatter: 3, // meters past an approachOutside point that released zombies burst out to
     releaseSpeed: 2.6, // m/s during the release burst (faster than ambient shuffle)
     releaseDuration: 2.5, // seconds of steered burst before normal ambient wander resumes
