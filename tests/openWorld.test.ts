@@ -291,8 +291,6 @@ describe('open-world integration (spec §10)', () => {
   it('item 7: equips at a nest, uses Claws, Horde Frenzy buffs the horde, Brute Evolution spends biomass for a siege unit', () => {
     const sim = new Simulation(layout, SEED), mon = new Monitor(sim, true);
     const s = sim.state, l = s.leader, nest = layout.nests.find(n => n.id === s.activeNestId)!;
-    // Start from an empty loadout (the Rush starter normally sits in slot Q) so slot indices below match unlock order.
-    s.progression.equipped.fill(null);
     // Rewards only come from capture, so use the unlock helper (the same function ConquestSystem calls).
     for (const id of ['alpha_claws', 'horde_frenzy', 'brute_evolution'] as const) expect(unlockAbility(sim.ctx, id)).toBe(true);
     expect(unlockAbility(sim.ctx, 'alpha_claws')).toBe(false); // idempotent

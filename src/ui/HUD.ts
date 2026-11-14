@@ -105,7 +105,7 @@ function helpRows(openWorld: boolean): string {
         ['Right-Click ground', 'Horde move order (marker; reverts to follow)'],
         ['Space', 'Rally / regroup: pull and recruit nearby walkers'],
         ['G', 'Recall: the whole horde follows you'],
-        ['Q E R F', 'Activate the slot: Q = Rush (speed burst to run down civilians); later Frenzy, Brute Evolution'],
+        ['Q E R F', 'Activate the mutation in that slot (Rush from the suburb checkpoint, then Frenzy, Claws, Brutes)'],
         ['Nest', 'Stand near an active nest to change your slot loadout'],
         ['M', 'World map: click to set / clear a waypoint'],
         ['Esc', 'Pause menu: save, reset save, sound'],
@@ -692,7 +692,7 @@ export class HUD {
             <div><strong>LMB</strong> Bite &amp; claw (Alpha attack)</div>
             <div><strong>RMB</strong> Horde attack / move order</div>
             <div><strong>Space</strong> Rally the horde</div>
-            <div><strong>Q</strong> Rush &middot; <strong>E R F</strong> mutations</div>
+            <div><strong>Q E R F</strong> Mutation slots</div>
             <div><strong>M</strong> World map</div>
             <div><strong>G</strong> Recall horde to follow</div>
             <div><strong>Esc</strong> Pause &amp; save</div>
@@ -1017,8 +1017,8 @@ export class HUD {
       this.prevPointerLocked = locked;
       this.bottomRightEl.innerHTML = this.layout
         ? locked
-          ? 'WASD move &middot; LMB attack &middot; RMB horde order &middot; Space rally &middot; Q rush &middot; ERF mutations &middot; M map &middot; Esc pause'
-          : 'Click to capture mouse &middot; WASD move &middot; LMB attack &middot; RMB horde order &middot; Space rally &middot; Q rush &middot; ERF mutations &middot; M map &middot; Esc pause'
+          ? 'WASD move &middot; LMB attack &middot; RMB horde order &middot; Space rally &middot; QERF mutations &middot; M map &middot; Esc pause'
+          : 'Click to capture mouse &middot; WASD move &middot; LMB attack &middot; RMB horde order &middot; Space rally &middot; QERF mutations &middot; M map &middot; Esc pause'
         : locked
         ? 'WASD move &middot; Shift sprint &middot; Mouse look &middot; LMB select/unselect targets &middot; RMB follow &middot; V look back &middot; Esc to release mouse &middot; Tab help'
         : 'Click to capture mouse &middot; WASD move &middot; Shift sprint &middot; LMB select/unselect targets &middot; RMB follow &middot; Drag/Z/X look &middot; V look back &middot; Tab help';

@@ -190,7 +190,7 @@ describe('T006 Persistence — createSave / SaveStore / applySave round-trip', (
     const saved = createSave(s1, 4242, 1700000000000);
 
     expect(saved.version).toBe(SAVE_VERSION);
-    expect(saved.acquiredUpgrades).toEqual(['rush', 'alpha_claws', 'horde_frenzy']); // rush = open-world starter
+    expect(saved.acquiredUpgrades).toEqual(['alpha_claws', 'horde_frenzy']);
     expect(store.save(saved)).toBe(true);
 
     const loaded = store.load();
@@ -207,7 +207,7 @@ describe('T006 Persistence — createSave / SaveStore / applySave round-trip', (
 
     const s2 = sim2.state;
     expect(s2.progression.biomass).toBe(65);
-    expect(s2.progression.unlocked).toEqual(['bite', 'infect', 'rush', 'alpha_claws', 'horde_frenzy']);
+    expect(s2.progression.unlocked).toEqual(['bite', 'infect', 'alpha_claws', 'horde_frenzy']);
     expect(s2.progression.equipped).toEqual(['alpha_claws', 'horde_frenzy', null, null]);
     expect(s2.activeNestId).toBe('nest_suburb');
 
@@ -345,8 +345,7 @@ describe('T006 Persistence — createSave / SaveStore / applySave round-trip', (
     applySave(sim.ctx, save);
 
     expect(sim.state.progression.biomass).toBe(0);
-    // 'rush' still comes back via acquiredUpgrades, so the player's own (Rush-less) loadout is kept.
-    expect(sim.state.progression.unlocked).toEqual(['bite', 'infect', 'alpha_claws', 'rush']);
+    expect(sim.state.progression.unlocked).toEqual(['bite', 'infect', 'alpha_claws']);
     expect(sim.state.progression.equipped).toEqual([null, 'alpha_claws', null, null]);
     expect(sim.state.activeNestId).toBe('start');
     const sh = sim.state.strongholds.find(s => s.id === 'suburb_checkpoint')!;

@@ -15,7 +15,8 @@ export interface StrongholdMeta {
 
 export const STRONGHOLDS: readonly StrongholdMeta[] = [
   {
-    id: 'suburb_checkpoint', districtId: 'suburbs', name: 'Suburb Police Checkpoint', defenseTier: 1, unlock: null, biomassReward: 15,
+    // First stronghold (~70 m from the start). Civilians outrun the horde until then; capturing it grants Rush to run them down.
+    id: 'suburb_checkpoint', districtId: 'suburbs', name: 'Suburb Police Checkpoint', defenseTier: 1, unlock: 'rush', biomassReward: 15,
     objectives: [
       { id: 'break_pen', kind: 'destroyStructure', label: 'Break the holding pen' },
       { id: 'defenders', kind: 'killDefenders', label: 'Overrun the checkpoint police' },

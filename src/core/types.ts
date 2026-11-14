@@ -167,7 +167,7 @@ export interface AbilityDef {
   id: AbilityId;
   name: string;
   type: AbilityType;
-  /** Stronghold whose capture unlocks it; null = innate (bite/infect), starter (rush) or not obtainable (pounce). */
+  /** Stronghold whose capture unlocks it; null = innate (bite/infect) or not obtainable (pounce). */
   source: StrongholdId | null;
   /** 'slot' = must be equipped in one of the 4 slots (Q/E/R/F) to work; 'innate' = always on, never slotted. */
   slotBehavior: 'slot' | 'innate';

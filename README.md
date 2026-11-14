@@ -12,7 +12,7 @@ Implemented from [`docs/3_open_world.md`](docs/3_open_world.md). The task board 
 
   | District | Quadrant | Landmark | Stronghold (tier) | Capture reward |
   |---|---|---|---|---|
-  | Maple Heights (suburbs) | SW, start | homes, park, start nest | Suburb Police Checkpoint (1) | +15 biomass, nest |
+  | Maple Heights (suburbs) | SW, start | homes, park, start nest | Suburb Police Checkpoint (1) | **Rush**, +15 biomass, nest |
   | Civic Center (police) | NW | fortified police station | Police Station (2) | **Alpha Claws** |
   | Galleria District (shopping) | SE | mall and parking lot | Mall Security Center (1) | **Horde Frenzy** |
   | Dockside Works (industrial) | NE | warehouses, gated yard with towers | Industrial Security Yard (3) | **Brute Evolution** |
@@ -22,9 +22,9 @@ Implemented from [`docs/3_open_world.md`](docs/3_open_world.md). The task board 
   a nest there, and autosaves.
 - **Fog of war is separate from territory.** Walking reveals the map, but a district only changes owner when you capture its
   stronghold. Unexplored, human, contested and infected areas each look different on the minimap and the world map (`M`).
-- **Rush (starter, slot Q).** For 4 s the whole horde runs 45% faster and attacks 25% faster, which is fast enough to run down
-  civilians who otherwise outrun it. The cooldown is 15 s and it costs nothing. It is unlocked from the start, and older saves get it
-  in their first empty slot.
+- **Rush, the first unlock.** Civilians outrun the horde at first. Capturing the nearby Suburb Police Checkpoint unlocks Rush
+  (auto-equipped on Q): for 4 s the horde runs 45% faster and attacks 25% faster, fast enough to run them down. It costs nothing and
+  has a 15 s cooldown. Older saves that already captured the checkpoint get Rush when loaded.
 - **Mutations and biomass.** You earn biomass by infecting, killing armed humans, breaking structures and capturing strongholds.
   - **Alpha Claws:** while equipped, LMB becomes a three-hit combo whose finisher staggers.
   - **Horde Frenzy:** nearby followers get +40% speed and +50% attack rate for 8 s.
@@ -63,10 +63,10 @@ also save from the pause menu (`Esc`), which has **Reset Save** to start over.
 ### 10-minute demo path
 
 1. **0:00–0:30, outbreak.** Walk toward the bus and the nearby walkers. Walking within 9 m recruits passively, and `Space` (Rally)
-   pulls in everything within 15 m. Press `Q` (Rush) to run down fleeing civilians, then LMB them to infect. A scripted run reaches about 20 followers by 30 s.
+   pulls in everything within 15 m. Civilians outrun the horde for now; corner one or sprint it down and LMB to infect. A scripted run reaches about 20 followers by 30 s.
 2. **0:30–2:00, Suburb Police Checkpoint.** RMB the holding-pen gate. The horde breaks it, the 20 zombies inside join, and the horde
    moves on to the police. Kill the last defender (RMB it, or LMB it yourself).
-   - Capture: suburbs turn green, a new nest activates, and "SAVED" flashes.
+   - Capture: suburbs turn green, a new nest activates, "SAVED" flashes, and **Rush** unlocks on `Q`. Use it to run down civilians.
    - Keep the Alpha behind the horde. Three police pistols will still kill you if you tank them.
 3. **2:00–4:00, a second stronghold, your choice.**
    - **Mall Security Center (tier 1, SE):** RMB the security shutter, then stand your horde inside the office until "Take the security
@@ -91,7 +91,7 @@ Implemented in [`src/core/InputController.ts`](src/core/InputController.ts) and 
 | **RMB** on ground | Horde move order (marker; reverts to follow on arrival or after 20 s) |
 | `Space` / `Shift+RMB` | Rally / regroup: pull in and recruit nearby walkers (8 s cooldown) |
 | `G` | Recall: everyone follows |
-| `Q` `E` `R` `F` | Activate the equipped slot. `Q` starts as **Rush**; captures fill E/R/F with Frenzy, Claws and Brutes |
+| `Q` `E` `R` `F` | Activate the equipped mutation slot (Rush, Frenzy, Brutes; Claws is passive while equipped) |
 | `M` | World map. Click it to set or clear a waypoint |
 | `Esc` | Pause menu: Continue, Save, Reset Save (with confirmation), Sound |
 | `N` | Mute / unmute |

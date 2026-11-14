@@ -1,6 +1,6 @@
 // [pure] Versioned save schema (docs/3_open_world.md §4H). OWNER: T006. No DOM, no clocks.
 import { BALANCE } from '../config/balance';
-import { ABILITIES, INNATE_ABILITIES, STARTER_ABILITIES } from '../content/abilities';
+import { ABILITIES, INNATE_ABILITIES } from '../content/abilities';
 import { STRONGHOLDS } from '../content/strongholds';
 import type { SimContext } from '../core/contracts';
 import type {
@@ -412,16 +412,6 @@ export function applySave(ctx: SimContext, save: WorldSave): void {
     Array.isArray(save.player?.equippedAbilities) ? save.player.equippedAbilities : [],
     unlocked,
   );
-  // Starter abilities (Rush) were added after v1 saves existed: an open-world save that never had one gets it
-  // unlocked and dropped into the first empty slot. A save that lists it keeps the player's own loadout.
-  if (layout.strongholds.length > 0) {
-    for (const id of STARTER_ABILITIES) {
-      if (rawUnlocked.includes(id)) continue;
-      if (!unlocked.includes(id)) unlocked.push(id);
-      const empty = state.progression.equipped.indexOf(null);
-      if (empty >= 0 && !state.progression.equipped.includes(id)) state.progression.equipped[empty] = id;
-    }
-  }
 
   // 2. Restore activeNestId (fall back to the start nest if unknown)
   const startNest = layout.nests.find(n => n.strongholdId === null) ?? layout.nests[0];
@@ -487,6 +477,16 @@ export function applySave(ctx: SimContext, save: WorldSave): void {
     if (val && isRecord(val) && val.captured && isStrongholdId(key)) {
       capturedStrongholds.add(key);
     }
+  }
+
+  // 4b. A captured stronghold always grants its unlock. Saves from before an unlock was attached to a stronghold
+  // (e.g. Rush moving to suburb_checkpoint) get it here, auto-equipped into the first empty slot like a live capture.
+  for (const id of capturedStrongholds) {
+    const unlock = layout.strongholds.find(d => d.id === id)?.unlock ?? null;
+    if (!unlock || state.progression.unlocked.includes(unlock)) continue;
+    state.progression.unlocked.push(unlock);
+    const empty = state.progression.equipped.indexOf(null);
+    if (empty >= 0 && ABILITIES[unlock].slotBehavior === 'slot') state.progression.equipped[empty] = unlock;
   }
 
   // 5. Destroy structures and gate silently; rebuild nav grids once if anything changed

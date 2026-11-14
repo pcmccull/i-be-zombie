@@ -2,7 +2,7 @@ import { BALANCE } from '../config/balance';
 import type { ICollisionWorld } from '../core/contracts';
 import type { AbilityId, DistrictId, DistrictLayout, DistrictState, DiscoveryState, GameState, Rng, StrongholdState, ZombieAgent } from '../core/types';
 import { DISTRICT_IDS } from '../core/types';
-import { INNATE_ABILITIES, STARTER_ABILITIES } from '../content/abilities';
+import { INNATE_ABILITIES } from '../content/abilities';
 import { createLeader } from '../entities/ZombieLeader';
 import { createZombie } from '../entities/Zombie';
 import { createGuard } from '../entities/HumanGuard';
@@ -51,8 +51,8 @@ export function createInitialState(layout: DistrictLayout, collision: ICollision
     followerCount: BALANCE.horde.startFollowers, capReachedFlash: 0,
     districts: createDistrictStates(), strongholds: createStrongholdStates(layout),
     progression: {
-      biomass: BALANCE.progression.startBiomass, unlocked: [...INNATE_ABILITIES, ...starterAbilities(layout)],
-      equipped: starterLoadout(layout), cooldowns: {}, frenzyTimeLeft: 0,
+      biomass: BALANCE.progression.startBiomass, unlocked: [...INNATE_ABILITIES],
+      equipped: new Array<AbilityId | null>(BALANCE.progression.slots).fill(null), cooldowns: {}, frenzyTimeLeft: 0,
     },
     discovery: createDiscovery(layout),
     activeNestId: layout.nests.find(n => n.strongholdId === null)?.id ?? '', deaths: 0,
@@ -60,17 +60,6 @@ export function createInitialState(layout: DistrictLayout, collision: ICollision
   // NOTE: no t=0 fog reveal here: tests/discovery + persistence assume a blank fog before the first step. The first
   // updateConquest step (revealTimer starts at 0) reveals around the start, so the start district reads human at t=dt.
   return state;
-}
-
-/** Open world only: starter slot abilities (Rush). The legacy district keeps Space-triggered Rush and an empty loadout. */
-function starterAbilities(layout: DistrictLayout): AbilityId[] {
-  return layout.strongholds.length > 0 ? [...STARTER_ABILITIES] : [];
-}
-
-function starterLoadout(layout: DistrictLayout): (AbilityId | null)[] {
-  const equipped: (AbilityId | null)[] = new Array<AbilityId | null>(BALANCE.progression.slots).fill(null);
-  starterAbilities(layout).forEach((id, i) => { if (i < equipped.length) equipped[i] = id; });
-  return equipped;
 }
 
 export function createDistrictStates(): Record<DistrictId, DistrictState> {
