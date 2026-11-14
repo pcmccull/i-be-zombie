@@ -142,7 +142,7 @@ All gameplay numbers are centralized in [`src/config/balance.ts`](src/config/bal
 | **Checkpoint Gate** | `maxHp`: `400` |
 | **Cascade** | `recruitPulse.radius`: `10 m`, delay `0.1–0.3 s`, `maxGeneration`: `3`, `maxRecruitsPerPulse`: `8`; `recruitBoostTime`: `2 s` at `1.35×`; `regroupDistance`: `22 m`; `catchUpLeaderMargin`: `1.12×` leader walk |
 | **Structures** | HP: bus door `90`, alley gate `140`, store door `110`, pen gate `120`; release burst `2.6 m/s` for `2.5 s` |
-| **Civilians & Outposts** | civilian `maxHp` `30`, flee `4.2 m/s`, panic radius `12 m`; barricade police: 2, range `16 m`, damage `6`, hit chance `0.55` (checkpoint guards: `10` / `0.75`) |
+| **Civilians & Outposts** | civilian `maxHp` `30`, flee `6.2 m/s` (followers chasing one are capped at `0.9×` that unless Rushing, then at least `1.15×`), panic radius `12 m`; barricade police: 2, range `16 m`, damage `6`, hit chance `0.55` (checkpoint guards: `10` / `0.75`) |
 | **Momentum** | gains +1/+3/+5/+10, `graceTime`: `8 s`, `decayPerSecond`: `1.5`, radius `+0.5%`/pt, speed `+0.2%`/pt, tiers at `30` / `70` |
 | **Conversion** | `chance`: `0.7` (70%), `delay`: `3 s`, `riseDuration`: `1.2 s` |
 

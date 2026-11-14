@@ -134,7 +134,11 @@ export const BALANCE = {
     maxHp: 30,
     radius: 0.4,
     walkSpeed: 1.6,
-    fleeSpeed: 4.2, // slower than leader walk (5) so they can be caught
+    // todos #5: civilians outrun the horde unless it Rushes. Faster than the leader walk even at full momentum (5 x 1.2);
+    // the leader can still sprint one down (7.4 m/s, ~4 s of stamina).
+    fleeSpeed: 6.2,
+    chaseSpeedFactor: 0.9, // followers chasing a civilian without Rush are capped at fleeSpeed x this
+    rushChaseFactor: 1.15, // ... and during Rush move at least fleeSpeed x this
     panicRadius: 12, // sees a zombie/leader within this (with LOS) -> flees
     calmTime: 5, // seconds without a threat in panicRadius before returning to PATROL
   },

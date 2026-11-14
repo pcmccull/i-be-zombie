@@ -1,6 +1,6 @@
 import { BALANCE } from '../config/balance';
 import type { SegmentOptions, SimContext, SquadGuidance } from '../core/contracts';
-import type { AABB, AnimAction, Collider, GameState, SimInput, TargetRef, Vec2, ZombieAgent } from '../core/types';
+import type { AABB, AnimAction, Collider, GameState, GuardAgent, SimInput, TargetRef, Vec2, ZombieAgent } from '../core/types';
 import { distSq, wrapAngle } from '../utils/math';
 import { isCrawlable } from '../world/CollisionWorld';
 import { isTargetAlive, resolveTargetPos } from './CombatSystem';
@@ -493,6 +493,18 @@ export function updateHorde(ctx: SimContext, dt: number, _input: SimInput): void
     if (distanceToLeader > BALANCE.walker.catchUpDistance && !z.engageTarget) {
       speed = Math.max(speed * BALANCE.walker.catchUpMultiplier,
         BALANCE.leader.walkSpeed * speedMultiplier(state) * BALANCE.walker.catchUpLeaderMargin);
+    }
+    // Civilians outrun the horde (whatever momentum/boosts it has) unless it is Rushing (todos #5).
+    if (z.engageTarget?.kind === 'guard') {
+      const id = z.engageTarget.id;
+      let quarry: GuardAgent | undefined;
+      for (const g of state.guards) if (g.id === id) { quarry = g; break; }
+      if (quarry && quarry.role === 'civilian' && quarry.state === 'RETREAT') {
+        const flee = BALANCE.civilian.fleeSpeed;
+        speed = state.abilities.rushTimeLeft > 0
+          ? Math.max(speed, flee * BALANCE.civilian.rushChaseFactor)
+          : Math.min(speed, flee * BALANCE.civilian.chaseSpeedFactor);
+      }
     }
     // Crawling: packed followers clamber over cars/barriers (slowly); stragglers path around.
     const onObstacle = obstacleHeight(ctx, z, s) > 0;

@@ -6,6 +6,7 @@
    - Done: zombies at the tower base climb (≈2.5 s, max 5 at once) and only those on the platform can hit the occupant; the leader can't hit it from the ground.
 4. [x] Allow zombies to crawl over small obstacles like cars when they are grouped up
    - Done: once the horde has 6+ followers it paths over cars/dumpsters/barriers (not trucks/walls); a zombie with 4+ packmates nearby crawls over at 60% speed, standing on the roof; stragglers go around.
-5. [ ] Make it so civilians run faster than zombies unless they are in rush mode, so they can run away successfully
+5. [x] Make it so civilians run faster than zombies unless they are in rush mode, so they can run away successfully
+   - Done: civilians flee at 6.2 m/s, faster than the leader walking even at full momentum. Followers chasing a fleeing civilian are capped at 0.9× that, whatever momentum or boosts they have, so it gets away; during Rush they run at least 1.15× and catch it. The leader can still sprint one down while stamina lasts, and a civilian cornered at the edge of its home area (or inside the store) can be caught.
 6. [ ] Capture the mouse when you start playing so moving the mouse moves the camera
 7. [ ] Add mobile controllers 
