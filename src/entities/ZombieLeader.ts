@@ -11,6 +11,7 @@ export function createLeader(id: number, layout: DistrictLayout): LeaderState {
     radius: BALANCE.leader.radius, hp: BALANCE.leader.maxHp, maxHp: BALANCE.leader.maxHp,
     attackCooldown: 0, anim: 'idle', animTime: 0, hitFlash: 0,
     alive: true, stamina: BALANCE.leader.staminaMax, exhausted: false, sprinting: false,
+    attackPhase: 'ready', attackTimer: 0, comboStep: 0, comboWindow: 0, hitStun: 0, respawnTimer: 0,
   };
 }
 

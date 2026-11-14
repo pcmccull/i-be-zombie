@@ -9,7 +9,7 @@ import { isTargetAlive, resolveTargetPos } from '../src/systems/CombatSystem';
 import { updateNavigation } from '../src/systems/NavigationSystem';
 import { checkVictory } from '../src/systems/VictorySystem';
 import { dist } from '../src/utils/math';
-import { buildDistrictLayout } from '../src/world/districtLayout';
+import { buildLegacyDistrictLayout as buildDistrictLayout } from '../src/world/legacyDistrictLayout';
 import { isCrawlable } from '../src/world/CollisionWorld';
 
 const dt = BALANCE.sim.fixedDt;

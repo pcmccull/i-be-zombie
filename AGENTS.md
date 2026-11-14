@@ -18,7 +18,9 @@
 Shared conventions for every agent (Claude orchestrator, Codex, Antigravity) working in this repo.
 **The game spec is [`docs/1_design.md`](docs/1_design.md)** (referred to by some prompts as GAME_DESIGN.md), extended by
 **[`docs/2_intial_recruitment_design.md`](docs/2_intial_recruitment_design.md)** ("recruitment spec": fast opening, cascades,
-landmark structures, momentum). Where they conflict on gameplay, the recruitment spec wins. When this file and
+landmark structures, momentum), and by **[`docs/3_open_world.md`](docs/3_open_world.md)** ("open-world spec": four contiguous
+districts, strongholds, territory, fog, mutations, persistence). On gameplay, later specs win over earlier ones; the repo-adapted
+decisions are in `.agent-context/ARCHITECTURE.md` §0. When this file and
 the spec disagree on *architecture*, this file wins; on *gameplay*, the spec wins.
 
 ## Commands
@@ -57,7 +59,17 @@ src/
   core/cameraMath.ts           [pure] camera/occluder fade math shared by camera, CityDistrict, Landmarks
   sim/Simulation.ts            [pure] implements ISimulation; owns SimContext; fixed step order (below)
   sim/createInitialState.ts    [pure] DistrictLayout + Rng -> GameState (leader, 5 start followers, 85 ambient incl. 45 held, 16 humans, gate, structures, momentum)
-  world/districtLayout.ts      [pure] buildDistrictLayout(): DistrictLayout — the authored city as data
+  world/districtLayout.ts      [pure] buildDistrictLayout(seed?): DistrictLayout — the open world (4 districts) as data
+  world/layout/*.ts            [pure] roads + per-district builders used by districtLayout
+  world/legacyDistrictLayout.ts [pure] buildLegacyDistrictLayout() — recruitment-milestone district; Simulation default + test fixture
+  world/worldQueries.ts        [pure] getDistrictAt, chunk math, ChunkStreamer
+  content/{abilities,strongholds,districts}.ts [pure] data-driven content. Orchestrator-owned.
+  persistence/saveSchema.ts    [pure] WorldSave create/apply/parse(+migrate)
+  persistence/SaveStore.ts     localStorage adapter (injectable StorageLike), never throws
+  systems/ProgressionSystem.ts [pure] biomass, unlocks, loadout, Horde Frenzy, Brute Evolution
+  systems/ConquestSystem.ts    [pure] objectives, capture-once, territory status, alert/reinforcements, nests, discovery
+  systems/RespawnSystem.ts     [pure] leader death -> respawning -> nest respawn
+  systems/PopulationSystem.ts  [pure] dormant flags (active radius), budgeted respawns, caps
   world/CollisionWorld.ts      [pure] implements ICollisionWorld
   world/NavigationGrid.ts      [pure] implements INavigationGrid (+ FlowField implements IFlowField)
   world/CityDistrict.ts        [3D] Builds city meshes from DistrictLayout (merged/instanced)
@@ -89,12 +101,13 @@ tests/                         Vitest, [pure] imports only
 ```
 
 Agents only create/edit files listed in their task brief. **Never edit `src/core/types.ts`, `src/core/contracts.ts`,
-`src/config/balance.ts`, `package.json`, or `AGENTS.md`** — if a contract change is needed, stop and report it
+`src/config/balance.ts`, `src/content/**`, `package.json`, or `AGENTS.md`** — if a contract change is needed, stop and report it
 (optional extra fields that you need privately belong in a local `WeakMap`/side-table, not the contract).
 
 ## World conventions
 
-- Meters. X/Z ground plane, Y up. Ground at Y=0. District bounds x∈[-120,120], z∈[-90,90].
+- Meters. X/Z ground plane, Y up. Ground at Y=0. Open world bounds x∈[-200,200], z∈[-160,160] (`BALANCE.openWorld`);
+  legacy district x∈[-120,120], z∈[-90,90]. Districts: suburbs SW, police NW, shopping SE, industrial NE.
 - **North = -Z, East = +X.** Park/plaza start is southwest (≈ x -85, z +60). Checkpoint is northeast (≈ x +80, z -60).
 - Facing angle `a`: forward = `(sin a, cos a)` on (x,z); `a=0` faces +Z. Three.js: `mesh.rotation.y = a`.
 - Camera yaw uses the same convention: yaw = direction the camera *looks* along the ground (yaw=0 looks toward +Z,
@@ -147,7 +160,19 @@ Agents only create/edit files listed in their task brief. **Never edit `src/core
 - **Momentum:** only `MomentumSystem` mutates `state.momentum`. Multipliers are read live (never cached on agents):
   recruit radius (leader + pulses + rally), speed (leader walk/sprint + follower speed).
 
-### `Simulation.step(dt, input)` order (authoritative)
+### Open world (docs/3_open_world.md, ARCHITECTURE.md)
+
+- `Game` passes `buildDistrictLayout()` (open world) explicitly; `new Simulation()` defaults to the legacy district (tests).
+- Discovery (fog bits) never changes territory status. Status: unknown → human (discovered) → contested → infected (captured only).
+- Capture happens exactly once per stronghold and is the only unlock path: `unlockAbility` is idempotent; biomass never negative;
+  `activateAbility` checks + spends atomically.
+- Only `ConquestSystem` mutates `state.strongholds`/`state.districts`/`state.discovery`; only `ProgressionSystem` mutates
+  `state.progression` (other systems call `addBiomass`/`unlockAbility`).
+- Dormant agents (beyond `population.activeRadius`) are skipped by every system; followers are never dormant.
+- Humans killed by the Alpha (`killedByAlpha`) always convert; others use the normal roll. One damage path: CombatSystem helpers.
+- Saves contain canonical data only (`WorldSave`); followers are transient. Corrupt/incompatible saves ⇒ clean start, never a crash.
+
+### `Simulation.step(dt, input)` order (authoritative; open-world order lands in T012)
 
 1. Copy `pos→prevPos`, `facing→prevFacing` for leader, zombies, guards.
 2. If `phase !== 'playing'`: only advance anim timers / corpse fades, then return.
@@ -161,6 +186,11 @@ Agents only create/edit files listed in their task brief. **Never edit `src/core
 9b. `updateStructures` (release steering, hitFlash) then `updateMomentum` (decay, tiers)
 10. `checkVictory` (victory: gate destroyed AND all guards DEAD; defeat: leader dead) → set phase, emit once
 11. Tick `hitFlash`, `animTime`, `capReachedFlash`; `state.time += dt`.
+
+Open-world order (T012 replaces the list above): 1 copy prev · 2 `updatePopulation` · 3 `applyHordeCommands` · 4 `updateProgression` ·
+5 `updateLeader` (skipped while respawning) · 6 `updateNavigation` · 7 `updateHorde` · 8 `updateHumanAI` · 9 `updateCombat` ·
+10 `updateConversion` · 11 `updateStructures`, `updateMomentum` · 12 `updateConquest` · 13 `updateRespawn` · 14 timers, `time += dt`.
+No victory/defeat; the world keeps simulating while `phase === 'respawning'`.
 
 ## Visual conventions
 
@@ -209,3 +239,11 @@ worker owns, and every change ends with `npx tsc --noEmit` + `npm test` green.
 - [x] **R3 Visuals/HUD/audio/input** (agy): world/Landmarks.ts, pulse rings + recruit flash, momentum HUD meter, counter pop,
       structure picking/markers/labels, audio cues.
 - [x] **R4 Review & audit**: codex read-only adversarial review; agy spec/cross-file audit; fixes; browser playthrough of first 90 s.
+
+### Open world (docs/3_open_world.md) — task board in `.agent-context/PROGRESS.md`
+
+- [x] **T001 Contracts** (orchestrator): types/contracts/balance/content, legacy layout fixture, stubs, this file.
+- [ ] **Wave A**: T002 world layout · T003 nav scale · T004 Alpha combat · T005 progression · T006 persistence
+- [ ] **Wave B**: T007 horde · T008 humans/population · T009 conquest/respawn · T010 world render · T011 characters/FX
+- [ ] **Wave C–E**: T012 sim integration · T013 UI/audio · T014 client integration · T015 cleanup/README · T016 playtest
+- [ ] **Verification**: V1 spec audit · V2 adversarial review · V3 final build/test report

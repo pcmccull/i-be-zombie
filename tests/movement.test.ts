@@ -3,7 +3,7 @@ import { BALANCE } from '../src/config/balance';
 import { emptyInput } from '../src/core/types';
 import { computeMoveVector, updateLeader, updateStamina } from '../src/entities/ZombieLeader';
 import { Simulation } from '../src/sim/Simulation';
-import { buildDistrictLayout } from '../src/world/districtLayout';
+import { buildLegacyDistrictLayout as buildDistrictLayout } from '../src/world/legacyDistrictLayout';
 
 const dt = BALANCE.sim.fixedDt;
 describe('leader movement', () => {

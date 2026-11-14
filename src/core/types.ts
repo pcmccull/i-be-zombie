@@ -139,16 +139,111 @@ export interface StructureDef {
   defensive: boolean;
 }
 
-/** 'soldier' = armed human (shoots). 'civilian' = unarmed, flees, never shoots. */
-export type HumanRole = 'soldier' | 'civilian';
-/** Where a human belongs. Victory only requires every 'checkpoint' human DEAD. */
-export type HumanPost = 'checkpoint' | 'barricade' | 'street' | 'store';
+/**
+ * 'soldier' = rifle (towers, industrial yard). 'police' = pistol (BALANCE.police). 'civilian' = unarmed, flees, never shoots.
+ * Both 'soldier' and 'police' are "armed" everywhere the code says soldier/armed.
+ */
+export type HumanRole = 'soldier' | 'police' | 'civilian';
+/**
+ * Where a human belongs. 'stronghold' = defender of GuardSpawn.strongholdId; 'patrol' = district patrol / reinforcement.
+ * @deprecated 'checkpoint' | 'barricade' are legacy-layout posts (removed in T015); new layouts use 'stronghold'.
+ */
+export type HumanPost = 'checkpoint' | 'barricade' | 'stronghold' | 'patrol' | 'street' | 'store';
+
+// ---------------------------------------------------------------------------
+// Open world (docs/3_open_world.md): districts, strongholds, nests, abilities
+// ---------------------------------------------------------------------------
+
+export type DistrictId = 'suburbs' | 'police' | 'shopping' | 'industrial';
+export const DISTRICT_IDS: readonly DistrictId[] = ['suburbs', 'police', 'shopping', 'industrial'];
+/** Territory control. Independent of fog discovery (discovering never conquers). */
+export type TerritoryStatus = 'unknown' | 'human' | 'contested' | 'infected';
+export type StrongholdId = 'suburb_checkpoint' | 'police_station' | 'mall_security' | 'industrial_yard';
+/** 'pounce' is data-only this milestone (no unlock source). */
+export type AbilityId = 'bite' | 'infect' | 'alpha_claws' | 'horde_frenzy' | 'pounce' | 'brute_evolution';
+export type AbilityType = 'alpha' | 'horde' | 'passive';
+
+export interface AbilityDef {
+  id: AbilityId;
+  name: string;
+  type: AbilityType;
+  /** Stronghold whose capture unlocks it; null = innate (bite/infect) or not obtainable (pounce). */
+  source: StrongholdId | null;
+  /** 'slot' = must be equipped in one of the 4 slots (Q/E/R/F) to work; 'innate' = always on, never slotted. */
+  slotBehavior: 'slot' | 'innate';
+  /** true = pressing its slot key activates it (cooldown/cost); false = works while equipped (alpha_claws modifies LMB). */
+  activatable: boolean;
+  cooldown: number; // seconds, 0 for passives
+  biomassCost: number; // per activation (brute_evolution: per brute created)
+  duration: number; // seconds of effect, 0 if instant/passive
+  description: string;
+}
+
+export type ObjectiveKind = 'destroyStructure' | 'destroyGate' | 'killDefenders' | 'holdPoint';
+
+export interface ObjectiveDef {
+  /** Unique within its stronghold, e.g. 'breach', 'disable_command'. */
+  id: string;
+  label: string; // HUD text, e.g. 'Breach the front doors'
+  kind: ObjectiveKind;
+  /** destroyStructure: StructureDef.id. */
+  structureId?: number;
+  /** holdPoint: center/radius; satisfied after holdTime s with >= minZombies followers inside and no living armed defender of this stronghold inside. */
+  point?: Vec2;
+  radius?: number;
+  holdTime?: number;
+  minZombies?: number;
+  /** Objective ids that must be done before this one can progress (default none). */
+  requires?: string[];
+}
+
+export interface StrongholdDef {
+  id: StrongholdId;
+  districtId: DistrictId;
+  name: string;
+  bounds: AABB; // defended area (HUD/map annotation, contested detection)
+  center: Vec2;
+  defenseTier: number; // 1..3, difficulty shown on the map
+  unlock: AbilityId | null;
+  biomassReward: number;
+  /** All must be done (in any allowed order) to capture. */
+  objectives: ObjectiveDef[];
+  /** NestDef.id activated on capture. */
+  nestId: string;
+  /** Walkable points (outside bounds, out of sight lines) where reinforcement squads appear. */
+  reinforcementPoints: Vec2[];
+}
+
+export interface NestDef {
+  id: string;
+  districtId: DistrictId;
+  pos: Vec2;
+  /** null = the start nest (always active). Otherwise active once that stronghold is captured. */
+  strongholdId: StrongholdId | null;
+}
+
+export interface DistrictDef {
+  id: DistrictId;
+  name: string;
+  rect: AABB; // districts tile layout.bounds exactly, no gaps / overlaps
+  strongholdId: StrongholdId | null;
+  /** Living civilians the PopulationSystem keeps (respawns) while the district is not 'infected'. */
+  civilianBudget: number;
+  /** Free ambient zombies the PopulationSystem keeps topped up. */
+  ambientBudget: number;
+  /** Walkable respawn points for civilians / ambient zombies (>= 4). */
+  spawnPoints: Vec2[];
+  /** Short map/landmark description. */
+  landmark: string;
+}
 
 export interface GuardSpawn {
   /** Default 'soldier'. */
   role?: HumanRole;
-  /** Default 'checkpoint'. */
+  /** Default 'checkpoint' (legacy). */
   post?: HumanPost;
+  /** Stronghold this human defends (post 'stronghold'); default null. */
+  strongholdId?: StrongholdId | null;
   /** Optional area the human stays inside (civilian flee clamp, store interior). */
   homeArea?: AABB;
   /** Structure id this human is sheltered behind (store door). Horde attack orders redirect to it while intact. */
@@ -186,6 +281,10 @@ export interface DistrictLayout {
   structures: StructureDef[];
   /** Walkable area around playerStart where BALANCE.horde.startFollowers initial followers spawn. */
   startFollowerArea: AABB;
+  // --- open world (legacy layout fills these with a single-district equivalent) ---
+  districts: DistrictDef[];
+  strongholds: StrongholdDef[];
+  nests: NestDef[];
 }
 
 // ---------------------------------------------------------------------------
@@ -210,11 +309,23 @@ interface MobileBase {
   hitFlash: number; // seconds remaining of damage flash
 }
 
+export type LeaderAttackPhase = 'ready' | 'windup' | 'recovery';
+
 export interface LeaderState extends MobileBase {
   alive: boolean;
   stamina: number;
   exhausted: boolean; // latch: true from 0 stamina until stamina >= exhaustedRecoverThreshold
   sprinting: boolean;
+  // Direct (LMB) attack state machine — BALANCE.alpha
+  attackPhase: LeaderAttackPhase;
+  attackTimer: number; // seconds left in windup/recovery
+  /** 0 = bite; with alpha_claws equipped 1..3 = claw combo hit index of the current/last swing. */
+  comboStep: number;
+  comboWindow: number; // seconds left to chain the next combo hit
+  /** Seconds of hit stun (no move/attack) after taking a big hit. */
+  hitStun: number;
+  /** Seconds until respawn while GameState.phase === 'respawning'. */
+  respawnTimer: number;
 }
 
 export type ZombieState = 'ambient' | 'rising' | 'follower' | 'dead';
@@ -247,6 +358,10 @@ export interface ZombieAgent extends MobileBase {
   pulseAt: number;
   /** Seconds remaining of the "just recruited" highlight (visual flash + catch-up speed boost). */
   recruitFlash: number;
+  /** Beyond population.activeRadius of the leader: not simulated this step (PopulationSystem, 2 Hz). Followers are never dormant. */
+  dormant: boolean;
+  /** Brute Evolution siege unit (BALANCE.brute stats). Only followers become brutes. */
+  brute: boolean;
 }
 
 export type GuardState = 'PATROL' | 'ALERT' | 'COMBAT' | 'RETREAT' | 'DEAD';
@@ -274,6 +389,13 @@ export interface GuardAgent extends MobileBase {
   lostTargetTimer: number;
   lastDamageSource: DamageSource;
   deathTime: number | null; // sim time of death
+  strongholdId: StrongholdId | null;
+  /** See ZombieAgent.dormant. */
+  dormant: boolean;
+  /** Seconds of stagger (Alpha Claws finisher): cannot move or shoot. */
+  staggerTime: number;
+  /** Killed by the Alpha's own attack: conversion is guaranteed ('infect'). */
+  killedByAlpha: boolean;
 }
 
 export interface GateState {
@@ -324,7 +446,18 @@ export type TargetRef =
   | { kind: 'zombie'; id: EntityId } // used by guards only
   | { kind: 'leader' }; // used by guards only
 
-export type HordeOrder = { type: 'follow' } | { type: 'attack'; target: TargetRef };
+export type HordeOrder =
+  | { type: 'follow' }
+  | { type: 'attack'; target: TargetRef }
+  /** Go to a ground point; reverts to follow on arrival or at expiresAt (sim time). Followers still auto-engage nearby enemies. */
+  | { type: 'move'; point: Vec2; expiresAt: number };
+
+/** High-level horde command produced by input/UI (edge-triggered, one step). */
+export type HordeCommand =
+  | { type: 'attack'; target: TargetRef; additive: boolean } // additive (Ctrl) = toggle as split squad target
+  | { type: 'move'; point: Vec2 }
+  | { type: 'regroup' } // rally: pull + recruit around the leader (rally cooldown)
+  | { type: 'follow' }; // recall everyone
 
 /**
  * An extra selected attack target. Clicking targets toggles them in/out of the selection:
@@ -360,7 +493,57 @@ export interface GameStats {
   structuresDestroyed: number;
 }
 
-export type GamePhase = 'playing' | 'victory' | 'defeat';
+/** @deprecated 'victory' | 'defeat' are legacy (removed in T015). Open world: 'playing' | 'respawning'. */
+export type GamePhase = 'playing' | 'respawning' | 'victory' | 'defeat';
+
+/** Spec §3 DistrictState, unchanged shape. */
+export interface DistrictState {
+  id: DistrictId;
+  status: TerritoryStatus;
+  discovered: boolean;
+  infection: number; // 0..1 (share of the district's humans converted/killed, 1 when captured)
+  humanStrength: number; // 0..1 living armed humans / initial armed humans in the district
+  alertLevel: number; // 0..1, rises with aggression in the district, decays
+  strongholdCaptured: boolean;
+}
+
+export interface StrongholdState {
+  id: StrongholdId;
+  captured: boolean;
+  /** Under coordinated attack / an objective damaged or done, and not captured. */
+  contested: boolean;
+  /** 0..1 living defenders / initial defenders. */
+  defenderStrength: number;
+  objectivesDone: string[];
+  /** Seconds accumulated on the current holdPoint objective (resets when the hold breaks). */
+  holdProgress: number;
+  /** Reinforcement squads already sent (bounded by BALANCE.conquest.maxReinforcementWaves). */
+  reinforcementsSpent: number;
+  /** Sim time of the last reinforcement wave (-Infinity = never). */
+  lastReinforcementAt: number;
+}
+
+export interface ProgressionState {
+  biomass: number; // never negative
+  unlocked: AbilityId[]; // includes innate 'bite','infect' from the start
+  /** Exactly BALANCE.progression.slots entries (Q, E, R, F). */
+  equipped: (AbilityId | null)[];
+  /** Seconds remaining per ability; missing/0 = ready. */
+  cooldowns: Partial<Record<AbilityId, number>>;
+  /** > 0 while Horde Frenzy is active. */
+  frenzyTimeLeft: number;
+}
+
+/** Fog of war. Revealed cells are independent of territory status. */
+export interface DiscoveryState {
+  cellSize: number;
+  cols: number;
+  rows: number;
+  /** Row-major, 1 byte per cell: 1 = revealed. Origin = layout.bounds min corner. */
+  bits: Uint8Array;
+  /** Revealed cell count (kept in sync with bits). */
+  revealed: number;
+}
 
 export interface GameState {
   time: number; // sim seconds since (re)start
@@ -381,6 +564,16 @@ export interface GameState {
   /** Live follower count; must always equal zombies.filter(z => z.state === 'follower').length. */
   followerCount: number;
   capReachedFlash: number; // seconds remaining of "HORDE FULL" HUD feedback
+  // --- open world ---
+  districts: Record<DistrictId, DistrictState>;
+  /** Same order as layout.strongholds. */
+  strongholds: StrongholdState[];
+  progression: ProgressionState;
+  discovery: DiscoveryState;
+  /** NestDef.id the leader respawns at (start nest until another is chosen). */
+  activeNestId: string;
+  /** Number of leader deaths this session (stats/HUD). */
+  deaths: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -399,6 +592,16 @@ export interface SimInput {
   rush: boolean;
   recall: boolean;
   attackTarget: TargetRef | null; // left-click on a valid guard/gate/structure: toggles it in/out of the selection
+  // --- open world input model (ARCHITECTURE.md §4). Legacy rally/rush/recall/attackTarget are removed in T015. ---
+  /** LMB edge: Alpha direct attack (bite, or claw combo when alpha_claws is equipped). */
+  attack: boolean;
+  /** Ground point under the cursor (aim hint for the forgiving auto-aim); null = swing forward. */
+  aimPoint: Vec2 | null;
+  hordeCommand: HordeCommand | null;
+  /** Q/E/R/F edge: activate equipped slot 0..3. */
+  abilitySlot: number | null;
+  /** Nest panel: put `ability` (null = clear) into `slot`. Only applied within nest.equipRadius of an active nest. */
+  equip: { slot: number; ability: AbilityId | null } | null;
 }
 
 export function emptyInput(): SimInput {
@@ -411,6 +614,11 @@ export function emptyInput(): SimInput {
     rush: false,
     recall: false,
     attackTarget: null,
+    attack: false,
+    aimPoint: null,
+    hordeCommand: null,
+    abilitySlot: null,
+    equip: null,
   };
 }
 
@@ -441,8 +649,54 @@ export type GameEvent =
   | { type: 'conversionStart'; guardId: EntityId; zombieId: EntityId; pos: Vec2 }
   | { type: 'converted'; guardId: EntityId; zombieId: EntityId; pos: Vec2 }
   | { type: 'leaderDied'; pos: Vec2 }
-  | { type: 'victory' }
-  | { type: 'defeat' };
+  | { type: 'victory' } // @deprecated legacy
+  | { type: 'defeat' } // @deprecated legacy
+  // --- open world ---
+  | { type: 'attackSwing'; pos: Vec2; facing: number; combo: number; hit: boolean }
+  | { type: 'moveOrder'; point: Vec2 }
+  | { type: 'districtDiscovered'; districtId: DistrictId }
+  | { type: 'districtStatus'; districtId: DistrictId; status: TerritoryStatus; prev: TerritoryStatus }
+  | { type: 'strongholdContested'; strongholdId: StrongholdId; districtId: DistrictId }
+  | { type: 'objectiveComplete'; strongholdId: StrongholdId; objectiveId: string; label: string }
+  | { type: 'strongholdCaptured'; strongholdId: StrongholdId; districtId: DistrictId; unlock: AbilityId | null; biomass: number }
+  | { type: 'abilityUnlocked'; abilityId: AbilityId; slot: number | null }
+  | { type: 'abilityEquipped'; abilityId: AbilityId | null; slot: number }
+  | { type: 'abilityUsed'; abilityId: AbilityId; pos: Vec2 }
+  | { type: 'abilityDenied'; abilityId: AbilityId | null; reason: 'locked' | 'cooldown' | 'biomass' | 'noTarget' | 'notAtNest' | 'empty' }
+  | { type: 'biomassGain'; amount: number; total: number; reason: 'infect' | 'kill' | 'convert' | 'structure' | 'capture' }
+  | { type: 'frenzyStart'; pos: Vec2; radius: number }
+  | { type: 'frenzyEnd' }
+  | { type: 'bruteEvolved'; zombieId: EntityId; pos: Vec2 }
+  | { type: 'reinforcements'; strongholdId: StrongholdId | null; districtId: DistrictId; count: number; pos: Vec2 }
+  | { type: 'nestActivated'; nestId: string; pos: Vec2 }
+  | { type: 'leaderRespawned'; nestId: string; pos: Vec2 }
+  | { type: 'autosave'; reason: 'capture' | 'unlock' | 'discover' | 'equip' | 'respawn' };
+
+// ---------------------------------------------------------------------------
+// Persistence (versioned JSON in localStorage). Never contains meshes, timers or nav objects.
+// ---------------------------------------------------------------------------
+
+export interface PlayerSave {
+  biomass: number;
+  unlockedAbilities: AbilityId[];
+  equippedAbilities: (AbilityId | null)[]; // length BALANCE.progression.slots
+  selectedNestId: string;
+}
+
+export interface WorldSave {
+  version: number; // BALANCE.save.version
+  seed: number;
+  savedAt: number; // Date.now() supplied by the caller (pure code never reads clocks)
+  player: PlayerSave;
+  districts: Record<DistrictId, DistrictState>;
+  strongholds: Record<StrongholdId, Pick<StrongholdState, 'id' | 'captured' | 'objectivesDone' | 'reinforcementsSpent'>>;
+  /** Destroyed StructureDef ids (captured strongholds' doors stay broken) and whether the industrial gate is down. */
+  destroyedStructures: number[];
+  gateDestroyed: boolean;
+  /** base64 of DiscoveryState.bits. */
+  discoveryBits: string;
+  acquiredUpgrades: AbilityId[]; // == player.unlockedAbilities minus innate (spec field kept for compatibility)
+}
 
 // ---------------------------------------------------------------------------
 // Utility interfaces

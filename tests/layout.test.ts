@@ -8,7 +8,7 @@ import { createInitialState } from '../src/sim/createInitialState';
 import { mulberry32 } from '../src/utils/rng';
 import { CollisionWorld, isCrawlable } from '../src/world/CollisionWorld';
 import { NavigationGrid } from '../src/world/NavigationGrid';
-import { buildDistrictLayout } from '../src/world/districtLayout';
+import { buildLegacyDistrictLayout as buildDistrictLayout } from '../src/world/legacyDistrictLayout';
 
 function pointToAABBDistance(p: Vec2, box: AABB): number {
   const dx = Math.max(box.minX - p.x, 0, p.x - box.maxX);

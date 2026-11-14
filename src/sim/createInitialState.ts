@@ -1,6 +1,8 @@
 import { BALANCE } from '../config/balance';
 import type { ICollisionWorld } from '../core/contracts';
-import type { DistrictLayout, GameState, Rng, ZombieAgent } from '../core/types';
+import type { DistrictId, DistrictLayout, DistrictState, DiscoveryState, GameState, Rng, StrongholdState, ZombieAgent } from '../core/types';
+import { DISTRICT_IDS } from '../core/types';
+import { INNATE_ABILITIES } from '../content/abilities';
 import { createLeader } from '../entities/ZombieLeader';
 import { createZombie } from '../entities/Zombie';
 import { createGuard } from '../entities/HumanGuard';
@@ -48,5 +50,33 @@ export function createInitialState(layout: DistrictLayout, collision: ICollision
     order: { type: 'follow' }, squads: [], abilities: { rallyCooldown: 0, rushCooldown: 0, rushTimeLeft: 0 },
     pendingConversions: [], stats: { recruited: 0, conversions: 0, losses: 0, guardsKilled: 0, cascadeRecruits: 0, structuresDestroyed: 0 },
     followerCount: BALANCE.horde.startFollowers, capReachedFlash: 0,
+    districts: createDistrictStates(), strongholds: createStrongholdStates(layout),
+    progression: {
+      biomass: BALANCE.progression.startBiomass, unlocked: [...INNATE_ABILITIES],
+      equipped: new Array<null>(BALANCE.progression.slots).fill(null), cooldowns: {}, frenzyTimeLeft: 0,
+    },
+    discovery: createDiscovery(layout),
+    activeNestId: layout.nests.find(n => n.strongholdId === null)?.id ?? '', deaths: 0,
   };
+}
+
+export function createDistrictStates(): Record<DistrictId, DistrictState> {
+  const out = {} as Record<DistrictId, DistrictState>;
+  for (const id of DISTRICT_IDS) {
+    out[id] = { id, status: 'unknown', discovered: false, infection: 0, humanStrength: 1, alertLevel: 0, strongholdCaptured: false };
+  }
+  return out;
+}
+
+export function createStrongholdStates(layout: DistrictLayout): StrongholdState[] {
+  return layout.strongholds.map(def => ({
+    id: def.id, captured: false, contested: false, defenderStrength: 1, objectivesDone: [], holdProgress: 0,
+    reinforcementsSpent: 0, lastReinforcementAt: -Infinity,
+  }));
+}
+
+export function createDiscovery(layout: DistrictLayout): DiscoveryState {
+  const cellSize = BALANCE.discovery.cellSize, b = layout.bounds;
+  const cols = Math.ceil((b.maxX - b.minX) / cellSize), rows = Math.ceil((b.maxZ - b.minZ) / cellSize);
+  return { cellSize, cols, rows, bits: new Uint8Array(cols * rows), revealed: 0 };
 }

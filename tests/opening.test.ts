@@ -4,7 +4,7 @@ import { emptyInput } from '../src/core/types';
 import type { Vec2 } from '../src/core/types';
 import { Simulation } from '../src/sim/Simulation';
 import { countFollowers, killZombie } from '../src/systems/HordeSystem';
-import { buildDistrictLayout } from '../src/world/districtLayout';
+import { buildLegacyDistrictLayout as buildDistrictLayout } from '../src/world/legacyDistrictLayout';
 import { isCrawlable } from '../src/world/CollisionWorld';
 import { distance, dt, zombie } from './r2-fixtures';
 

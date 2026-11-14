@@ -18,5 +18,6 @@ export function createGuard(id: number, spawn: GuardSpawn, collision: ICollision
     waypoints: spawn.waypoints.map(p => ({ ...p })), waypointIndex: 0, path: [], pathIndex: 0,
     idleTimer: 0, perceptionTimer: 0, target: null, lostTargetTimer: 0,
     lastDamageSource: 'other', deathTime: null,
+    strongholdId: spawn.strongholdId ?? null, dormant: false, staggerTime: 0, killedByAlpha: false,
   };
 }

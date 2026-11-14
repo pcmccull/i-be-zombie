@@ -442,6 +442,8 @@ export class HUD {
       if (ev.type === 'orderChanged') {
         if (ev.order.type === 'follow') {
           this.showToast('RECALL: FOLLOWING LEADER');
+        } else if (ev.order.type === 'move') {
+          this.showToast('MOVE ORDER');
         } else if ((this.lastState?.squads.length ?? 0) > 0) {
           this.showToast(`HORDE SPLIT: ${this.lastState!.squads.length + 1} TARGETS`);
         } else {

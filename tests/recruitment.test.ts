@@ -4,7 +4,7 @@ import { emptyInput } from '../src/core/types';
 import { createZombie } from '../src/entities/Zombie';
 import { Simulation } from '../src/sim/Simulation';
 import { countFollowers, killZombie, recruitZombie } from '../src/systems/HordeSystem';
-import { buildDistrictLayout } from '../src/world/districtLayout';
+import { buildLegacyDistrictLayout as buildDistrictLayout } from '../src/world/legacyDistrictLayout';
 
 const dt = BALANCE.sim.fixedDt;
 function isolated(): Simulation {

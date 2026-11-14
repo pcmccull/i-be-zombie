@@ -20,6 +20,6 @@ export function createZombie(id: number, pos: Vec2, opts: {
     spawnZone: opts.spawnZone, wanderTarget: null, wanderTimer: 1 + rng.next() * 3,
     stateTime: 0, stuckTimer: 0, isConverted: opts.isConverted, squad: 0, elevation: 0,
     heldBy: opts.heldBy ?? 0, recruitGen: opts.state === 'follower' ? 0 : -1,
-    pulseAt: -1, recruitFlash: 0,
+    pulseAt: -1, recruitFlash: 0, dormant: false, brute: false,
   };
 }

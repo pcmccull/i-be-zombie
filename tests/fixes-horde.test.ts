@@ -8,7 +8,7 @@ import { canMelee } from '../src/systems/CombatSystem';
 import { applyHordeCommands, killZombie, recruitZombie, updateHorde } from '../src/systems/HordeSystem';
 import { updateNavigation } from '../src/systems/NavigationSystem';
 import { dist } from '../src/utils/math';
-import { buildDistrictLayout } from '../src/world/districtLayout';
+import { buildLegacyDistrictLayout as buildDistrictLayout } from '../src/world/legacyDistrictLayout';
 
 const dt = BALANCE.sim.fixedDt;
 function fixture(extra: ColliderDef[] = []) {

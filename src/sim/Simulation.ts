@@ -4,7 +4,7 @@ import type { DistrictLayout, GameEvent, GameState, SimInput } from '../core/typ
 import { updateLeader } from '../entities/ZombieLeader';
 import { CollisionWorld, isCrawlable } from '../world/CollisionWorld';
 import { NavigationGrid } from '../world/NavigationGrid';
-import { buildDistrictLayout } from '../world/districtLayout';
+import { buildLegacyDistrictLayout as buildDistrictLayout } from '../world/legacyDistrictLayout';
 import { SpatialHash } from '../utils/spatialHash';
 import { mulberry32 } from '../utils/rng';
 import { applyHordeCommands, updateHorde } from '../systems/HordeSystem';

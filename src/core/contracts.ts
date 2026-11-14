@@ -77,8 +77,12 @@ export interface INavigationGrid {
   nearestWalkable(p: Vec2, out?: Vec2): Vec2;
   /** A* (8-connected, no corner cutting) + string-pulling. Null if unreachable. Includes `to` (snapped) as last point. */
   findPath(from: Vec2, to: Vec2): Vec2[] | null;
-  /** Dijkstra/BFS flow field from multiple goals. May reuse `reuse` storage. */
-  buildFlowField(goals: readonly Vec2[], reuse?: IFlowField): IFlowField;
+  /**
+   * Dijkstra/BFS flow field from multiple goals. May reuse `reuse` storage.
+   * `maxDistance` (meters, optional): stop expanding beyond this path distance; cells past it are unreachable
+   * (sample() false, distanceAt() Infinity). Omitted = whole grid (legacy behaviour).
+   */
+  buildFlowField(goals: readonly Vec2[], reuse?: IFlowField, maxDistance?: number): IFlowField;
   /** True if the straight walk a->b stays on walkable cells (for path smoothing / direct steering). */
   hasClearWalk(a: Vec2, b: Vec2): boolean;
 }
@@ -163,3 +167,52 @@ export interface ISimulation {
  * emits structureDestroyed, plus released only when count > 0; stats.structuresDestroyed++; momentum if def.defensive.
  */
 export type SystemUpdate =(ctx: SimContext, dt: number, input: SimInput) => void;
+
+// ===========================================================================
+// Open world (docs/3_open_world.md). Stubs ship in T001; owners in PROGRESS.md.
+// ===========================================================================
+
+/**
+ * src/systems/ProgressionSystem.ts (T005) — mutations, biomass, loadout. Pure.
+ *   addBiomass(ctx, amount, reason): void            // amount > 0; emits biomassGain
+ *   isUnlocked(state, id) / isEquipped(state, id): boolean
+ *   canActivate(state, id): AbilityDenyReason | null  // null = OK. unlocked ∧ equipped ∧ activatable ∧ cooldown 0 ∧ biomass >= cost
+ *   activateAbility(ctx, id): boolean                 // atomic check+spend+cooldown; emits abilityUsed / abilityDenied
+ *   unlockAbility(ctx, id): boolean                   // idempotent (false if already unlocked); auto-equips first empty slot; emits abilityUnlocked once
+ *   equipAbility(ctx, slot, id | null): boolean       // requires unlocked + 'slot' behaviour + leader within nest.equipRadius of an active nest; no duplicates
+ *   updateProgression(ctx, dt, input): void           // cooldown ticking, input.abilitySlot / input.equip, frenzy timer (frenzyEnd)
+ *   isFrenzyActive(state): boolean
+ *   hordeSpeedMultiplier(state): number               // frenzy.speedMultiplier while active, else 1
+ *   hordeAttackRateMultiplier(state): number          // frenzy.attackRateMultiplier while active, else 1
+ *
+ * src/systems/ConquestSystem.ts (T009) — strongholds, territory, alert, nests, discovery. Pure.
+ *   updateConquest(ctx, dt): void
+ *   objectiveStatus(ctx, strongholdId): { id: string; label: string; done: boolean; progress: number }[]   // HUD read model
+ *   isNestActive(ctx, nestId): boolean
+ *   revealAround(state, layout, p, radius): DistrictId[]   // returns newly discovered districts
+ *   Capture happens exactly once per stronghold: captured=true, unlockAbility(def.unlock), addBiomass(def.biomassReward,'capture'),
+ *   nest activated (nestActivated), district status 'infected', autosave{reason:'capture'}.
+ *
+ * src/systems/RespawnSystem.ts (T009)
+ *   updateRespawn(ctx, dt): void      // leader dead && phase 'playing' => phase 'respawning', respawnTimer = respawn.delay, deaths++;
+ *                                     // timer 0 => leader at active nest, full hp, respawn.followers new followers, leaderRespawned
+ *
+ * src/systems/PopulationSystem.ts (T008)
+ *   updatePopulation(ctx, dt): void   // dormant flags at population.dormantRefreshHz; budgeted civilian/ambient respawns; caps
+ *
+ * src/persistence/saveSchema.ts (T006) — pure, no DOM.
+ *   createSave(state, seed): WorldSave
+ *   applySave(ctx, save): void        // restores permanent progress into a freshly created state (see WorldSave docs)
+ *   parseSave(raw: unknown): WorldSave | null   // validate + migrate older versions; null on corrupt/incompatible
+ *   encodeBits(bits: Uint8Array): string / decodeBits(s: string, length: number): Uint8Array
+ * src/persistence/SaveStore.ts (T006)
+ *   class SaveStore { constructor(storage: StorageLike | null, key?: string); load(): WorldSave | null; save(s: WorldSave): boolean; clear(): void }  // never throws
+ */
+export type AbilityDenyReason = 'locked' | 'cooldown' | 'biomass' | 'noTarget' | 'notAtNest' | 'empty';
+
+/** Minimal Web Storage subset (window.localStorage satisfies it; tests use an in-memory map). */
+export interface StorageLike {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
+}

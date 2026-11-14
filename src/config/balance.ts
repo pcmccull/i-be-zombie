@@ -175,6 +175,122 @@ export const BALANCE = {
     guardTorso: 1.2,
     gate: 1.4,
   },
+
+  // =========================================================================
+  // Open world (docs/3_open_world.md, .agent-context/ARCHITECTURE.md)
+  // =========================================================================
+  openWorld: {
+    // World bounds for buildDistrictLayout() (the legacy layout keeps world.minX.. above).
+    minX: -200,
+    maxX: 200,
+    minZ: -160,
+    maxZ: 160,
+    /** Spec §7.horde cap for the open world; HordeSystem switches maxFollowers to this in T007. */
+    maxFollowers: 40,
+  },
+  chunks: {
+    size: 80, // meters; 400 x 320 world => 5 x 4 = 20 chunks
+    loadRadius: 150, // render chunks whose rect is within this distance of the camera target
+    unloadRadius: 190, // hysteresis: unload beyond this
+  },
+  nav: {
+    flowFieldMaxDistance: 140, // meters; bounded Dijkstra for 5 Hz replans at world scale
+    farCatchUpDistance: 60, // followers farther than this from the leader, out of combat ...
+    farCatchUpOffscreen: 35, // ... and farther than this from the camera target may be teleported near the leader
+  },
+  population: {
+    activeRadius: 110, // full AI within this distance of the leader
+    dormantRefreshHz: 2,
+    civilianRespawnDelay: 20, // seconds after a civilian dies before the district may respawn one
+    minRespawnDistance: 60, // respawn points must be at least this far from the leader
+    maxHumans: 140, // hard cap on living humans in state.guards (all districts)
+    maxAmbient: 160, // hard cap on ambient (non-follower) zombies
+  },
+  alpha: {
+    // LMB direct attack. Bite = base; damage routed through CombatSystem helpers.
+    biteDamage: 14,
+    biteRange: 1.9,
+    biteWindup: 0.14,
+    biteRecovery: 0.36,
+    aimConeDeg: 100, // forgiving auto-aim cone
+    aimRange: 3.2, // auto-aim reach (lunges/turns toward target)
+    // Alpha Claws 3-hit combo
+    clawDamage: [16, 16, 30] as readonly number[],
+    clawRange: 2.3,
+    clawWindup: 0.1,
+    clawRecovery: [0.22, 0.22, 0.5] as readonly number[],
+    comboWindow: 0.55, // seconds after recovery to chain the next hit
+    staggerTime: 0.9, // combo finisher staggers humans (no move/shoot)
+    structureDamageMultiplier: 1, // Alpha vs gates/structures
+    hitStunDamage: 18, // a single hit >= this stuns the Alpha
+    hitStunTime: 0.25,
+    infectChance: 1, // humans killed by the Alpha always rise (spec "infect")
+  },
+  police: {
+    // role 'police' (pistols); 'soldier' keeps BALANCE.guard (rifles).
+    maxHp: 45,
+    damage: 6,
+    range: 16,
+    fireCooldown: 0.9,
+    hitChance: 0.55,
+    aimDelay: 0.5, // seconds from acquiring a target to the first shot
+  },
+  progression: {
+    slots: 4, // Q E R F
+    startBiomass: 0,
+    biomassInfect: 3, // civilian killed by the Alpha
+    biomassKill: 4, // armed human killed by the horde/Alpha
+    biomassConvert: 2, // conversion rises
+    biomassStructure: 5,
+  },
+  frenzy: {
+    duration: 8,
+    cooldown: 25,
+    radius: 22, // followers within this of the leader at activation are buffed
+    speedMultiplier: 1.4,
+    attackRateMultiplier: 1.5,
+  },
+  brute: {
+    costPerBrute: 15, // biomass
+    maxPerActivation: 2, // nearest non-brute followers converted per activation
+    maxBrutes: 6,
+    cooldown: 6,
+    maxHp: 180,
+    radius: 0.62,
+    speedMultiplier: 0.85,
+    attackDamage: 14,
+    structureDamageMultiplier: 3.5, // vs gate / structures (siege)
+  },
+  conquest: {
+    contestRadius: 30, // followers within this of a stronghold's bounds + damage => contested
+    alertPerArmedKill: 0.12,
+    alertPerStructureHit: 0.01,
+    alertDecayPerSecond: 0.01,
+    reinforcementAlert: 0.5, // alert level that triggers a wave
+    reinforcementCooldown: 45, // seconds between waves per stronghold
+    maxReinforcementWaves: 3, // per stronghold, ever (no endless spawns)
+    reinforcementSize: 3,
+    capturedPatrolFactor: 0.25, // captured districts keep this share of civilian budget and no patrols
+  },
+  nest: {
+    equipRadius: 8, // must stand this close to an active nest to change the loadout
+    replenishRadius: 14,
+    replenishInterval: 4, // seconds per free follower spawned at a nest while the leader is near and horde < replenishTarget
+    replenishTarget: 10,
+  },
+  respawn: {
+    delay: 4, // seconds dead before respawning
+    followers: 5, // fresh followers spawned at the nest on respawn
+  },
+  discovery: {
+    cellSize: 20,
+    revealRadius: 45,
+    revealHz: 4,
+  },
+  save: {
+    storageKey: 'ibz.openworld.save',
+    version: 1,
+  },
 } as const;
 
 export type Balance = typeof BALANCE;

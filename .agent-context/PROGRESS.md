@@ -1,28 +1,43 @@
 # Master Implementation Progress
 
-Spec: `docs/2_intial_recruitment_design.md`. Briefs: `docs/briefs/R*.md`. Conventions: `AGENTS.md`.
+Spec: `docs/3_open_world.md`. Architecture/contracts: `.agent-context/ARCHITECTURE.md`. Conventions: `AGENTS.md`.
+Previous milestone (recruitment overhaul R0–R4): complete, committed (1eee817, fec178f, 1f274d1).
 
-## Active Milestone: R4 — complete (all phases VERIFIED; nothing committed)
+## Active Milestone: OW — Open World. T001 VERIFIED + committed on branch `open-world`; Wave A next.
+
+Baseline (2026-11-14 10:31): `npx tsc --noEmit` 0 errors, `npm test` 25 files / 216 tests passing.
 
 ## Provider Availability
 
 | Agent | Status | Notes |
 | :--- | :--- | :--- |
-| `@codex-worker` | **UNAVAILABLE (QUOTA_EXHAUSTED)** for the rest of this session | Hit usage limit during R2 (~157k tokens, 2026-11-14 ~08:40; provider says retry 11:26). Per failover policy: fallback → `@claude-worker` (or `@agy-worker`). |
-| `@agy-worker` | Available | Headless needs `"toolPermission": "always-proceed"` (set by user). R1 first attempts were permission-blocked → R1 reassigned to codex. |
-| `@claude-worker` | Available | Fallback for codex tasks. |
+| `@codex-worker` | Re-check at dispatch | Last session hit its quota; provider said retry ~11:26 on 2026-11-14. |
+| `@agy-worker` | Available, wrapper broken | `.claude/scripts/run-agy-sandbox.sh` is missing. Dispatch prompts tell the wrapper to run `agy -p` directly (as R3/R4 did). |
+| `@claude-worker` | Available | Fallback for codex and agy. |
 
 ## Task Queue & File Locks
 
-| Task ID | Description | Assigned Agent | Locked Files | Status | Report Path |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| R0 | Contracts, balance, AGENTS.md plan | orchestrator | `src/core/types.ts`, `src/core/contracts.ts`, `src/config/balance.ts`, `AGENTS.md` | VERIFIED | — (inline) |
-| R1 | Layout & initial-state scaffolding | ~~agy~~ (permission-blocked) → codex | `src/world/districtLayout.ts`, `src/entities/*`, `src/sim/createInitialState.ts`, `tests/layout.test.ts` + fixture fixes | VERIFIED (tsc 0, 179/179) | — (predates reports dir; summary in transcript) |
-| R2a | MomentumSystem + unit tests | orchestrator | `src/systems/MomentumSystem.ts`, `tests/momentum.test.ts` | VERIFIED (7/7) | — |
-| R2 | Sim systems (cascade, structures, momentum wiring, civilians, victory) | codex → **QUOTA_EXHAUSTED** → orchestrator finished Remaining Work | `src/systems/*` (except Momentum), `src/sim/Simulation.ts`, `src/entities/ZombieLeader.ts`, `tests/{cascade,structures,opening,momentum-integration,r2-fixtures}.ts` + existing test edits | VERIFIED (tsc 0, 205/205) | `reports/R2-codex.md` (written retroactively) |
-| R3 | Visuals, HUD, audio, input wiring, Landmarks | agy (worktree `../i-be-zombie-r3`, branch `r3-visuals`) | `src/world/Landmarks.ts`, `src/visuals/*`, `src/ui/*`, `src/audio/AudioSystem.ts`, `src/core/{Game,InputController}.ts`, `src/world/CityDistrict.ts` | VERIFIED (merged as patch; tsc 0, 205/205, build ok) | — (transcript) |
-| R4a | Adversarial logic review (read-only) | ~~codex~~ (unavailable) → claude-worker | none (read-only) | VERIFIED (no P1; 1 P2 + P3s) | `reports/R4a-claude.md` |
-| R4b | Spec & cross-file audit (read-only) | agy (`--mode=plan`) | none (read-only) | VERIFIED (3 P2 visual/docs + P3s) | `reports/R4b-agy.md` |
-| R4c | Browser playthrough (+ HUD objective order fix, barricade police tuning) | orchestrator | src/ui/HUD.ts (objective), balance.ts, HumanAISystem.ts (barricade damage) | VERIFIED (start→victory→restart; 100 FPS @94 zombies) | `reports/R4c-orchestrator.md` |
-| R4d-sim | R4a fixes, pacing/momentum tuning, README, AGENTS.md drift | orchestrator | src/systems/{Horde,Navigation,Momentum}System.ts, balance.ts, tests/{opening,r4d,momentum,cascade,momentum-integration}, README.md, AGENTS.md | VERIFIED (tsc 0, 207/207) | `reports/R4d-sim-orchestrator.md` |
-| R4d-visual | Landmarks restart reset, checkpoint wall coupling, Effects.reset markers, HUD alley objective | agy (worktree `../i-be-zombie-r3`, base d00611d) | src/world/{Landmarks,Checkpoint}.ts, src/core/Game.ts, src/visuals/Effects.ts, src/ui/{HUD.ts,hud.css} | VERIFIED (merged as patch; tsc 0, 207/207, build ok) | `reports/R4d-visual-agy.md` |
+Waves run in order. Tasks inside a wave have disjoint locks and may run concurrently (≤ 3 writers at once).
+Every task ends with `npx tsc --noEmit` + `npm test` green and a report at `.agent-context/reports/<TASK_ID>-<agent>.md`.
+
+| Task | Wave | Description | Agent | Locked Files | Depends | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| T001 | 0 | Compiling contract skeleton: types/contracts/balance, content data (abilities, strongholds, districts), stub systems, legacy layout rename + test imports, AGENTS.md rewrite | orchestrator | `src/core/{types,contracts}.ts`, `src/config/balance.ts`, `src/content/**`, `AGENTS.md`, `src/world/legacyDistrictLayout.ts` (moved), stub files `src/systems/{Progression,Conquest,Respawn,Population}System.ts`, `src/persistence/*.ts` (stubs), `src/sim/createInitialState.ts` (default fields only), test import lines | — | VERIFIED (tsc 0; 210/210 on staged snapshot) |
+| T002 | A | World layout: 4 contiguous districts, roads, landmarks, strongholds, nests, spawn budgets; `worldQueries.ts` (getDistrictAt, chunks, ChunkStreamer) | codex | `src/world/districtLayout.ts`, `src/world/layout/**`, `src/world/worldQueries.ts`, `tests/{layout,world}.test.ts` | T001 | PENDING |
+| T003 | A | Nav at world scale: bounded flow fields, NavigationSystem catch-up/teleport for far offscreen followers, perf test | codex | `src/world/{NavigationGrid,CollisionWorld}.ts`, `src/systems/NavigationSystem.ts`, `tests/{navigation,fixes-nav,navScale}.test.ts` | T001 | PENDING |
+| T004 | A | Alpha combat: LMB attack state machine, Claws combo + stagger, hit stun, Alpha kills always infect, brute damage, frenzy attack rate | codex | `src/entities/ZombieLeader.ts`, `src/systems/{Combat,Conversion}System.ts`, `tests/{combat,conversion,movement,alphaCombat}.test.ts` | T001 | PENDING |
+| T005 | A | Progression: ability registry use, biomass, cooldowns, equip at nest, unlock once, Horde Frenzy, Brute Evolution | codex | `src/systems/ProgressionSystem.ts`, `src/entities/Zombie.ts`, `tests/progression.test.ts` | T001 | PENDING |
+| T006 | A | Persistence: versioned WorldSave, parse/validate/migrate, SaveStore (never throws), round-trip tests | agy (fallback claude) | `src/persistence/**`, `tests/persistence.test.ts` | T001 | PENDING |
+| T007 | B | Horde: move order, regroup, frenzy multipliers (replaces rush), 40 cap, dormant skip, brute steering | codex | `src/systems/HordeSystem.ts`, `tests/{horde,cascade,recruitment,engagement,fixes-horde,todos,r4d,opening,momentum-integration}.test.ts` | T003, T005 | PENDING |
+| T008 | B | Humans + population: police/soldier/civilian roles, stagger, patrols/reinforcement behaviour, dormant flags, budgeted respawns, caps | codex | `src/systems/{HumanAI,Population}System.ts`, `src/entities/HumanGuard.ts`, `tests/{ai,civilianChase,population}.test.ts` | T002, T004 | PENDING |
+| T009 | B | Conquest + respawn: objectives, contested/capture once, unlocks, district status, alert + bounded reinforcements, nests, discovery fog; leader death/respawn | codex | `src/systems/{Conquest,Respawn,Structure}System.ts`, `tests/{conquest,discovery,respawn,structures}.test.ts` | T002, T005 | PENDING |
+| T010 | B | World rendering: per-chunk merged city meshes + streaming, stronghold/nest landmarks, district props, generalized gate visuals | agy | `src/world/{CityDistrict,Landmarks,Checkpoint}.ts` | T002 | PENDING |
+| T011 | B | Characters & FX: police/soldier/civilian looks, brute variant, leader attack anims, frenzy aura, claw swing, capture burst, move marker, render-radius culling | agy | `src/visuals/**` | T001 | PENDING |
+| T012 | C | Sim integration: new step order, createInitialState from world + save, remove victory call, open-world integration tests (spec §10 items 1–12 headless) | claude-worker | `src/sim/{Simulation,createInitialState}.ts`, `src/systems/VictorySystem.ts` (delete), `tests/{victory,openWorld}.test.ts` | T002–T009 | PENDING |
+| T013 | C | UI + audio: HUD (health, followers, biomass, Q/E/R/F slots, objectives, toasts, respawn overlay), minimap, world map (fog ≠ territory), pause menu, nest equip panel, debug overlay, audio cues | agy | `src/ui/**`, `src/audio/AudioSystem.ts` | T001, T011 | PENDING |
+| T014 | D | Client integration: new input model, Game wiring (save boot, autosave, pause, chunk streaming, map/HUD/FX/audio events), camera range | claude-worker | `src/core/{Game,InputController,ThirdPersonCamera}.ts`, `src/main.ts`, `index.html`, `tests/{picking,pointerLock,cameraMath}.test.ts` | T010–T013 | PENDING |
+| T015 | E | Contract cleanup (remove rush/victory/checkpoint-only fields), README controls + 10-min demo path | orchestrator | contract files, `README.md`, `AGENTS.md` | T014 | PENDING |
+| T016 | E | Browser playthrough + tuning (spec Gate 4) | orchestrator | `src/config/balance.ts` + small fixes by owner | T015 | PENDING |
+| V1 | F | Spec completeness audit (read-only, plan mode) | agy | none | T016 | PENDING |
+| V2 | F | Adversarial bug/edge-case review (read-only) | codex | none | T016 | PENDING |
+| V3 | F | Full build + test run, `reports/FINAL-VERIFICATION.md` | claude-worker | `reports/FINAL-VERIFICATION.md` | V1, V2 fixes | PENDING |

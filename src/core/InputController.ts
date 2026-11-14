@@ -92,6 +92,8 @@ export class InputController {
       cameraYaw,
       sprint: this.keys.has('ShiftLeft') || this.keys.has('ShiftRight'),
       rally: this.rally, rush: this.rush, recall: this.recall, attackTarget: this.attackTarget,
+      // Open-world input model is wired in T014.
+      attack: false, aimPoint: null, hordeCommand: null, abilitySlot: null, equip: null,
     };
     this.rally = this.rush = this.recall = false;
     this.attackTarget = null;
