@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { ColliderDef, DistrictLayout, GateState } from '../core/types';
+import { onLayoutChunksChanged } from './CityDistrict';
+import { chunkIdAt } from './worldQueries';
 
 const COLOR_FACTION_ORANGE = 0xe0782a;
 const COLOR_FACTION_NAVY = 0x2c3e66;
@@ -77,6 +79,7 @@ interface GateSegment {
 export class CheckpointVisual {
   readonly group: THREE.Group;
   readonly gatePickMesh: THREE.Mesh;
+  readonly chunkId: number;
 
   private readonly gateIntactGroup: THREE.Group;
   private readonly gateRubbleGroup: THREE.Group;
@@ -93,12 +96,32 @@ export class CheckpointVisual {
   private readonly gateCx: number;
   private readonly gateCz: number;
   private readonly gatePickY: number;
+  private readonly compoundChunkIds = new Set<number>();
+  private readonly visibleChunks = new Set<number>();
+  private readonly unsubscribeChunks: () => void;
 
   private highlighted = false;
+  private gateDestroyed = false;
+  private chunkVisible = true;
 
   constructor(layout: DistrictLayout) {
     this.group = new THREE.Group();
     this.group.name = 'CheckpointVisual';
+
+    const cpBounds = layout.checkpoint.bounds;
+    const cpCenter = {
+      x: 0.5 * (cpBounds.minX + cpBounds.maxX),
+      z: 0.5 * (cpBounds.minZ + cpBounds.maxZ),
+    };
+    this.chunkId = chunkIdAt(layout, cpCenter);
+    this.compoundChunkIds.add(this.chunkId);
+    this.compoundChunkIds.add(chunkIdAt(layout, { x: cpBounds.minX, z: cpBounds.minZ }));
+    this.compoundChunkIds.add(chunkIdAt(layout, { x: cpBounds.maxX, z: cpBounds.minZ }));
+    this.compoundChunkIds.add(chunkIdAt(layout, { x: cpBounds.minX, z: cpBounds.maxZ }));
+    this.compoundChunkIds.add(chunkIdAt(layout, { x: cpBounds.maxX, z: cpBounds.maxZ }));
+    for (const id of this.compoundChunkIds) {
+      this.visibleChunks.add(id);
+    }
 
     this.gateMaterial = this.trackMaterial(
       new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true }),
@@ -175,9 +198,59 @@ export class CheckpointVisual {
     this.gatePickMesh.name = 'GatePickProxy';
     this.gatePickMesh.userData.target = { kind: 'gate' };
     this.group.add(this.gatePickMesh);
+
+    this.unsubscribeChunks = onLayoutChunksChanged(layout, (loaded) => {
+      this.syncVisibleChunks(loaded);
+    });
+  }
+
+  /** Set visibility for a specific chunk ID. Compound is visible while any of its chunks is visible. */
+  setChunkVisible(id: number, visible: boolean): void {
+    if (!this.compoundChunkIds.has(id)) return;
+    if (visible) {
+      this.visibleChunks.add(id);
+    } else {
+      this.visibleChunks.delete(id);
+    }
+    this.applyChunkVisibility(this.visibleChunks.size > 0);
+  }
+
+  /** Sync compound visibility from CityDistrict.loadedChunkIds. */
+  syncVisibleChunks(loadedChunkIds: ReadonlySet<number>): void {
+    this.visibleChunks.clear();
+    for (const id of this.compoundChunkIds) {
+      if (loadedChunkIds.has(id)) {
+        this.visibleChunks.add(id);
+      }
+    }
+    this.applyChunkVisibility(this.visibleChunks.size > 0);
+  }
+
+  setVisibleChunks(loadedChunkIds: ReadonlySet<number>): void {
+    this.syncVisibleChunks(loadedChunkIds);
+  }
+
+  private applyChunkVisibility(visible: boolean): void {
+    this.chunkVisible = visible;
+    this.group.visible = visible;
+    if (!visible) {
+      this.gatePickMesh.visible = false;
+    } else if (!this.gateDestroyed) {
+      this.gatePickMesh.visible = true;
+      this.gatePickMesh.position.set(this.gateCx, this.gatePickY, this.gateCz);
+      if (!this.gatePickMesh.userData.target) {
+        this.gatePickMesh.userData.target = { kind: 'gate' };
+      }
+    }
   }
 
   update(gate: GateState, _dt: number, time: number): void {
+    this.gateDestroyed = gate.destroyed;
+    if (!this.chunkVisible) {
+      this.gatePickMesh.visible = false;
+      return;
+    }
+
     // Animate tower searchlight sweep and gatehouse beacon pulse
     for (let i = 0; i < this.searchlights.length; i++) {
       this.searchlights[i].rotation.y = Math.sin(time * 0.85 + i * 2.1) * 0.45;
@@ -262,6 +335,7 @@ export class CheckpointVisual {
   }
 
   dispose(): void {
+    this.unsubscribeChunks();
     for (const g of this.disposableGeometries) {
       g.dispose();
     }
@@ -290,6 +364,8 @@ export class CheckpointVisual {
     const staticGeoms: THREE.BufferGeometry[] = [];
     const glowGeoms: THREE.BufferGeometry[] = [];
     const cpBounds = layout.checkpoint.bounds;
+    const cpCx = 0.5 * (cpBounds.minX + cpBounds.maxX);
+    const cpCz = 0.5 * (cpBounds.minZ + cpBounds.maxZ);
 
     // 1. Perimeter walls & Sandbag walls from layout.colliders within checkpoint bounds (expanded by ~1 m)
     const wallPad = 1.0;
@@ -311,12 +387,13 @@ export class CheckpointVisual {
         c.minZ >= cpBounds.minZ &&
         c.maxZ <= cpBounds.maxZ
       ) {
-        this.appendCompoundTentOrContainer(c, staticGeoms);
+        this.appendCompoundTentOrContainer(c, cpCx, staticGeoms);
       }
     }
 
     // 2. Gatehouse flanking pillars + warning beacons
     const gateRect = layout.checkpoint.gate.rect;
+    const gateCx = 0.5 * (gateRect.minX + gateRect.maxX);
     const gateCz = 0.5 * (gateRect.minZ + gateRect.maxZ);
     const pillarXs = [gateRect.minX - 0.35, gateRect.maxX + 0.35];
     for (const px of pillarXs) {
@@ -330,7 +407,7 @@ export class CheckpointVisual {
       this.group.add(beacon);
     }
 
-    // 3. Two Open-Frame Watchtowers (4 legs, platform at platformHeight, railing, roof, searchlight)
+    // 3. Two Open-Frame Watchtowers (4 legs on 3x3m support collider, cantilevered >= 4.5m deck covering inward edge occupant)
     for (const tower of layout.checkpoint.towers) {
       const r = tower.rect;
       const w = r.maxX - r.minX;
@@ -340,7 +417,18 @@ export class CheckpointVisual {
       const platY = tower.platformHeight; // 4.0 m
       const roofY = platY + 2.45;
 
-      // 4 heavy steel legs from ground up to roof
+      // Extended platform deck width (>= 4.6 m, shifted slightly inward toward compound center)
+      // so tower occupants standing 0.6 m past the 3x3 m support footprint stand squarely inside the deck & railing.
+      const inwardSign = cx < cpCx ? 1 : -1;
+      const deckCx = cx + inwardSign * 0.35;
+      const deckW = Math.max(w + 1.6, 4.6);
+      const deckD = Math.max(d + 0.6, 3.6);
+      const deckMinX = deckCx - deckW * 0.5;
+      const deckMaxX = deckCx + deckW * 0.5;
+      const deckMinZ = cz - deckD * 0.5;
+      const deckMaxZ = cz + deckD * 0.5;
+
+      // 4 heavy steel legs from ground up to platform within the 3x3m support footprint
       const legOffsets: [number, number][] = [
         [r.minX + 0.2, r.minZ + 0.2],
         [r.maxX - 0.2, r.minZ + 0.2],
@@ -348,7 +436,37 @@ export class CheckpointVisual {
         [r.maxX - 0.2, r.maxZ - 0.2],
       ];
       for (const [lx, lz] of legOffsets) {
-        staticGeoms.push(makeBox(0.26, roofY, 0.26, lx, roofY * 0.5, lz, COLOR_DARK_STEEL));
+        staticGeoms.push(makeBox(0.26, platY, 0.26, lx, platY * 0.5, lz, COLOR_DARK_STEEL));
+      }
+
+      // Upper canopy posts from platform deck corners up to roof
+      const canopyPosts: [number, number][] = [
+        [deckMinX + 0.18, deckMinZ + 0.18],
+        [deckMaxX - 0.18, deckMinZ + 0.18],
+        [deckMinX + 0.18, deckMaxZ - 0.18],
+        [deckMaxX - 0.18, deckMaxZ - 0.18],
+      ];
+      const upperH = roofY - platY;
+      for (const [px, pz] of canopyPosts) {
+        staticGeoms.push(makeBox(0.22, upperH, 0.22, px, platY + upperH * 0.5, pz, COLOR_DARK_STEEL));
+      }
+
+      // Diagonal cantilever support brackets from lower legs out to the wider platform deck
+      for (const lz of [r.minZ + 0.2, r.maxZ - 0.2]) {
+        staticGeoms.push(
+          makeBox(
+            0.95,
+            0.18,
+            0.18,
+            cx + inwardSign * (w * 0.5 + 0.22),
+            platY - 0.52,
+            lz,
+            COLOR_DARK_STEEL,
+            0,
+            0,
+            inwardSign * 0.52,
+          ),
+        );
       }
 
       // Cross-bracing struts on lower tower legs (so zombies clawing tower legs look natural)
@@ -366,33 +484,33 @@ export class CheckpointVisual {
         staticGeoms.push(makeBox(0.64, 0.06, 0.06, cx, ry, r.minZ + 0.05, 0x8a929e));
       }
 
-      // Platform deck at platformHeight (top at y = platY so occupant stands flush)
-      staticGeoms.push(makeBox(w + 0.3, 0.22, d + 0.3, cx, platY - 0.11, cz, 0x5c4c3c));
-      staticGeoms.push(makeBox(w + 0.36, 0.12, d + 0.36, cx, platY - 0.22, cz, COLOR_DARK_STEEL));
+      // Extended platform deck at platformHeight (top at y = platY so occupant stands flush)
+      staticGeoms.push(makeBox(deckW, 0.22, deckD, deckCx, platY - 0.11, cz, 0x5c4c3c));
+      staticGeoms.push(makeBox(deckW + 0.1, 0.12, deckD + 0.1, deckCx, platY - 0.22, cz, COLOR_DARK_STEEL));
 
-      // Waist-high armored railings (height 0.95 m above platform, leaving clear sight from 5.2 m eye)
+      // Waist-high armored railings around extended deck (height 0.92 m above platform)
       const railH = 0.92;
       const railY = platY + railH * 0.5;
       staticGeoms.push(
-        makeBox(w + 0.25, railH, 0.14, cx, railY, r.maxZ + 0.06, COLOR_FACTION_NAVY),
-        makeBox(w + 0.25, railH, 0.14, cx, railY, r.minZ - 0.06, COLOR_FACTION_NAVY),
-        makeBox(0.14, railH, d + 0.25, r.minX - 0.06, railY, cz, COLOR_FACTION_NAVY),
-        makeBox(0.14, railH, d + 0.25, r.maxX + 0.06, railY, cz, COLOR_FACTION_NAVY),
+        makeBox(deckW, railH, 0.14, deckCx, railY, deckMaxZ, COLOR_FACTION_NAVY),
+        makeBox(deckW, railH, 0.14, deckCx, railY, deckMinZ, COLOR_FACTION_NAVY),
+        makeBox(0.14, railH, deckD, deckMinX, railY, cz, COLOR_FACTION_NAVY),
+        makeBox(0.14, railH, deckD, deckMaxX, railY, cz, COLOR_FACTION_NAVY),
       );
       // Faction orange stripe band around tower shield
       staticGeoms.push(
-        makeBox(w + 0.3, 0.22, 0.18, cx, railY + 0.15, r.maxZ + 0.07, COLOR_FACTION_ORANGE),
-        makeBox(0.18, 0.22, d + 0.3, r.minX - 0.07, railY + 0.15, cz, COLOR_FACTION_ORANGE),
-        makeBox(0.18, 0.22, d + 0.3, r.maxX + 0.07, railY + 0.15, cz, COLOR_FACTION_ORANGE),
+        makeBox(deckW + 0.06, 0.22, 0.18, deckCx, railY + 0.15, deckMaxZ + 0.02, COLOR_FACTION_ORANGE),
+        makeBox(0.18, 0.22, deckD + 0.06, deckMinX - 0.02, railY + 0.15, cz, COLOR_FACTION_ORANGE),
+        makeBox(0.18, 0.22, deckD + 0.06, deckMaxX + 0.02, railY + 0.15, cz, COLOR_FACTION_ORANGE),
       );
 
-      // Pitched canopy roof
-      staticGeoms.push(makeBox(w + 0.7, 0.18, d + 0.7, cx, roofY, cz, COLOR_FACTION_NAVY));
-      staticGeoms.push(makeCylinder(0.2, w * 0.72, 0.65, 4, cx, roofY + 0.38, cz, COLOR_DARK_STEEL));
+      // Pitched canopy roof over extended deck
+      staticGeoms.push(makeBox(deckW + 0.45, 0.18, deckD + 0.45, deckCx, roofY, cz, COLOR_FACTION_NAVY));
+      staticGeoms.push(makeCylinder(0.24, deckW * 0.62, 0.68, 4, deckCx, roofY + 0.38, cz, COLOR_DARK_STEEL));
 
       // Swiveling searchlight on front of tower
       const searchGroup = new THREE.Group();
-      searchGroup.position.set(cx, platY + 1.05, r.maxZ + 0.18);
+      searchGroup.position.set(deckCx, platY + 1.05, deckMaxZ + 0.12);
       const housingGeom = this.trackGeometry(new THREE.BoxGeometry(0.42, 0.34, 0.52));
       const housingMat = this.trackMaterial(
         new THREE.MeshLambertMaterial({ color: COLOR_DARK_STEEL, flatShading: true }),
@@ -409,10 +527,11 @@ export class CheckpointVisual {
       this.searchlights.push(searchGroup);
     }
 
-    // 4. Compound warning signs & floodlight emissive heads
+    // 4. Compound warning signs & floodlight emissive heads derived from gateRect
+    const signZ = gateRect.maxZ + 0.2;
     const signPositions: [number, number][] = [
-      [78.2, -51.8],
-      [87.8, -51.8],
+      [gateCx - 4.8, signZ],
+      [gateCx + 4.8, signZ],
     ];
     for (const [sx, sz] of signPositions) {
       staticGeoms.push(makeBox(1.1, 0.7, 0.1, sx, 1.5, sz, COLOR_FACTION_ORANGE));
@@ -441,13 +560,13 @@ export class CheckpointVisual {
 
     // At most 2 real PointLights (no shadows) bathing the gate and compound in warm #ffb347 glow
     const light1 = new THREE.PointLight(COLOR_WARNING_LIGHT, 1.6, 26, 1.5);
-    light1.position.set(83, 4.4, -50.5);
+    light1.position.set(gateCx, 4.4, gateRect.maxZ + 1.5);
     light1.castShadow = false;
     this.group.add(light1);
     this.pointLights.push(light1);
 
     const light2 = new THREE.PointLight(COLOR_WARNING_LIGHT, 1.2, 26, 1.5);
-    light2.position.set(83, 4.8, -66.0);
+    light2.position.set(cpCx, 4.8, cpCz - 2.0);
     light2.castShadow = false;
     this.group.add(light2);
     this.pointLights.push(light2);
@@ -458,16 +577,12 @@ export class CheckpointVisual {
     const d = c.maxZ - c.minZ;
     const cx = 0.5 * (c.minX + c.maxX);
     const cz = 0.5 * (c.minZ + c.maxZ);
-    const h = c.height; // 2.4 m
+    const h = c.height;
 
-    // Heavy concrete base (lower 1.25 m)
     out.push(makeBox(w, 1.25, d, cx, 0.625, cz, COLOR_CONCRETE));
-    // Upper corrugated navy barrier panel (1.25..2.35 m)
     out.push(makeBox(w * 0.98, h - 1.25, d * 0.72, cx, 1.25 + (h - 1.25) * 0.5, cz, COLOR_FACTION_NAVY));
-    // Faction orange stripe along mid-wall
     out.push(makeBox(w + 0.04, 0.22, d + 0.04, cx, 1.32, cz, COLOR_FACTION_ORANGE));
 
-    // Steel stanchion posts + angled barbed wire top hint every ~3.5 m
     if (w >= d) {
       for (let x = c.minX + 0.4; x <= c.maxX - 0.3; x += 3.5) {
         out.push(makeBox(0.24, h + 0.35, d + 0.14, x, (h + 0.35) * 0.5, cz, COLOR_DARK_STEEL));
@@ -495,23 +610,23 @@ export class CheckpointVisual {
     out.push(makeBox(w * 0.86, 0.34, d * 0.72, cx, 0.94, cz, 0xa89572));
   }
 
-  private appendCompoundTentOrContainer(c: ColliderDef, out: THREE.BufferGeometry[]): void {
+  private appendCompoundTentOrContainer(
+    c: ColliderDef,
+    cpCx: number,
+    out: THREE.BufferGeometry[],
+  ): void {
     const w = c.maxX - c.minX;
     const d = c.maxZ - c.minZ;
     const cx = 0.5 * (c.minX + c.maxX);
     const cz = 0.5 * (c.minZ + c.maxZ);
-    const h = c.height; // 2.8 m
+    const h = c.height;
 
-    // Military field command barracks / container with pitched olive-navy roof & faction stripe
-    const bodyCol = c.tag === 'cp-tent-w' ? 0x4b5c49 : COLOR_FACTION_NAVY;
+    const bodyCol = cx < cpCx ? 0x4b5c49 : COLOR_FACTION_NAVY;
     out.push(makeBox(w, h * 0.78, d, cx, h * 0.39, cz, bodyCol));
     out.push(makeBox(w + 0.12, 0.28, d + 0.12, cx, h * 0.52, cz, COLOR_FACTION_ORANGE));
-    // Pitched tent/container roof ridge
     out.push(makeBox(w + 0.3, 0.35, d + 0.3, cx, h * 0.84, cz, 0x3b463b));
     out.push(makeBox(w * 0.92, 0.36, d * 0.62, cx, h + 0.12, cz, 0x4f5c4e));
-    // Doorway facing south toward compound center
     out.push(makeBox(1.8, 2.0, 0.18, cx, 1.0, c.maxZ + 0.04, 0x262c34));
-    // Vertical ribs along sides
     for (let x = c.minX + 1.0; x <= c.maxX - 1.0; x += 1.6) {
       out.push(makeBox(0.16, h * 0.76, d + 0.14, x, h * 0.38, cz, 0x353e47));
     }
@@ -524,10 +639,8 @@ export class CheckpointVisual {
     gateH: number,
     gateD: number,
   ): void {
-    // 6 articulated gate panels across the 7 m width so planks/segments go missing progressively
     const numSegs = 6;
     const segW = gateW / numSegs;
-    // Order of disappearance (middle segments break out first as hp drops)
     const hideThresholds = [0.05, 0.22, 0.58, 0.74, 0.38, 0.12];
 
     for (let i = 0; i < numSegs; i++) {
@@ -536,13 +649,10 @@ export class CheckpointVisual {
       segGroup.position.set(segCx, 0, gateCz);
 
       const parts: THREE.BufferGeometry[] = [];
-      // Heavy steel panel core
       parts.push(makeBox(segW - 0.06, gateH - 0.15, gateD * 0.62, 0, gateH * 0.5, 0, COLOR_FACTION_NAVY));
-      // Reinforced horizontal wood/metal planks with faction orange hazard stripes
       parts.push(makeBox(segW - 0.04, 0.42, gateD * 0.85, 0, 0.65, 0, COLOR_FACTION_ORANGE));
       parts.push(makeBox(segW - 0.04, 0.38, gateD * 0.82, 0, 1.5, 0, 0x7d6549));
       parts.push(makeBox(segW - 0.04, 0.42, gateD * 0.85, 0, 2.35, 0, COLOR_FACTION_ORANGE));
-      // Vertical steel stiles & diagonal cross brace
       parts.push(makeBox(0.14, gateH, gateD * 0.9, -segW * 0.42, gateH * 0.5, 0, COLOR_DARK_STEEL));
       parts.push(makeBox(0.14, gateH, gateD * 0.9, segW * 0.42, gateH * 0.5, 0, COLOR_DARK_STEEL));
       parts.push(
@@ -587,7 +697,6 @@ export class CheckpointVisual {
     gateD: number,
   ): void {
     const rubbleParts: THREE.BufferGeometry[] = [];
-    // Collapsed planks, twisted steel beams, and concrete chunks across the gate footprint
     for (let i = 0; i < 14; i++) {
       const t = i / 13;
       const rx = gateCx - gateW * 0.45 + t * gateW * 0.9;
