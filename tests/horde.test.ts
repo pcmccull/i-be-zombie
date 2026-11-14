@@ -10,6 +10,7 @@ import { updateNavigation } from '../src/systems/NavigationSystem';
 import { checkVictory } from '../src/systems/VictorySystem';
 import { dist } from '../src/utils/math';
 import { buildDistrictLayout } from '../src/world/districtLayout';
+import { isCrawlable } from '../src/world/CollisionWorld';
 
 const dt = BALANCE.sim.fixedDt;
 function add(sim: Simulation, pos: Vec2, follower = true) {
@@ -108,7 +109,7 @@ describe('horde commands and guidance', () => {
   });
 
   it('auto-engages only reachable living guards, disengages far away, and stops in melee range', () => {
-    const sim = new Simulation(); sim.state.zombies = [];
+    const sim = new Simulation(); sim.state.zombies = []; sim.state.followerCount = 0;
     const g = sim.state.guards[5];
     // Isolate horde steering: live guard AI otherwise backs away and shoots this follower dead.
     for (const guard of sim.state.guards) {
@@ -132,7 +133,7 @@ describe('horde commands and guidance', () => {
   it('rush lasts four seconds, has a fifteen second cooldown, and preserves order and ambient speed', () => {
     const normal = new Simulation(), rushed = new Simulation();
     for (const sim of [normal, rushed]) {
-      sim.state.zombies = [];
+      sim.state.zombies = []; sim.state.followerCount = 0;
       const z = add(sim, { x: -85, z: 50 }); z.speedScale = 1; z.followOffset = { x: 0, z: 0 };
       add(sim, { x: -60, z: 48 }, false);
     }
@@ -159,7 +160,7 @@ describe('horde commands and guidance', () => {
   });
 
   it('reaches a tower occupant from outside auto-melee range without walking into its collider', () => {
-    const sim = new Simulation(); sim.state.zombies = [];
+    const sim = new Simulation(); sim.state.zombies = []; sim.state.followerCount = 0;
     sim.state.gate.destroyed = true; sim.state.gate.hp = 0;
     sim.ctx.collision.setEnabled(sim.state.gate.colliderId, false); sim.ctx.navGrid.rebuild();
     const g = sim.state.guards[0];
@@ -173,7 +174,7 @@ describe('horde commands and guidance', () => {
   });
 
   it('spreads exact-overlap recruits and preserves hit animations until their clip finishes', () => {
-    const sim = new Simulation(); sim.state.zombies = [];
+    const sim = new Simulation(); sim.state.zombies = []; sim.state.followerCount = 0;
     const a = add(sim, { ...sim.state.leader.pos }), b = add(sim, { ...sim.state.leader.pos });
     a.followOffset = { x: 0, z: 0 }; b.followOffset = { x: 0, z: 0 };
     a.anim = 'hit'; a.animTime = 0.1;
@@ -188,12 +189,15 @@ describe('horde commands and guidance', () => {
 describe('horde integration', () => {
   it('leads forty recruits around blocks and through the north alley into a broad separated pack', () => {
     const sim = new Simulation(buildDistrictLayout(), 24);
+    sim.state.guards = sim.state.guards.filter(g => g.post === 'checkpoint');
     // This route measures following and separation without combat interference.
     for (const guard of sim.state.guards) {
       guard.attackCooldown = 1e9; guard.perceptionTimer = 1e9; guard.idleTimer = 1e9;
       guard.pos = { x: 110, z: -75 };
     }
     sim.state.zombies = sim.state.zombies.slice(0, 40);
+    sim.state.followerCount = 0;
+    for (const z of sim.state.zombies) z.heldBy = 0;
     sim.state.zombies.forEach((z, i) => {
       z.pos.x = -89 + (i % 8) * 1.1; z.pos.z = 59 + Math.floor(i / 8) * 1.1;
       z.prevPos = { ...z.pos };
@@ -211,7 +215,8 @@ describe('horde integration', () => {
           const dx = point.x - sim.state.leader.pos.x, dz = point.z - sim.state.leader.pos.z;
           const d = Math.hypot(dx, dz);
           sim.step(dt, { ...emptyInput(), moveForward: dz / d, moveRight: -dx / d });
-          for (const z of sim.state.zombies) expect(sim.ctx.collision.isBlocked(z.pos, z.radius)).toBe(false);
+          // Packed followers may crawl over cars/barriers, but never through walls or buildings.
+          for (const z of sim.state.zombies) expect(sim.ctx.collision.isBlocked(z.pos, z.radius, isCrawlable)).toBe(false);
         }
         expect(steps).toBeLessThan(2000);
       }
@@ -259,7 +264,9 @@ describe('horde integration', () => {
   });
 
   it('simulates one hundred followers for 600 moving-leader steps in under three seconds', () => {
-    const sim = new Simulation(); sim.state.zombies = [];
+    const sim = new Simulation(); sim.state.zombies = []; sim.state.followerCount = 0;
+    // Measure steering with the same absence of nearby combat as the original checkpoint-only opening.
+    sim.state.guards = sim.state.guards.filter(g => g.post === 'checkpoint');
     for (let i = 0; i < 100; i++) add(sim, { x: -95 + i % 10 * 1.1, z: 59 + Math.floor(i / 10) * 1.1 });
     const start = performance.now();
     run(sim, 600, { ...emptyInput(), moveRight: -1 });

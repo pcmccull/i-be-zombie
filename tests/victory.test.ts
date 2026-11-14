@@ -8,6 +8,13 @@ import { checkVictory } from '../src/systems/VictorySystem';
 
 const dt = BALANCE.sim.fixedDt;
 describe('victory, defeat and restart: design §15.12–13,15', () => {
+  it('leaves living street, store and barricade humans outside the checkpoint victory objective', () => {
+    const sim = new Simulation(); damageGate(sim.ctx, BALANCE.gate.maxHp);
+    for (const g of sim.state.guards) if (g.post === 'checkpoint') damageGuard(sim.ctx, g, 100, 'other');
+    expect(sim.state.guards.some(g => g.role === 'civilian' && g.state !== 'DEAD')).toBe(true);
+    expect(sim.state.guards.some(g => g.post === 'barricade' && g.state !== 'DEAD')).toBe(true);
+    checkVictory(sim.ctx); expect(sim.state.phase).toBe('victory');
+  });
   it('requires both objectives, gives defeat priority, and emits phase events exactly once', () => {
     const sim = new Simulation(); damageGate(sim.ctx, BALANCE.gate.maxHp); checkVictory(sim.ctx);
     expect(sim.state.phase).toBe('playing'); sim.reset();
@@ -36,8 +43,10 @@ describe('victory, defeat and restart: design §15.12–13,15', () => {
     expect(sim.state.stats).toEqual(stats); expect(sim.drainEvents()).toEqual([]);
     sim.reset(); const fresh = new Simulation();
     expect(sim.state).toEqual(fresh.state); expect(sim.state.phase).toBe('playing');
-    expect(sim.state.zombies).toHaveLength(60); expect(sim.state.followerCount).toBe(0);
-    expect(sim.state.guards.every(g => g.state === 'PATROL' && g.attackCooldown === 0 && g.hp === 50)).toBe(true);
+    expect(sim.state.zombies).toHaveLength(BALANCE.horde.initialAmbient + BALANCE.horde.startFollowers);
+    expect(sim.state.followerCount).toBe(BALANCE.horde.startFollowers);
+    expect(sim.state.guards.every(g => g.state === 'PATROL' && g.attackCooldown === 0 &&
+      g.hp === (g.role === 'civilian' ? BALANCE.civilian.maxHp : BALANCE.guard.maxHp))).toBe(true);
     expect(sim.state.abilities).toEqual({ rallyCooldown: 0, rushCooldown: 0, rushTimeLeft: 0 });
     expect(sim.state.pendingConversions).toEqual([]);
     expect(sim.ctx.collision.colliders[sim.state.gate.colliderId].enabled).toBe(true);
@@ -49,6 +58,8 @@ describe('victory, defeat and restart: design §15.12–13,15', () => {
 
   it('transitions Attack → Recall → Attack → destroyed target cleared to Follow', () => {
     const sim = new Simulation(), g = sim.state.guards[5];
+    // No living successor: this test exercises clearing to Follow, not target succession.
+    sim.state.guards = [g];
     sim.step(dt, { ...emptyInput(), attackTarget: { kind: 'guard', id: g.id } });
     expect(sim.state.order).toEqual({ type: 'attack', target: { kind: 'guard', id: g.id } });
     sim.step(dt, { ...emptyInput(), recall: true }); expect(sim.state.order.type).toBe('follow');

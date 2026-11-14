@@ -2,7 +2,7 @@ import { BALANCE } from '../config/balance';
 import type { ISimulation, SimContext } from '../core/contracts';
 import type { DistrictLayout, GameEvent, GameState, SimInput } from '../core/types';
 import { updateLeader } from '../entities/ZombieLeader';
-import { CollisionWorld } from '../world/CollisionWorld';
+import { CollisionWorld, isCrawlable } from '../world/CollisionWorld';
 import { NavigationGrid } from '../world/NavigationGrid';
 import { buildDistrictLayout } from '../world/districtLayout';
 import { SpatialHash } from '../utils/spatialHash';
@@ -13,6 +13,8 @@ import { updateHumanAI } from '../systems/HumanAISystem';
 import { updateCombat } from '../systems/CombatSystem';
 import { updateConversion } from '../systems/ConversionSystem';
 import { checkVictory } from '../systems/VictorySystem';
+import { updateStructures } from '../systems/StructureSystem';
+import { updateMomentum } from '../systems/MomentumSystem';
 import { createInitialState } from './createInitialState';
 
 function copyPrevious(e: GameState['leader'] | GameState['zombies'][number] | GameState['guards'][number]): void {
@@ -39,12 +41,13 @@ export class Simulation implements ISimulation {
     const collision = new CollisionWorld(this.layout.bounds, this.layout.colliders);
     // The constructor rebuilds once; fresh/reset simulations therefore have identical versions.
     const navGrid = new NavigationGrid(collision);
+    const crawlNavGrid = new NavigationGrid(collision, undefined, undefined, isCrawlable);
     const rng = mulberry32(seed);
     const state = createInitialState(this.layout, collision, rng);
     this.ctx = {
-      state, layout: this.layout, collision, navGrid, rng, balance: BALANCE,
+      state, layout: this.layout, collision, navGrid, crawlNavGrid, rng, balance: BALANCE,
       zombieHash: new SpatialHash(2, this.layout.bounds),
-      nav: { followField: null, attackField: null, effectiveTarget: null },
+      nav: { followField: null, attackField: null, effectiveTarget: null, squads: new Map() },
       emit: event => this.events.push(event), newId: () => state.nextEntityId++,
     };
   }
@@ -76,6 +79,8 @@ export class Simulation implements ISimulation {
     updateHumanAI(this.ctx, dt, input);
     updateCombat(this.ctx, dt, input);
     updateConversion(this.ctx, dt, input);
+    updateStructures(this.ctx, dt);
+    updateMomentum(this.ctx, dt);
     checkVictory(this.ctx);
     tickVisualTimers(s.leader, dt);
     for (const z of s.zombies) tickVisualTimers(z, dt);

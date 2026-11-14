@@ -9,6 +9,7 @@ import type {
   PropDef,
   RoadMarking,
 } from '../core/types';
+import { isLandmarkProp } from './Landmarks';
 
 // Palette of 8 faded urban wall colors (indexed by colorIndex & 7)
 const BUILDING_WALL_PALETTE: readonly number[] = [
@@ -635,6 +636,10 @@ export class CityDistrict {
 
     for (let i = 0; i < layout.props.length; i++) {
       const p = layout.props[i];
+      // Skip police cruiser car prop(s) near the barricade landmark — Landmarks renders them
+      if (isLandmarkProp(layout, p)) {
+        continue;
+      }
       this.appendPropGeometry(p, layout.buildings, shadowPropGeoms, detailPropGeoms);
     }
 

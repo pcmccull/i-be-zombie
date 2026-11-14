@@ -14,7 +14,7 @@ function add(sim: Simulation, pos: Vec2) {
   sim.state.zombies.push(z); recruitZombie(sim.ctx, z, false); return z;
 }
 function fixture() {
-  const sim = new Simulation(); sim.state.zombies = [];
+  const sim = new Simulation(); sim.state.zombies = []; sim.state.followerCount = 0;
   const g = sim.state.guards[5]; g.pos = { x: -80, z: 60 };
   return { sim, g, target: { kind: 'guard', id: g.id } as TargetRef };
 }
@@ -89,9 +89,13 @@ describe('combat: design §15.7–8', () => {
       expect(canMelee(sim.ctx, { x: c.minX - 0.5, z: g.pos.z }, 100, { kind: 'guard', id: g.id })).toBe(false);
     }
     const tower = sim.state.guards[0], ref: TargetRef = { kind: 'guard', id: tower.id };
-    expect(canMelee(sim.ctx, { x: 65.5, z: -51.5 }, 1.5, ref)).toBe(false);
-    expect(canMelee(sim.ctx, { x: 68.5, z: -55.5 }, 1.5, ref)).toBe(true);
-    expect(canMelee(sim.ctx, { x: 70, z: -55.5 }, 1.5, ref)).toBe(false);
+    const top = tower.elevation;
+    expect(canMelee(sim.ctx, { x: 65.5, z: -51.5 }, 1.5, ref, top)).toBe(false);
+    // From the ground the occupant is out of reach: attackers must climb to the platform first.
+    expect(canMelee(sim.ctx, { x: 68.5, z: -55.5 }, 1.5, ref)).toBe(false);
+    expect(canMelee(sim.ctx, { x: 68.5, z: -55.5 }, 1.5, ref, top - 1)).toBe(false);
+    expect(canMelee(sim.ctx, { x: 68.5, z: -55.5 }, 1.5, ref, top)).toBe(true);
+    expect(canMelee(sim.ctx, { x: 70, z: -55.5 }, 1.5, ref, top)).toBe(false);
   });
 
   it('damages the gate face with epsilon, opens its blocker and rebuilds navigation exactly once', () => {
@@ -127,7 +131,7 @@ describe('combat: design §15.7–8', () => {
   });
 
   it('followers reach and kill a tower occupant through its base attack proxy', () => {
-    const sim = new Simulation(); sim.state.zombies = [];
+    const sim = new Simulation(); sim.state.zombies = []; sim.state.followerCount = 0;
     const tower = sim.state.guards[0];
     for (const other of sim.state.guards) if (other !== tower) damageGuard(sim.ctx, other, 50, 'other');
     damageGate(sim.ctx, BALANCE.gate.maxHp);
@@ -141,7 +145,9 @@ describe('combat: design §15.7–8', () => {
 
 describe('full assault balance', () => {
   it.each([20, 40, 60])('runs a player-like assault with a parked leader and N=%i', n => {
-    const sim = new Simulation(); sim.state.zombies = [];
+    const sim = new Simulation(); sim.state.zombies = []; sim.state.followerCount = 0;
+    // This assault fixture retains the original eight checkpoint defenders as its objective.
+    sim.state.guards = sim.state.guards.filter(g => g.post === 'checkpoint');
     const area = sim.ctx.layout.checkpoint.stagingArea;
     const parked = { x: (area.minX + area.maxX) / 2, z: (area.minZ + area.maxZ) / 2 };
     sim.state.leader.pos = { ...parked };
@@ -169,7 +175,8 @@ describe('full assault balance', () => {
   }, 15000);
 
   it.each([12, 40, 60])('runs a complete real-district assault with N=%i', n => {
-    const sim = new Simulation(); sim.state.zombies = [];
+    const sim = new Simulation(); sim.state.zombies = []; sim.state.followerCount = 0;
+    sim.state.guards = sim.state.guards.filter(g => g.post === 'checkpoint');
     const area = sim.ctx.layout.checkpoint.stagingArea;
     sim.state.leader.pos = { x: (area.minX + area.maxX) / 2, z: (area.minZ + area.maxZ) / 2 };
     for (let i = 0; i < n; i++) add(sim, { x: 59 + i % 10 * 1.1, z: -17 + Math.floor(i / 10) * 1.1 });

@@ -79,6 +79,10 @@ export class InputController {
   }
 
   get hovered(): TargetRef | null { return this.hover; }
+  /** Keyboard camera orbit axis: X = +1 (orbit right), Z = -1 (orbit left). */
+  get cameraTurn(): number { return Number(this.keys.has('KeyX')) - Number(this.keys.has('KeyZ')); }
+  /** Hold V to swing the camera around and look behind the leader at the horde. */
+  get lookBack(): boolean { return this.keys.has('KeyV'); }
 
   buildSimInput(cameraYaw: number): SimInput {
     const held = (a: string, b: string): number => Number(this.keys.has(a) || this.keys.has(b));
@@ -166,7 +170,8 @@ export class InputController {
     const buttonMask = this.pointerButton === 2 ? 2 : 1;
     if (!(event.buttons & buttonMask)) { this.releasePointer(); return; }
     if (!this.dragged && !isClick(this.downX, this.downY, event.clientX, event.clientY)) this.dragged = true;
-    if (this.pointerButton === 2 && this.dragged) this.deps.onOrbit(dx, dy);
+    // Either button drags the camera around; a click (no drag) still issues orders.
+    if (this.dragged) this.deps.onOrbit(dx, dy);
   };
   private readonly onPointerUp = (event: PointerEvent): void => {
     if (event.pointerId !== this.pointerId || event.button !== this.pointerButton) return;
@@ -232,6 +237,7 @@ export class InputController {
       }
     }
     for (const object of this.deps.occluders) {
+      if (object.userData.ignorePickOcclusion) continue;
       if (!this.candidates.includes(object)) this.candidates.push(object);
     }
     for (const object of this.candidates) object.updateWorldMatrix(true, false);
@@ -267,13 +273,14 @@ export class InputController {
       // The gate's own solid volume is part of the target, not cover in front of it.
       let blocked = false;
       for (const hit of this.sightHits) {
+        if (hit.object.userData.ignorePickOcclusion) continue;
         if (hit.object !== object && hit.object.userData.pickTarget !== object) { blocked = true; break; }
       }
       // A segment wholly inside a building proxy has no surface intersection.
       // Do not allow tolerance picking through that volume either.
       if (!blocked) {
         for (const occluder of this.deps.occluders) {
-          if (!(occluder instanceof THREE.Mesh) || !occluder.userData.occlusionVolume) continue;
+          if (!(occluder instanceof THREE.Mesh) || !occluder.userData.occlusionVolume || occluder.userData.ignorePickOcclusion) continue;
           if (!occluder.geometry.boundingBox) occluder.geometry.computeBoundingBox();
           this.inverseWorld.copy(occluder.matrixWorld).invert();
           this.localCameraPosition.copy(this.cameraPosition).applyMatrix4(this.inverseWorld);

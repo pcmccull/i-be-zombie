@@ -2,6 +2,7 @@ import { BALANCE } from '../config/balance';
 import type { SimContext } from '../core/contracts';
 import type { DistrictLayout, LeaderState, SimInput, Vec2 } from '../core/types';
 import { wrapAngle } from '../utils/math';
+import { speedMultiplier } from '../systems/MomentumSystem';
 
 export function createLeader(id: number, layout: DistrictLayout): LeaderState {
   return {
@@ -44,7 +45,7 @@ export function updateLeader(ctx: SimContext, dt: number, input: SimInput): void
   }
   computeMoveVector(input.moveForward, input.moveRight, input.cameraYaw, move);
   const sprinting = updateStamina(l, input.sprint, Math.hypot(move.x, move.z) > 0, dt);
-  const speed = sprinting ? BALANCE.leader.sprintSpeed : BALANCE.leader.walkSpeed;
+  const speed = (sprinting ? BALANCE.leader.sprintSpeed : BALANCE.leader.walkSpeed) * speedMultiplier(ctx.state);
   const dx = move.x * speed - l.vel.x, dz = move.z * speed - l.vel.z;
   const change = Math.hypot(dx, dz), factor = change > 0 ? Math.min(1, BALANCE.leader.accel * dt / change) : 0;
   l.vel.x += dx * factor; l.vel.z += dz * factor;

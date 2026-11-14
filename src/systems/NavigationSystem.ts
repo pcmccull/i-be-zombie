@@ -1,17 +1,35 @@
 import { BALANCE } from '../config/balance';
-import type { IFlowField, SimContext } from '../core/contracts';
+import type { IFlowField, INavigationGrid, SimContext, SquadGuidance } from '../core/contracts';
 import type { GuardAgent, SimInput, TargetRef, Vec2 } from '../core/types';
 import { distSq } from '../utils/math';
 import { resolveTargetPos } from './CombatSystem';
+import { findStructure } from './StructureSystem';
 
+/** Re-plannable attack guidance for the main horde or one squad. */
+interface AttackPlan extends SquadGuidance {
+  attackAt: number; attackPos: Vec2; orderKey: string; guardField: IFlowField | null;
+}
 interface Planning {
   elapsed: number; followAt: number; followPos: Vec2;
-  attackAt: number; attackPos: Vec2; orderKey: string;
-  version: number; guardField: IFlowField | null;
+  version: number; grid: INavigationGrid | null;
+  main: AttackPlan; squads: Map<number, AttackPlan>;
 }
 const planning = new WeakMap<SimContext, Planning>();
 const successionFields = new WeakMap<SimContext, IFlowField>();
 const targetPos: Vec2 = { x: 0, z: 0 };
+
+function newPlan(): AttackPlan {
+  return { attackField: null, effectiveTarget: null, attackAt: -Infinity,
+    attackPos: { x: Infinity, z: Infinity }, orderKey: '', guardField: null };
+}
+
+/**
+ * Grid the horde steers on: once the pack is big enough it treats low obstacles (cars,
+ * barriers) as passable and crawls over them; small groups path around.
+ */
+export function hordeGrid(ctx: SimContext): INavigationGrid {
+  return ctx.state.followerCount >= BALANCE.horde.crawlNavMinFollowers ? ctx.crawlNavGrid : ctx.navGrid;
+}
 
 function key(target: TargetRef | null): string {
   return target ? target.kind + ('id' in target ? target.id : '') : '';
@@ -65,54 +83,84 @@ export function updateNavigation(ctx: SimContext, dt: number, _input: SimInput):
   let p = planning.get(ctx);
   if (!p) {
     p = { elapsed: 0, followAt: -Infinity, followPos: { x: Infinity, z: Infinity },
-      attackAt: -Infinity, attackPos: { x: Infinity, z: Infinity }, orderKey: '',
-      version: -1, guardField: null };
+      version: -1, grid: null, main: newPlan(), squads: new Map() };
     planning.set(ctx, p);
   }
   p.elapsed += dt;
   const interval = 1 / BALANCE.sim.navReplanHz;
-  const versionChanged = p.version !== ctx.navGrid.version;
+  const grid = hordeGrid(ctx);
+  const versionChanged = p.version !== ctx.navGrid.version || p.grid !== grid;
   if (!ctx.nav.followField || versionChanged ||
       (distSq(ctx.state.leader.pos, p.followPos) > 4 && p.elapsed - p.followAt >= interval - 1e-9)) {
-    ctx.nav.followField = ctx.navGrid.buildFlowField([ctx.state.leader.pos], ctx.nav.followField ?? undefined);
+    ctx.nav.followField = grid.buildFlowField([ctx.state.leader.pos], ctx.nav.followField ?? undefined);
     p.followPos.x = ctx.state.leader.pos.x; p.followPos.z = ctx.state.leader.pos.z; p.followAt = p.elapsed;
   }
   const order = ctx.state.order;
-  if (order.type === 'follow' || !resolveTargetPos(ctx, order.target, targetPos)) {
-    ctx.nav.effectiveTarget = null; ctx.nav.attackField = null;
-    p.orderKey = ''; p.version = ctx.navGrid.version;
+  planAttack(ctx, p, p.main, order.type === 'attack' ? order.target : null, grid, versionChanged, interval);
+  ctx.nav.attackField = p.main.attackField; ctx.nav.effectiveTarget = p.main.effectiveTarget;
+
+  // Squads: drop plans for disbanded squads, then plan each live one.
+  for (const id of p.squads.keys()) {
+    if (!ctx.state.squads.some(sq => sq.id === id)) { p.squads.delete(id); ctx.nav.squads.delete(id); }
+  }
+  for (const squad of ctx.state.squads) {
+    let plan = p.squads.get(squad.id);
+    if (!plan) { plan = newPlan(); p.squads.set(squad.id, plan); }
+    planAttack(ctx, p, plan, squad.target, grid, versionChanged, interval);
+    let guidance = ctx.nav.squads.get(squad.id);
+    if (!guidance) { guidance = { attackField: null, effectiveTarget: null }; ctx.nav.squads.set(squad.id, guidance); }
+    guidance.attackField = plan.attackField; guidance.effectiveTarget = plan.effectiveTarget;
+  }
+  p.version = ctx.navGrid.version; p.grid = grid;
+}
+
+function planAttack(ctx: SimContext, p: Planning, plan: AttackPlan, target: TargetRef | null,
+    grid: INavigationGrid, versionChanged: boolean, interval: number): void {
+  if (!target || !resolveTargetPos(ctx, target, targetPos)) {
+    plan.effectiveTarget = null; plan.attackField = null; plan.orderKey = '';
     return;
   }
-  const orderKey = key(order.target);
-  const changed = p.orderKey !== orderKey;
-  if (changed || versionChanged || !ctx.nav.attackField ||
-      (distSq(targetPos, p.attackPos) > 1.5 * 1.5 && p.elapsed - p.attackAt >= interval - 1e-9)) {
-    let effective: TargetRef = order.target;
-    let field: IFlowField;
-    if (order.target.kind === 'guard') {
-      const id = order.target.id;
-      const guard = ctx.state.guards.find(g => g.id === id)!;
-      p.guardField = ctx.navGrid.buildFlowField(guardGoals(ctx, guard), p.guardField ?? undefined);
-      field = p.guardField;
+  const orderKey = key(target);
+  const changed = plan.orderKey !== orderKey;
+  // A structure never moves: while the effective target is one (e.g. a door sheltering a fleeing civilian), only an
+  // order change or nav rebuild (door destroyed) replans — target drift alone must not rebuild the field.
+  const drift = plan.effectiveTarget?.kind !== 'structure' &&
+    distSq(targetPos, plan.attackPos) > 1.5 * 1.5 && p.elapsed - plan.attackAt >= interval - 1e-9;
+  if (!(changed || versionChanged || !plan.attackField || drift)) return;
+  let effective: TargetRef = target;
+  let field: IFlowField | null = plan.attackField;
+  if (target.kind === 'guard') {
+    const id = target.id;
+    const guard = ctx.state.guards.find(g => g.id === id)!;
+    const shelter = findStructure(ctx.state, guard.shelter);
+    if (shelter && !shelter.destroyed) {
+      effective = { kind: 'structure', id: shelter.id };
+    } else {
+      plan.guardField = grid.buildFlowField(guardGoals(ctx, guard), plan.guardField ?? undefined);
+      field = plan.guardField;
       if (!ctx.state.gate.destroyed && field.distanceAt(ctx.state.leader.pos) === Infinity) {
         // Both sides must connect to their respective gate approaches: an unrelated
         // inaccessible enclosure must never redirect an order to the gate.
         const outsideReachable = ctx.layout.checkpoint.gateApproachOutside.some(g =>
           ctx.nav.followField!.distanceAt(g) < Infinity);
-        const insideReachable = ctx.layout.checkpoint.gateApproachInside.some(g => field.distanceAt(g) < Infinity);
+        const guardField = field;
+        const insideReachable = ctx.layout.checkpoint.gateApproachInside.some(g => guardField.distanceAt(g) < Infinity);
         if (outsideReachable && insideReachable) effective = { kind: 'gate' };
       }
-    } else {
-      field = ctx.nav.attackField!;
     }
-    if (effective.kind === 'gate') {
-      // Never reuse the guard's reachability field as gate storage.
-      const reuse = ctx.nav.attackField === p.guardField ? undefined : ctx.nav.attackField ?? undefined;
-      field = ctx.navGrid.buildFlowField(ctx.layout.checkpoint.gateApproachOutside, reuse);
-    }
-    ctx.nav.effectiveTarget = effective; ctx.nav.attackField = field;
-    p.orderKey = orderKey;
-    p.attackPos.x = targetPos.x; p.attackPos.z = targetPos.z; p.attackAt = p.elapsed;
   }
-  p.version = ctx.navGrid.version;
+  if (effective.kind === 'structure') {
+    const id = effective.id;
+    const def = ctx.layout.structures.find(d => d.id === id)!;
+    field = grid.buildFlowField(def.approachOutside,
+      plan.attackField === plan.guardField ? undefined : plan.attackField ?? undefined);
+  }
+  if (effective.kind === 'gate' && (target.kind !== 'gate' || changed || versionChanged || !field)) {
+    // Never reuse the guard's reachability field as gate storage.
+    const reuse = plan.attackField === plan.guardField ? undefined : plan.attackField ?? undefined;
+    field = grid.buildFlowField(ctx.layout.checkpoint.gateApproachOutside, reuse);
+  }
+  plan.effectiveTarget = effective; plan.attackField = field;
+  plan.orderKey = orderKey;
+  plan.attackPos.x = targetPos.x; plan.attackPos.z = targetPos.z; plan.attackAt = p.elapsed;
 }

@@ -22,6 +22,11 @@ interface Scratch {
 const memories = new WeakMap<SimContext, Scratch>();
 const leaderTarget: TargetRef = { kind: 'leader' };
 
+function soldierRange(g: GuardAgent): number {
+  return g.post === 'barricade' ? BALANCE.outposts.barricadeRange
+    : g.tower ? BALANCE.guard.towerRange : BALANCE.guard.range;
+}
+
 function scratch(ctx: SimContext): Scratch {
   let s = memories.get(ctx);
   if (!s) {
@@ -57,12 +62,12 @@ function targetEntity(ctx: SimContext, s: Scratch, target: TargetRef | null) {
   if (target?.kind === 'leader') return ctx.state.leader.alive && ctx.state.leader.hp > 0 ? ctx.state.leader : null;
   if (target?.kind !== 'zombie') return null;
   const z = s.zombies.get(target.id);
-  return z && z.hp > 0 && (z.state === 'follower' || z.state === 'ambient') ? z : null;
+  return z && z.hp > 0 && z.heldBy === 0 && (z.state === 'follower' || z.state === 'ambient') ? z : null;
 }
 
 function visible(ctx: SimContext, g: GuardAgent, m: GuardMemory, pos: Vec2, ambient = false): boolean {
   const dx = pos.x - g.pos.x, dz = pos.z - g.pos.z, d2 = dx * dx + dz * dz;
-  const range = g.tower ? BALANCE.guard.towerRange : BALANCE.guard.range;
+  const range = soldierRange(g);
   if (d2 > range * range || (ambient && d2 > 8 * 8)) return false;
   if (g.state === 'PATROL' && d2 > BALANCE.guard.closeDetectRange ** 2 &&
       dx * Math.sin(g.facing) + dz * Math.cos(g.facing) <
@@ -73,7 +78,7 @@ function visible(ctx: SimContext, g: GuardAgent, m: GuardMemory, pos: Vec2, ambi
 function alert(ctx: SimContext, g: GuardAgent, m: GuardMemory, pos: Vec2): void {
   g.state = 'ALERT'; g.stateTime = 0; g.lostTargetTimer = 0;
   m.alertPos.x = pos.x; m.alertPos.z = pos.z;
-  ctx.emit({ type: 'guardAlert', guardId: g.id, pos: { ...g.pos } });
+  ctx.emit({ type: 'guardAlert', guardId: g.id, pos: { ...g.pos }, role: g.role });
 }
 
 function perceive(ctx: SimContext, s: Scratch, g: GuardAgent, m: GuardMemory): void {
@@ -82,13 +87,13 @@ function perceive(ctx: SimContext, s: Scratch, g: GuardAgent, m: GuardMemory): v
     m.visible = true;
   } else {
     g.target = null; m.visible = false;
-    const range = g.tower ? BALANCE.guard.towerRange : BALANCE.guard.range;
+    const range = soldierRange(g);
     s.candidates.length = 0;
     ctx.zombieHash.query(g.pos.x, g.pos.z, range, s.candidates);
     let nearest = Infinity;
     for (const id of s.candidates) {
       const z = s.zombies.get(id);
-      if (!z || z.hp <= 0 || (z.state !== 'follower' && z.state !== 'ambient')) continue;
+      if (!z || z.hp <= 0 || z.heldBy !== 0 || (z.state !== 'follower' && z.state !== 'ambient')) continue;
       const d = (z.pos.x - g.pos.x) ** 2 + (z.pos.z - g.pos.z) ** 2;
       if (d < nearest && visible(ctx, g, m, z.pos, z.state === 'ambient')) {
         nearest = d; g.target = s.targets.get(id)!;
@@ -106,7 +111,7 @@ function perceive(ctx: SimContext, s: Scratch, g: GuardAgent, m: GuardMemory): v
   alert(ctx, g, m, target.pos);
   for (let i = 0; i < ctx.state.guards.length; i++) {
     const other = ctx.state.guards[i];
-    if (other.state !== 'PATROL' || other.hp <= 0 ||
+    if (other.role !== 'soldier' || other.state !== 'PATROL' || other.hp <= 0 ||
         Math.hypot(other.pos.x - g.pos.x, other.pos.z - g.pos.z) > BALANCE.guard.alertAssistRadius) continue;
     const om = memory(ctx, s, other, i);
     alert(ctx, other, om, target.pos);
@@ -145,7 +150,7 @@ function patrol(ctx: SimContext, g: GuardAgent, m: GuardMemory, dt: number): voi
     g.path = path; g.pathIndex = 0;
   }
   const x = g.pos.x, z = g.pos.z;
-  if (walkPath(ctx, g, BALANCE.guard.speed, dt)) {
+  if (walkPath(ctx, g, g.role === 'civilian' ? BALANCE.civilian.walkSpeed : BALANCE.guard.speed, dt)) {
     g.path.length = 0; g.pathIndex = 0;
     g.waypointIndex = (g.waypointIndex + 1) % g.waypoints.length;
     g.idleTimer = BALANCE.guard.patrolIdleTime;
@@ -182,6 +187,7 @@ function tryRetreat(ctx: SimContext, s: Scratch, g: GuardAgent, m: GuardMemory):
 }
 
 function fire(ctx: SimContext, s: Scratch, g: GuardAgent, m: GuardMemory): void {
+  if (g.role !== 'soldier') return;
   const target = targetEntity(ctx, s, g.target);
   if (!target || !m.visible || g.attackCooldown > 1e-9) return;
   // Visibility is cached at 10 Hz, but geometry and target life are authoritative at fire time.
@@ -201,6 +207,57 @@ function fire(ctx: SimContext, s: Scratch, g: GuardAgent, m: GuardMemory): void 
   g.attackCooldown = BALANCE.guard.fireCooldown; g.anim = 'attack'; g.animTime = 0;
 }
 
+function updateCivilian(ctx: SimContext, s: Scratch, g: GuardAgent, m: GuardMemory, dt: number): void {
+  if (g.perceptionTimer <= 1e-9) {
+    g.perceptionTimer = 1 / BALANCE.sim.aiTickHz;
+    g.target = null; m.visible = false;
+    let nearest = BALANCE.civilian.panicRadius ** 2;
+    const leader = ctx.state.leader;
+    if (leader.alive && leader.hp > 0) {
+      const d = (leader.pos.x - g.pos.x) ** 2 + (leader.pos.z - g.pos.z) ** 2;
+      if (d <= nearest && !ctx.collision.segmentBlocked(g.pos, leader.pos, m.sight)) {
+        nearest = d; g.target = leaderTarget;
+      }
+    }
+    s.candidates.length = 0;
+    ctx.zombieHash.query(g.pos.x, g.pos.z, BALANCE.civilian.panicRadius, s.candidates);
+    for (const id of s.candidates) {
+      const z = s.zombies.get(id);
+      if (!z || z.hp <= 0 || z.heldBy !== 0 || (z.state !== 'ambient' && z.state !== 'follower')) continue;
+      const d = (z.pos.x - g.pos.x) ** 2 + (z.pos.z - g.pos.z) ** 2;
+      if (d <= nearest && !ctx.collision.segmentBlocked(g.pos, z.pos, m.sight)) {
+        nearest = d; g.target = s.targets.get(id)!;
+      }
+    }
+    m.visible = g.target !== null;
+  }
+  const threat = targetEntity(ctx, s, g.target);
+  if (!threat) { g.target = null; m.visible = false; }
+  g.lostTargetTimer = m.visible ? 0 : g.lostTargetTimer + dt;
+  if (m.visible && g.state !== 'RETREAT') {
+    g.state = 'RETREAT'; g.stateTime = 0; g.path.length = 0;
+    ctx.emit({ type: 'guardAlert', guardId: g.id, pos: { ...g.pos }, role: g.role });
+  }
+  if (g.state === 'RETREAT') {
+    if (threat && m.visible) {
+      const dx = g.pos.x - threat.pos.x, dz = g.pos.z - threat.pos.z;
+      const d = Math.hypot(dx, dz);
+      if (d > 1e-9) {
+        ctx.collision.moveCircle(g.pos, dx / d * BALANCE.civilian.fleeSpeed * dt,
+          dz / d * BALANCE.civilian.fleeSpeed * dt, g.radius);
+        g.facing = Math.atan2(dx, dz);
+      }
+    } else if (g.lostTargetTimer >= BALANCE.civilian.calmTime) {
+      g.state = 'PATROL'; g.stateTime = 0; g.path.length = 0;
+    }
+  } else if (g.state === 'PATROL') patrol(ctx, g, m, dt);
+  if (g.homeArea) {
+    const r = g.homeArea;
+    g.pos.x = Math.max(r.minX + g.radius, Math.min(r.maxX - g.radius, g.pos.x));
+    g.pos.z = Math.max(r.minZ + g.radius, Math.min(r.maxZ - g.radius, g.pos.z));
+  }
+}
+
 export function updateHumanAI(ctx: SimContext, dt: number, _input: SimInput): void {
   if (ctx.state.phase !== 'playing') return;
   const s = scratch(ctx);
@@ -212,6 +269,15 @@ export function updateHumanAI(ctx: SimContext, dt: number, _input: SimInput): vo
     g.vel.x = g.vel.z = 0; g.stateTime += dt;
     g.attackCooldown = Math.max(0, g.attackCooldown - dt);
     g.perceptionTimer -= dt;
+    if (g.role === 'civilian') {
+      updateCivilian(ctx, s, g, m, dt);
+      g.vel.x = dt > 0 ? (g.pos.x - x) / dt : 0; g.vel.z = dt > 0 ? (g.pos.z - z) / dt : 0;
+      if (!(g.anim === 'hit' && g.animTime < 0.35)) {
+        const anim = Math.hypot(g.vel.x, g.vel.z) > 0.05 ? (g.state === 'RETREAT' ? 'run' : 'walk') : 'idle';
+        if (g.anim !== anim) { g.anim = anim; g.animTime = 0; }
+      }
+      continue;
+    }
     if (g.perceptionTimer <= 1e-9) {
       g.perceptionTimer += 1 / BALANCE.sim.aiTickHz;
       if (g.perceptionTimer <= 0) g.perceptionTimer = 1 / BALANCE.sim.aiTickHz;

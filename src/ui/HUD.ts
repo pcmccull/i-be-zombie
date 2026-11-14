@@ -1,12 +1,60 @@
 import './hud.css';
 import { BALANCE } from '../config/balance';
-import type { GameEvent, GamePhase, GameState } from '../core/types';
+import type {
+  GameEvent,
+  GamePhase,
+  GameState,
+  MomentumTier,
+  StructureKind,
+  StructureState,
+  TargetRef,
+} from '../core/types';
 
 export interface HudExtras {
   fps: number;
   drawCalls: number;
   showDebug: boolean;
   hoverLabel: string | null;
+}
+
+const TIER_RANK: Record<MomentumTier, number> = {
+  dormant: 0,
+  growing: 1,
+  full: 2,
+};
+
+const TIER_LABEL: Record<MomentumTier, string> = {
+  dormant: 'DORMANT',
+  growing: 'GROWING OUTBREAK',
+  full: 'FULL OUTBREAK',
+};
+
+export function structureHudLabel(kind: StructureKind): string {
+  switch (kind) {
+    case 'busDoor':
+      return 'BUS DOOR';
+    case 'alleyGate':
+      return 'ALLEY GATE';
+    case 'storeDoor':
+      return 'STORE DOOR';
+    case 'penGate':
+    default:
+      return 'PEN GATE';
+  }
+}
+
+function structureBarTitle(kind: StructureKind): string {
+  switch (kind) {
+    case 'busDoor':
+      return 'Bus Door';
+    case 'alleyGate':
+      return 'Alley Gate';
+    case 'storeDoor':
+      return 'Store Door';
+    case 'penGate':
+    default:
+      return 'Pen Gate';
+  }
 }
 
 function formatTime(seconds: number): string {
@@ -30,13 +78,19 @@ export class HUD {
   // Top-center elements
   private readonly objectiveSubEl: HTMLDivElement;
   private readonly gateBarEl: HTMLDivElement;
+  private readonly gateLabelEl: HTMLSpanElement;
   private readonly gateValueEl: HTMLSpanElement;
   private readonly gateFillEl: HTMLDivElement;
   private readonly toastEl: HTMLDivElement;
 
   // Top-right elements
   private readonly hordeCountEl: HTMLDivElement;
+  private readonly hordeFloaterEl: HTMLSpanElement;
   private readonly capFlashEl: HTMLDivElement;
+  private readonly momBoxEl: HTMLDivElement;
+  private readonly momTierEl: HTMLSpanElement;
+  private readonly momValEl: HTMLSpanElement;
+  private readonly momFillEl: HTMLDivElement;
   private readonly guardsCountEl: HTMLDivElement;
 
   // Center hover label
@@ -70,6 +124,7 @@ export class HUD {
   private readonly restartCallbacks: (() => void)[] = [];
 
   // Cached values to avoid redundant DOM writes
+  private prevSimTime = -1;
   private prevHpText = '';
   private prevHpPct = -1;
   private prevHpLow = false;
@@ -78,14 +133,30 @@ export class HUD {
   private prevExhausted = false;
   private prevObjectiveSub = '';
   private prevGateVisible = false;
+  private prevGateLabel = '';
   private prevGateText = '';
   private prevGatePct = -1;
   private prevHordeText = '';
+  private prevFollowerCount: number | null = null;
+  private floaterAccum = 0;
+  private floaterWindowEndMs = 0;
+  private floaterHideAtMs = 0;
+  private hordePopUntilMs = 0;
   private prevCapVisible = false;
+  private prevMomPct = -1;
+  private prevMomValText = '';
+  private prevMomTierClass: MomentumTier = 'dormant';
+  private prevMomentumTier: MomentumTier = 'dormant';
+  private momGainFlashUntilMs = 0;
+  private momTierUpUntilMs = 0;
+  private prevMomGainActive = false;
+  private prevMomTierUpActive = false;
   private prevGuardsText = '';
   private prevHoverLabel: string | null = null;
   private prevOrderText = '';
   private prevOrderAttack = false;
+  /** Last state seen by update(); consume() runs before update() each frame. */
+  private lastState: GameState | null = null;
   private prevRallyState = '';
   private prevRallyPct = -1;
   private prevRallyCd = false;
@@ -140,11 +211,11 @@ export class HUD {
       <div class="ibz-top-center">
         <div class="ibz-panel ibz-objective-card">
           <div class="ibz-objective-title">CAPTURE THE CHECKPOINT</div>
-          <div class="ibz-objective-sub" data-ref="objSub">Find zombies</div>
+          <div class="ibz-objective-sub" data-ref="objSub">Free the bus horde</div>
         </div>
         <div class="ibz-panel ibz-gate-bar" data-ref="gateBar">
           <div class="ibz-bar-header">
-            <span class="ibz-bar-label">Checkpoint Gate</span>
+            <span class="ibz-bar-label" data-ref="gateLabel">Checkpoint Gate</span>
             <span class="ibz-bar-value" data-ref="gateVal">${BALANCE.gate.maxHp} / ${BALANCE.gate.maxHp}</span>
           </div>
           <div class="ibz-bar-track">
@@ -155,8 +226,20 @@ export class HUD {
       </div>
 
       <div class="ibz-panel ibz-top-right">
-        <div class="ibz-horde-count" data-ref="hordeCount">HORDE 0 / 100</div>
+        <div class="ibz-horde-row">
+          <span class="ibz-horde-floater" data-ref="hordeFloater">+1</span>
+          <div class="ibz-horde-count" data-ref="hordeCount">HORDE 5 / 100</div>
+        </div>
         <div class="ibz-cap-flash" data-ref="capFlash">HORDE FULL</div>
+        <div class="ibz-momentum-box" data-ref="momBox">
+          <div class="ibz-momentum-header">
+            <span class="ibz-momentum-tier is-dormant" data-ref="momTier">DORMANT</span>
+            <span class="ibz-momentum-val" data-ref="momVal">0%</span>
+          </div>
+          <div class="ibz-momentum-track">
+            <div class="ibz-momentum-fill is-dormant" data-ref="momFill"></div>
+          </div>
+        </div>
         <div class="ibz-guards-count" data-ref="guardsCount">GUARDS 8 / 8</div>
       </div>
 
@@ -190,7 +273,7 @@ export class HUD {
       </div>
 
       <div class="ibz-panel ibz-bottom-right">
-        WASD move &middot; Shift sprint &middot; LMB attack &middot; RMB follow &middot; Tab help
+        WASD move &middot; Shift sprint &middot; LMB select/unselect targets &middot; RMB follow &middot; Drag/Z/X look &middot; V look back &middot; Tab help
       </div>
 
       <div class="ibz-help-panel" data-ref="helpPanel">
@@ -199,14 +282,18 @@ export class HUD {
           <tbody>
             <tr><td>W A S D / Arrows</td><td>Move leader relative to camera</td></tr>
             <tr><td>Shift</td><td>Sprint while stamina allows</td></tr>
-            <tr><td>Left-Click Target</td><td>Order horde to Attack guard or gate</td></tr>
+            <tr><td>Left-Click Target</td><td>Select / unselect a guard, civilian, gate, or landmark door &mdash; the horde splits across selected targets</td></tr>
+            <tr><td>Landmarks</td><td>Break the bus door / alley gate / store door / pen gate to free or reach whoever is inside</td></tr>
+            <tr><td>Outbreak Momentum</td><td>Recruit, convert, kill soldiers &amp; break barriers to boost recruit radius (+50%) and horde speed (+20%)</td></tr>
             <tr><td>Left-Click Ground</td><td>World ping</td></tr>
             <tr><td>Right-Click</td><td>Recall horde to Follow leader</td></tr>
-            <tr><td>Right-Drag</td><td>Orbit &amp; tilt camera</td></tr>
+            <tr><td>Left / Right-Drag</td><td>Orbit &amp; tilt camera (stays where you leave it)</td></tr>
+            <tr><td>Z / X</td><td>Rotate camera left / right</td></tr>
+            <tr><td>Hold V</td><td>Look back at your horde</td></tr>
             <tr><td>Mouse Wheel</td><td>Zoom camera (close / tactical view)</td></tr>
             <tr><td>E</td><td>Rally pulse (recruit within 15 m)</td></tr>
             <tr><td>Space</td><td>Horde Rush (+45% speed, +25% attack rate)</td></tr>
-            <tr><td>C</td><td>Recenter camera behind leader</td></tr>
+            <tr><td>C</td><td>Recenter camera behind leader (resumes auto-follow)</td></tr>
             <tr><td>Tab</td><td>Toggle this controls panel</td></tr>
             <tr><td>F3</td><td>Toggle performance debug stats</td></tr>
             <tr><td>M</td><td>Mute / unmute audio</td></tr>
@@ -220,13 +307,13 @@ export class HUD {
           <h1 class="ibz-modal-title">I BE ZOMBIE</h1>
           <p class="ibz-modal-pitch">
             You are the undead alpha in a quarantined city district.<br/>
-            Roam the streets and alleys to gather wandering zombies into an unstoppable horde,<br/>
-            storm the fortified northeast human checkpoint, breach the gate, and convert the defenders.
+            Break open the bus, locked alley, store, and police pen to trigger cascading recruitment,<br/>
+            build outbreak momentum, breach the northeast checkpoint gate, and convert the defenders.
           </p>
           <div class="ibz-intro-keys">
             <div><strong>WASD + Shift</strong> Move &amp; Sprint</div>
-            <div><strong>Right-Drag / Wheel</strong> Orbit &amp; Zoom</div>
-            <div><strong>Left-Click</strong> Attack Enemy / Gate</div>
+            <div><strong>Drag / Wheel / V</strong> Look Around, Zoom, Look Back</div>
+            <div><strong>Left-Click</strong> Select Targets / Doors</div>
             <div><strong>Right-Click</strong> Recall to Follow</div>
             <div><strong>E</strong> Rally Nearby Walkers</div>
             <div><strong>Space</strong> Trigger Horde Rush</div>
@@ -268,11 +355,17 @@ export class HUD {
     this.debugBoxEl = q('debugBox');
     this.objectiveSubEl = q('objSub');
     this.gateBarEl = q('gateBar');
+    this.gateLabelEl = q('gateLabel');
     this.gateValueEl = q('gateVal');
     this.gateFillEl = q('gateFill');
     this.toastEl = q('toast');
     this.hordeCountEl = q('hordeCount');
+    this.hordeFloaterEl = q('hordeFloater');
     this.capFlashEl = q('capFlash');
+    this.momBoxEl = q('momBox');
+    this.momTierEl = q('momTier');
+    this.momValEl = q('momVal');
+    this.momFillEl = q('momFill');
     this.guardsCountEl = q('guardsCount');
     this.hoverLabelEl = q('hoverLabel');
     this.orderPillEl = q('orderPill');
@@ -324,30 +417,68 @@ export class HUD {
     this.restartCallbacks.push(cb);
   }
 
+  reset(): void {
+    this.prevMomentumTier = 'dormant';
+    this.prevFollowerCount = null;
+    this.floaterAccum = 0;
+    this.floaterWindowEndMs = 0;
+    this.floaterHideAtMs = 0;
+    this.hordePopUntilMs = 0;
+    this.momGainFlashUntilMs = 0;
+    this.momTierUpUntilMs = 0;
+    this.hordeCountEl.classList.remove('is-pop');
+    this.hordeFloaterEl.classList.remove('is-visible');
+    this.momBoxEl.classList.remove('is-gain');
+    this.momTierEl.classList.remove('is-tier-up');
+    this.prevMomGainActive = false;
+    this.prevMomTierUpActive = false;
+    this.toastEl.classList.remove('is-visible');
+  }
+
   consume(events: readonly GameEvent[]): void {
+    const nowMs = performance.now();
     for (let i = 0; i < events.length; i++) {
       const ev = events[i];
       if (ev.type === 'orderChanged') {
         if (ev.order.type === 'follow') {
           this.showToast('RECALL: FOLLOWING LEADER');
-        } else if (ev.order.target.kind === 'gate') {
-          this.showToast('ATTACK ORDER: GATE');
-        } else if (ev.order.target.kind === 'guard') {
-          this.showToast('ATTACK ORDER: GUARD');
+        } else if ((this.lastState?.squads.length ?? 0) > 0) {
+          this.showToast(`HORDE SPLIT: ${this.lastState!.squads.length + 1} TARGETS`);
+        } else {
+          this.showToast(`ATTACK ORDER: ${this.describeTargetLabel(ev.order.target)}`);
         }
       } else if (ev.type === 'capReached') {
         this.showToast('HORDE CAPACITY REACHED (100)');
       } else if (ev.type === 'gateDestroyed') {
         this.showToast('CHECKPOINT GATE BREACHED!');
+      } else if (ev.type === 'structureDestroyed') {
+        this.showToast(`${structureHudLabel(ev.kind)} BREACHED!`);
       } else if (ev.type === 'converted') {
-        this.showToast('GUARD CONVERTED TO HORDE!');
+        this.showToast('HUMAN CONVERTED TO HORDE!');
       } else if (ev.type === 'rushStart') {
         this.showToast('HORDE RUSH ACTIVATED!');
+      } else if (ev.type === 'momentumGain') {
+        this.momGainFlashUntilMs = nowMs + 420;
+      } else if (ev.type === 'momentumTier') {
+        const prevRank = TIER_RANK[this.prevMomentumTier] ?? 0;
+        const nextRank = TIER_RANK[ev.tier] ?? 0;
+        this.prevMomentumTier = ev.tier;
+        // Tier-up is toast-free: only animate the tier label on increase
+        if (nextRank > prevRank) {
+          this.momTierUpUntilMs = nowMs + 650;
+        }
       }
     }
   }
 
   update(state: GameState, extras: HudExtras): void {
+    const nowMs = performance.now();
+    if (this.prevSimTime >= 0 && state.time < this.prevSimTime) {
+      this.reset();
+    }
+    this.prevSimTime = state.time;
+    this.lastState = state;
+
     // 1. Leader HP & Stamina
     const hp = Math.max(0, Math.ceil(state.leader.hp));
     const maxHp = state.leader.maxHp;
@@ -356,7 +487,10 @@ export class HUD {
       this.prevHpText = hpText;
       this.hpValueEl.textContent = hpText;
     }
-    const hpPct = Math.max(0, Math.min(100, Math.round((state.leader.hp / Math.max(1, maxHp)) * 100)));
+    const hpPct = Math.max(
+      0,
+      Math.min(100, Math.round((state.leader.hp / Math.max(1, maxHp)) * 100)),
+    );
     if (hpPct !== this.prevHpPct) {
       this.prevHpPct = hpPct;
       this.hpFillEl.style.width = `${hpPct}%`;
@@ -385,42 +519,46 @@ export class HUD {
       this.staminaFillEl.classList.toggle('is-exhausted', state.leader.exhausted);
     }
 
-    // 2. Top-Center Objective Status & Gate HP Bar
-    let objSub = 'Eliminate the guards';
-    if (!state.gate.destroyed) {
-      objSub = state.followerCount < 15 ? 'Find zombies' : 'Break the gate';
-    }
+    // 2. Top-Center Objective Status & Gate / Structure HP Bar
+    const objSub = this.chooseObjectiveText(state);
     if (objSub !== this.prevObjectiveSub) {
       this.prevObjectiveSub = objSub;
       this.objectiveSubEl.textContent = objSub;
     }
 
-    const gateTargeted =
-      state.order.type === 'attack' && state.order.target.kind === 'gate';
-    const showGateBar =
-      !state.gate.destroyed && (state.gate.hp < state.gate.maxHp || gateTargeted);
-    if (showGateBar !== this.prevGateVisible) {
-      this.prevGateVisible = showGateBar;
-      this.gateBarEl.classList.toggle('is-visible', showGateBar);
-    }
-    if (showGateBar) {
-      const gHp = Math.max(0, Math.ceil(state.gate.hp));
-      const gText = `${gHp} / ${state.gate.maxHp}`;
-      if (gText !== this.prevGateText) {
-        this.prevGateText = gText;
-        this.gateValueEl.textContent = gText;
+    this.updateGateOrStructureBar(state);
+
+    // 3. Top-Right Horde Counter (with pop + aggregated +N floater)
+    if (this.prevFollowerCount === null) {
+      this.prevFollowerCount = state.followerCount;
+    } else if (state.followerCount > this.prevFollowerCount) {
+      const gained = state.followerCount - this.prevFollowerCount;
+      this.prevFollowerCount = state.followerCount;
+      if (nowMs <= this.floaterWindowEndMs) {
+        this.floaterAccum += gained;
+      } else {
+        this.floaterAccum = gained;
       }
-      const gPct = Math.max(
-        0,
-        Math.min(100, Math.round((state.gate.hp / Math.max(1, state.gate.maxHp)) * 100)),
-      );
-      if (gPct !== this.prevGatePct) {
-        this.prevGatePct = gPct;
-        this.gateFillEl.style.width = `${gPct}%`;
-      }
+      this.floaterWindowEndMs = nowMs + 500;
+      this.floaterHideAtMs = nowMs + 950;
+      this.hordeFloaterEl.textContent = `+${this.floaterAccum}`;
+      this.hordeFloaterEl.classList.add('is-visible');
+      this.hordeCountEl.classList.add('is-pop');
+      this.hordePopUntilMs = nowMs + 220;
+    } else if (state.followerCount < this.prevFollowerCount) {
+      this.prevFollowerCount = state.followerCount;
     }
 
-    // 3. Top-Right Horde Counter & Alive Guards
+    if (this.hordePopUntilMs > 0 && nowMs >= this.hordePopUntilMs) {
+      this.hordePopUntilMs = 0;
+      this.hordeCountEl.classList.remove('is-pop');
+    }
+    if (this.floaterHideAtMs > 0 && nowMs >= this.floaterHideAtMs) {
+      this.floaterHideAtMs = 0;
+      this.floaterAccum = 0;
+      this.hordeFloaterEl.classList.remove('is-visible');
+    }
+
     const hordeText = `HORDE ${state.followerCount} / ${BALANCE.horde.maxFollowers}`;
     if (hordeText !== this.prevHordeText) {
       this.prevHordeText = hordeText;
@@ -433,13 +571,59 @@ export class HUD {
       this.capFlashEl.classList.toggle('is-visible', capVis);
     }
 
-    let aliveGuards = 0;
+    // 3b. Momentum Meter
+    const mom = state.momentum ?? { value: 0, idleTime: 0, tier: 'dormant' as MomentumTier, gainFlash: 0 };
+    const momPct = Math.max(
+      0,
+      Math.min(100, Math.round((mom.value / Math.max(1, BALANCE.momentum.max)) * 100)),
+    );
+    if (momPct !== this.prevMomPct) {
+      this.prevMomPct = momPct;
+      this.momFillEl.style.width = `${momPct}%`;
+    }
+    const momValText = `${momPct}%`;
+    if (momValText !== this.prevMomValText) {
+      this.prevMomValText = momValText;
+      this.momValEl.textContent = momValText;
+    }
+
+    const tier: MomentumTier = mom.tier ?? 'dormant';
+    // Also detect tier increases directly from state in case momentumTier event wasn't emitted
+    if (TIER_RANK[tier] > TIER_RANK[this.prevMomentumTier]) {
+      this.momTierUpUntilMs = nowMs + 650;
+    }
+    this.prevMomentumTier = tier;
+
+    if (tier !== this.prevMomTierClass) {
+      this.momTierEl.classList.remove(`is-${this.prevMomTierClass}`);
+      this.momFillEl.classList.remove(`is-${this.prevMomTierClass}`);
+      this.prevMomTierClass = tier;
+      this.momTierEl.classList.add(`is-${tier}`);
+      this.momFillEl.classList.add(`is-${tier}`);
+      this.momTierEl.textContent = TIER_LABEL[tier];
+    }
+
+    const gainActive = (mom.gainFlash ?? 0) > 0 || nowMs < this.momGainFlashUntilMs;
+    if (gainActive !== this.prevMomGainActive) {
+      this.prevMomGainActive = gainActive;
+      this.momBoxEl.classList.toggle('is-gain', gainActive);
+    }
+
+    const tierUpActive = nowMs < this.momTierUpUntilMs;
+    if (tierUpActive !== this.prevMomTierUpActive) {
+      this.prevMomTierUpActive = tierUpActive;
+      this.momTierEl.classList.toggle('is-tier-up', tierUpActive);
+    }
+
+    // 3c. Checkpoint Guards Counter (counts post === 'checkpoint' only)
+    let aliveCheckpointGuards = 0;
     for (let i = 0; i < state.guards.length; i++) {
-      if (state.guards[i].state !== 'DEAD' && state.guards[i].hp > 0) {
-        aliveGuards++;
+      const g = state.guards[i];
+      if ((g.post ?? 'checkpoint') === 'checkpoint' && g.state !== 'DEAD' && g.hp > 0) {
+        aliveCheckpointGuards++;
       }
     }
-    const guardsText = `GUARDS ${aliveGuards} / ${BALANCE.guard.count}`;
+    const guardsText = `GUARDS ${aliveCheckpointGuards} / ${BALANCE.guard.count}`;
     if (guardsText !== this.prevGuardsText) {
       this.prevGuardsText = guardsText;
       this.guardsCountEl.textContent = guardsText;
@@ -462,7 +646,9 @@ export class HUD {
     if (state.order.type === 'attack') {
       isAttack = true;
       orderText =
-        state.order.target.kind === 'gate' ? 'ATTACK: GATE' : 'ATTACK: GUARD';
+        state.squads.length > 0
+          ? `ATTACK: ${state.squads.length + 1} TARGETS`
+          : `ATTACK: ${this.describeTargetLabel(state.order.target)}`;
     }
     if (orderText !== this.prevOrderText) {
       this.prevOrderText = orderText;
@@ -537,7 +723,7 @@ export class HUD {
       for (let i = 0; i < state.zombies.length; i++) {
         if (state.zombies[i].state !== 'dead') liveZombies++;
       }
-      const debugText = `FPS: ${Math.round(extras.fps)} | Draw Calls: ${extras.drawCalls}\nLive Zombies: ${liveZombies} | Followers: ${state.followerCount}\nGuards Alive: ${aliveGuards}`;
+      const debugText = `FPS: ${Math.round(extras.fps)} | Draw Calls: ${extras.drawCalls}\nLive Zombies: ${liveZombies} | Followers: ${state.followerCount}\nCheckpoint Guards Alive: ${aliveCheckpointGuards}`;
       if (debugText !== this.prevDebugText) {
         this.prevDebugText = debugText;
         this.debugBoxEl.innerHTML = debugText.replace(/\n/g, '<br/>');
@@ -576,6 +762,119 @@ export class HUD {
     this.root.innerHTML = '';
   }
 
+  private chooseObjectiveText(state: GameState): string {
+    if (state.gate.destroyed) {
+      return 'Eliminate the guards';
+    }
+    const structures = state.structures;
+    if (structures && structures.length > 0) {
+      const busDoor = structures.find((s) => s.kind === 'busDoor');
+      const penGate = structures.find((s) => s.kind === 'penGate');
+      const storeDoor = structures.find((s) => s.kind === 'storeDoor');
+
+      if (busDoor && !busDoor.destroyed && state.followerCount < 18) {
+        return 'Free the bus horde';
+      }
+      if (penGate && !penGate.destroyed && state.followerCount < 28) {
+        return 'Break the police barricade';
+      }
+      if (storeDoor && !storeDoor.destroyed && state.followerCount < 35) {
+        return 'Raid the store';
+      }
+      return state.followerCount < 22 ? 'Find zombies' : 'Break the gate';
+    }
+    return state.followerCount < 15 ? 'Find zombies' : 'Break the gate';
+  }
+
+  private updateGateOrStructureBar(state: GameState): void {
+    // Check if gate or any intact structure is targeted or damaged
+    const isTargetSelected = (pred: (t: TargetRef) => boolean): boolean => {
+      if (state.order.type === 'attack' && pred(state.order.target)) return true;
+      for (let i = 0; i < state.squads.length; i++) {
+        if (pred(state.squads[i].target)) return true;
+      }
+      return false;
+    };
+
+    const gateTargeted = isTargetSelected((t) => t.kind === 'gate');
+    let activeStruct: StructureState | null = null;
+    if (state.structures && state.structures.length > 0) {
+      // 1. Targeted or actively hit structure
+      for (let i = 0; i < state.structures.length; i++) {
+        const s = state.structures[i];
+        if (s.destroyed) continue;
+        const targeted = isTargetSelected(
+          (t) =>
+            (t.kind === 'structure' && t.id === s.id) ||
+            (t.kind === 'guard' &&
+              state.guards.some((g) => g.id === t.id && g.shelter === s.id)),
+        );
+        if (targeted || s.hitFlash > 0) {
+          activeStruct = s;
+          break;
+        }
+      }
+      // 2. Otherwise any damaged intact structure (if gate isn't explicitly targeted)
+      if (!activeStruct && !gateTargeted) {
+        for (let i = 0; i < state.structures.length; i++) {
+          const s = state.structures[i];
+          if (!s.destroyed && s.hp < s.maxHp) {
+            activeStruct = s;
+            break;
+          }
+        }
+      }
+    }
+
+    const showGate =
+      !activeStruct &&
+      !state.gate.destroyed &&
+      (state.gate.hp < state.gate.maxHp || gateTargeted);
+    const showBar = !!activeStruct || showGate;
+
+    if (showBar !== this.prevGateVisible) {
+      this.prevGateVisible = showBar;
+      this.gateBarEl.classList.toggle('is-visible', showBar);
+    }
+
+    if (showBar) {
+      const label = activeStruct ? structureBarTitle(activeStruct.kind) : 'Checkpoint Gate';
+      const curHp = activeStruct ? activeStruct.hp : state.gate.hp;
+      const maxHp = activeStruct ? activeStruct.maxHp : state.gate.maxHp;
+
+      if (label !== this.prevGateLabel) {
+        this.prevGateLabel = label;
+        this.gateLabelEl.textContent = label;
+      }
+      const gHp = Math.max(0, Math.ceil(curHp));
+      const gText = `${gHp} / ${maxHp}`;
+      if (gText !== this.prevGateText) {
+        this.prevGateText = gText;
+        this.gateValueEl.textContent = gText;
+      }
+      const gPct = Math.max(0, Math.min(100, Math.round((curHp / Math.max(1, maxHp)) * 100)));
+      if (gPct !== this.prevGatePct) {
+        this.prevGatePct = gPct;
+        this.gateFillEl.style.width = `${gPct}%`;
+      }
+    }
+  }
+
+  private describeTargetLabel(target: TargetRef): string {
+    if (target.kind === 'gate') return 'GATE';
+    if (target.kind === 'structure') {
+      const s = this.lastState?.structures?.find((st) => st.id === target.id);
+      if (s) return structureHudLabel(s.kind);
+      return 'BARRIER';
+    }
+    if (target.kind === 'guard') {
+      const g = this.lastState?.guards.find((gd) => gd.id === target.id);
+      if (g?.role === 'civilian') return 'CIVILIAN';
+      return 'GUARD';
+    }
+    return 'TARGET';
+  }
+
   private showToast(msg: string): void {
     this.toastEl.textContent = msg;
     this.toastEl.classList.add('is-visible');
@@ -595,8 +894,16 @@ export class HUD {
         <div class="ibz-stat-val">${state.followerCount}</div>
       </div>
       <div class="ibz-stat-cell">
+        <div class="ibz-stat-label">Outbreak Spread</div>
+        <div class="ibz-stat-val">${state.stats.cascadeRecruits ?? 0}</div>
+      </div>
+      <div class="ibz-stat-cell">
         <div class="ibz-stat-label">Conversions</div>
         <div class="ibz-stat-val">${state.stats.conversions}</div>
+      </div>
+      <div class="ibz-stat-cell">
+        <div class="ibz-stat-label">Barriers Broken</div>
+        <div class="ibz-stat-val">${state.stats.structuresDestroyed ?? 0}</div>
       </div>
       <div class="ibz-stat-cell">
         <div class="ibz-stat-label">Horde Losses</div>

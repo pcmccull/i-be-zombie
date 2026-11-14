@@ -37,12 +37,13 @@ export interface ICollisionWorld {
   /**
    * Move a circle by (dx,dz) with sliding against blocksMove colliders and world bounds.
    * Mutates `pos` in place. Sub-steps internally so a single call never tunnels (|delta| may be up to ~2 m).
+   * `passable` colliders are ignored (horde crawling over cars).
    */
-  moveCircle(pos: Vec2, dx: number, dz: number, radius: number): void;
+  moveCircle(pos: Vec2, dx: number, dz: number, radius: number, passable?: (c: Collider) => boolean): void;
   /** Push a circle out of any overlapping blocksMove colliders / bounds. Returns true if it moved. */
-  resolveCircle(pos: Vec2, radius: number): boolean;
+  resolveCircle(pos: Vec2, radius: number, passable?: (c: Collider) => boolean): boolean;
   /** True if a circle at p overlaps any enabled blocksMove collider or leaves bounds. */
-  isBlocked(p: Vec2, radius: number): boolean;
+  isBlocked(p: Vec2, radius: number, passable?: (c: Collider) => boolean): boolean;
   /** True if segment a->b is obstructed (see SegmentOptions). */
   segmentBlocked(a: Vec2, b: Vec2, opts?: SegmentOptions): boolean;
 }
@@ -100,8 +101,17 @@ export interface HordeGuidance {
   attackField: IFlowField | null;
   /**
    * The target the horde should actually hit. Equals the order target, except it becomes
-   * { kind: 'gate' } when the ordered guard is unreachable and the intact gate is the blocker.
+   * { kind: 'gate' } when the ordered guard is unreachable and the intact gate is the blocker,
+   * or { kind: 'structure', id } when the ordered guard is sheltered behind an intact structure
+   * (GuardAgent.shelter). Shelter is the only structure redirect rule.
    */
+  effectiveTarget: import('./types').TargetRef | null;
+  /** Per-squad attack guidance keyed by Squad.id (same semantics as attackField/effectiveTarget). */
+  squads: Map<number, SquadGuidance>;
+}
+
+export interface SquadGuidance {
+  attackField: IFlowField | null;
   effectiveTarget: import('./types').TargetRef | null;
 }
 
@@ -111,6 +121,8 @@ export interface SimContext {
   layout: DistrictLayout;
   collision: ICollisionWorld;
   navGrid: INavigationGrid;
+  /** Horde-only grid where low crawlable obstacles (cars, barriers) are walkable. Rebuilt with navGrid. */
+  crawlNavGrid: INavigationGrid;
   nav: HordeGuidance;
   zombieHash: ISpatialHash; // rebuilt once per step by HordeSystem before steering
   rng: Rng;
@@ -132,4 +144,22 @@ export interface ISimulation {
   drainEvents(): GameEvent[];
 }
 
-export type SystemUpdate = (ctx: SimContext, dt: number, input: SimInput) => void;
+/**
+ * src/systems/MomentumSystem.ts — Outbreak Momentum (pure).
+ *   addMomentum(ctx, reason): void          // gain = BALANCE.momentum.gain*(reason); resets idleTime; emits momentumGain (+ momentumTier on tier change)
+ *   updateMomentum(ctx, dt): void           // idleTime += dt; decay after graceTime; tick gainFlash; tier events
+ *   momentumTier(value): MomentumTier
+ *   recruitRadiusMultiplier(state): number  // 1 + value * recruitRadiusPerPoint
+ *   speedMultiplier(state): number          // 1 + value * speedPerPoint
+ * Call sites: recruit (+1, every new follower incl. cascade, NOT start followers or conversions),
+ * converted (+3), guardDied with role 'soldier' and source 'zombie' (+5), gate/structure destroyed with defensive (+10).
+ *
+ * src/systems/StructureSystem.ts — destructible landmark obstructions (pure).
+ *   findStructure(state, id): StructureState | undefined
+ *   damageStructure(ctx, s, amount): void   // hp, hitFlash, emits damage + structureDamaged; destroys at 0
+ *   updateStructures(ctx, dt): void         // ticks hitFlash; steers just-released zombies out (releaseSpeed, releaseDuration)
+ * Destruction: collision.setEnabled(colliderId,false); navGrid.rebuild(); crawlNavGrid.rebuild() exactly once;
+ * every zombie with heldBy === id gets heldBy = 0 (stays ambient, now recruitable) and walks out;
+ * emits structureDestroyed, plus released only when count > 0; stats.structuresDestroyed++; momentum if def.defensive.
+ */
+export type SystemUpdate =(ctx: SimContext, dt: number, input: SimInput) => void;

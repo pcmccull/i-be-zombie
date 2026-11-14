@@ -5,7 +5,10 @@ import { approachAngle, approachCameraDistance, cameraOffset } from './cameraMat
 
 const DEFAULT_PITCH = Math.atan(11 / 14);
 const MIN_PITCH = 20 * Math.PI / 180;
-const MAX_PITCH = 65 * Math.PI / 180;
+const MAX_PITCH = 78 * Math.PI / 180;
+const MAX_ZOOM = 48;
+/** Keyboard orbit speed (rad/s) for Z/X. */
+const KEY_ORBIT_SPEED = 2.4;
 
 export class ThirdPersonCamera {
   yaw = 0;
@@ -15,6 +18,14 @@ export class ThirdPersonCamera {
   private targetZoom = 14;
   private sinceOrbit = 0;
   private recentering = false;
+  /** Set once the player orbits manually; disables auto-follow until recenter (C). */
+  private manualYaw = false;
+  private turnAxis = 0;
+  private lookBackHeld = false;
+  /** 0..1 eased blend toward the 180° look-back view. */
+  private lookBack = 0;
+  /** Yaw actually used for rendering (base yaw + look-back). Movement keeps using `yaw`. */
+  viewYaw = 0;
   private initialized = false;
   private boomLength = 0;
   private desiredDistance = 0;
@@ -41,13 +52,20 @@ export class ThirdPersonCamera {
     this.pitch = THREE.MathUtils.clamp(this.pitch + dyPx * 0.005, MIN_PITCH, MAX_PITCH);
     this.sinceOrbit = 0;
     this.recentering = false;
+    this.manualYaw = true;
+  }
+
+  /** Per-frame free-look controls: turn axis in [-1,1] (Z/X) and hold-to-look-back (V). */
+  setLook(turnAxis: number, lookBack: boolean): void {
+    this.turnAxis = THREE.MathUtils.clamp(turnAxis, -1, 1);
+    this.lookBackHeld = lookBack;
   }
 
   addZoom(wheelDeltaY: number): void {
-    this.targetZoom = THREE.MathUtils.clamp(this.targetZoom + wheelDeltaY * 0.018, 8, 32);
+    this.targetZoom = THREE.MathUtils.clamp(this.targetZoom + wheelDeltaY * 0.018, 8, MAX_ZOOM);
   }
 
-  recenter(): void { this.recentering = true; }
+  recenter(): void { this.recentering = true; this.manualYaw = false; }
 
   reset(leaderFacing: number, focus: Vec3): void {
     this.yaw = leaderFacing;
@@ -55,6 +73,11 @@ export class ThirdPersonCamera {
     this.zoom = this.targetZoom = 14;
     this.sinceOrbit = 0;
     this.recentering = false;
+    this.manualYaw = false;
+    this.turnAxis = 0;
+    this.lookBackHeld = false;
+    this.lookBack = 0;
+    this.viewYaw = leaderFacing;
     this.focus.copy(focus);
     this.boomLength = Math.hypot(14, 11);
     this.faded.clear();
@@ -66,18 +89,29 @@ export class ThirdPersonCamera {
     dt = Math.max(0, dt);
     if (!this.initialized) this.reset(leaderFacing, focus);
     this.sinceOrbit += dt;
+    if (this.turnAxis !== 0) {
+      this.yaw -= this.turnAxis * KEY_ORBIT_SPEED * dt;
+      this.sinceOrbit = 0;
+      this.recentering = false;
+      this.manualYaw = true;
+    }
     const diff = Math.atan2(Math.sin(leaderFacing - this.yaw), Math.cos(leaderFacing - this.yaw));
     if (this.recentering) {
       this.yaw = approachAngle(this.yaw, leaderFacing, Math.abs(diff) * (1 - Math.exp(-12 * dt)));
       if (Math.abs(diff) < 0.002) this.recentering = false;
-    } else if (this.sinceOrbit >= 1.5 && leaderMoving && Math.abs(diff) < 100 * Math.PI / 180) {
+    } else if (!this.manualYaw && this.sinceOrbit >= 1.5 && leaderMoving && Math.abs(diff) < 100 * Math.PI / 180) {
       this.yaw = approachAngle(this.yaw, leaderFacing, 0.6 * dt);
     }
+    this.lookBack += ((this.lookBackHeld ? 1 : 0) - this.lookBack) * (1 - Math.exp(-9 * dt));
+    if (Math.abs(this.lookBack - (this.lookBackHeld ? 1 : 0)) < 1e-3) this.lookBack = this.lookBackHeld ? 1 : 0;
+    // Smoothstep so the swing eases in and out.
+    const blend = this.lookBack * this.lookBack * (3 - 2 * this.lookBack);
+    this.viewYaw = this.yaw + Math.PI * blend;
     this.zoom += (this.targetZoom - this.zoom) * (1 - Math.exp(-10 * dt));
     this.focus.lerp(focus, 1 - Math.exp(-22 * dt));
     // Raycasts also run before the first render and after scene transforms change.
     for (const occluder of this.occluders) occluder.updateWorldMatrix(true, false);
-    cameraOffset(this.yaw, this.zoom, this.zoom * Math.tan(this.pitch), this.desired);
+    cameraOffset(this.viewYaw, this.zoom, this.zoom * Math.tan(this.pitch), this.desired);
     this.desired.add(this.focus);
     this.direction.subVectors(this.desired, this.focus);
     const desiredLength = this.direction.length();
@@ -107,8 +141,8 @@ export class ThirdPersonCamera {
     if (this.direction.lengthSq() < 16) this.camera.position.copy(this.focus).addScaledVector(this.direction.normalize(), 4);
     this.actualDistance = this.camera.position.distanceTo(this.focus);
     this.lookAt.copy(this.focus);
-    this.lookAt.x += Math.sin(this.yaw) * 2.5;
-    this.lookAt.z += Math.cos(this.yaw) * 2.5;
+    this.lookAt.x += Math.sin(this.viewYaw) * 2.5;
+    this.lookAt.z += Math.cos(this.viewYaw) * 2.5;
     this.lookAt.y += 0.3;
     this.camera.lookAt(this.lookAt);
     this.camera.updateMatrixWorld(true);

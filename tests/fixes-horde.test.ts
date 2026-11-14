@@ -14,7 +14,10 @@ const dt = BALANCE.sim.fixedDt;
 function fixture(extra: ColliderDef[] = []) {
   const layout = buildDistrictLayout();
   layout.colliders = [...layout.colliders.filter(c => c.kind === 'gate'), ...extra];
-  const sim = new Simulation(layout, 42); sim.state.zombies = [];
+  // This fixture strips landmark colliders, so it has no associated structures or held zones.
+  layout.structures = [];
+  for (const zone of layout.spawnZones) zone.heldBy = 0;
+  const sim = new Simulation(layout, 42); sim.state.zombies = []; sim.state.followerCount = 0;
   sim.state.leader.pos = { x: -8, z: 0 };
   const guard = sim.state.guards[5]; guard.pos = { x: 3, z: 0 };
   for (const other of sim.state.guards) if (other !== guard) { other.state = 'DEAD'; other.hp = 0; }

@@ -2,15 +2,17 @@ import * as THREE from 'three';
 import { AudioSystem } from '../audio/AudioSystem';
 import { BALANCE } from '../config/balance';
 import { Simulation } from '../sim/Simulation';
-import { HUD } from '../ui/HUD';
+import { HUD, structureHudLabel } from '../ui/HUD';
 import { Effects } from '../visuals/Effects';
 import { EntityRenderer } from '../visuals/EntityRenderer';
 import { HordeRenderer } from '../visuals/HordeRenderer';
+import { HealthBars } from '../visuals/HealthBars';
 import { CheckpointVisual } from '../world/Checkpoint';
 import { CityDistrict } from '../world/CityDistrict';
+import { Landmarks } from '../world/Landmarks';
 import { InputController } from './InputController';
 import { ThirdPersonCamera } from './ThirdPersonCamera';
-import { emptyInput, type TargetRef } from './types';
+import { emptyInput, type DistrictLayout, type TargetRef } from './types';
 import { approachAngle, approachOccluderOpacity } from './cameraMath';
 
 export class Game {
@@ -21,8 +23,10 @@ export class Game {
   private readonly camera = new THREE.PerspectiveCamera(55, 1, 0.25, 450);
   private readonly city: CityDistrict;
   private readonly checkpoint: CheckpointVisual;
+  private readonly landmarks: Landmarks;
   private readonly entities: EntityRenderer;
   private readonly horde: HordeRenderer;
+  private readonly healthBars = new HealthBars();
   private readonly effects: Effects;
   private readonly audio = new AudioSystem();
   private readonly hud: HUD;
@@ -34,6 +38,10 @@ export class Game {
   private checkpointOccluder: THREE.Mesh | null = null;
   private readonly focus = new THREE.Vector3();
   private readonly marker = new THREE.Vector3();
+  private readonly extraMarkers: THREE.Vector3[] = [];
+  private readonly extraMarkerView: THREE.Vector3[] = [];
+  private readonly targeted: TargetRef[] = [];
+  private readonly targetedStructureIds: number[] = [];
   private readonly continuousInput = emptyInput();
   private running = false;
   private disposed = false;
@@ -71,17 +79,22 @@ export class Game {
     this.sim = new Simulation();
     const layout = this.sim.ctx.layout;
     this.city = new CityDistrict(layout);
-    this.checkpoint = new CheckpointVisual(layout);
+    const checkpointLayout: DistrictLayout = {
+      ...layout,
+      colliders: layout.colliders.filter(c => !(c.tag?.startsWith('pen-fence-') || c.tag === 'alley-wall-n')),
+    };
+    this.checkpoint = new CheckpointVisual(checkpointLayout);
+    this.landmarks = new Landmarks(layout);
     this.entities = new EntityRenderer(this.scene);
     this.horde = new HordeRenderer();
-    this.scene.add(this.city.group, this.checkpoint.group, this.horde.group, this.extraOccluders);
+    this.scene.add(this.city.group, this.checkpoint.group, this.landmarks.group, this.horde.group, this.healthBars.group, this.extraOccluders);
     this.effects = new Effects(this.scene);
     this.hud = new HUD(hudRoot);
     this.hud.showIntro();
     // HUD has no pass-through option. Its restart buttons explicitly enable pointer
     // events, so leave them clickable while the overlays allow canvas interaction.
     for (const overlay of hudRoot.querySelectorAll<HTMLElement>('.ibz-overlay')) overlay.style.pointerEvents = 'none';
-    this.occluders = [...this.city.occluders];
+    this.occluders = [...this.city.occluders, ...this.landmarks.shellOccluders];
     this.checkpoint.group.traverse(object => {
       if (object instanceof THREE.Mesh && object.name === 'CheckpointStatic') {
         this.checkpointOccluder = object;
@@ -92,11 +105,15 @@ export class Game {
     const proxyGeometry = new THREE.BoxGeometry(1, 1, 1);
     const proxyMaterial = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false, side: THREE.DoubleSide });
     for (const collider of layout.colliders) {
-      if (!collider.blocksSight || ['building', 'wall', 'tower', 'gate'].includes(collider.kind)) continue;
+      if (!collider.blocksSight || ['building', 'wall', 'tower', 'gate', 'breakable'].includes(collider.kind)) continue;
       const proxy = new THREE.Mesh(proxyGeometry, proxyMaterial);
       proxy.position.set((collider.minX + collider.maxX) / 2, collider.height / 2, (collider.minZ + collider.maxZ) / 2);
       proxy.scale.set(collider.maxX - collider.minX, collider.height, collider.maxZ - collider.minZ);
       proxy.visible = false; // Raycaster intentionally intersects invisible proxies.
+      if (collider.tag?.startsWith('bus-shell-')) {
+        const busPick = this.landmarks.pickMeshFor('bus');
+        if (busPick) proxy.userData.pickTarget = busPick;
+      }
       this.extraOccluders.add(proxy);
       this.occluders.push(proxy);
     }
@@ -108,10 +125,11 @@ export class Game {
     this.gateOccluder.userData.pickTarget = this.checkpoint.gatePickMesh;
     this.extraOccluders.add(this.gateOccluder);
     this.occluders.push(this.gateOccluder);
+    this.landmarks.syncOccluders(this.occluders, this.sim.state);
     this.cameraRig = new ThirdPersonCamera(this.camera, this.occluders);
     this.input = new InputController(this.renderer.domElement, {
       camera: this.camera,
-      pickables: () => [...this.entities.pickables, this.checkpoint.gatePickMesh],
+      pickables: () => [...this.entities.pickables, this.checkpoint.gatePickMesh, ...this.landmarks.pickMeshes],
       occluders: this.occluders,
       onOrbit: (dx, dy) => this.cameraRig.addOrbit(dx, dy),
       onZoom: delta => this.cameraRig.addZoom(delta),
@@ -154,16 +172,18 @@ export class Game {
     this.sim.reset();
     this.effects.reset();
     this.entities.reset();
+    this.audio.reset();
+    this.hud.reset();
     this.input.clear();
     this.accumulator = 0;
     this.lastTime = null;
     this.entities.setHovered(null);
-    this.entities.setTargeted(null);
+    this.entities.setTargeted([]);
     this.checkpoint.setGateHighlight(false);
+    this.landmarks.setHighlight(null);
     this.updateGateOccluder();
     this.resetCamera();
     this.hud.hideIntro();
-    // HUD lacks a reset API for its transient toast; hide stale battle feedback.
     this.hudRoot.querySelector('[data-ref="toast"]')?.classList.remove('is-visible');
     this.syncVisuals(0, 0);
     this.updateHud();
@@ -194,8 +214,10 @@ export class Game {
     this.effects.dispose();
     this.city.dispose();
     this.checkpoint.dispose();
+    this.landmarks.dispose();
     this.entities.dispose();
     this.horde.dispose();
+    this.healthBars.dispose();
     for (const geometry of characterGeometry) geometry.dispose();
     this.gateOccluder.geometry.dispose();
     (this.gateOccluder.material as THREE.Material).dispose();
@@ -234,7 +256,7 @@ export class Game {
     const state = this.sim.state;
     const events = this.sim.drainEvents();
     this.effects.consume(events, state);
-    this.audio.consume(events);
+    this.audio.consume(events, state);
     this.hud.consume(events);
     this.entities.consume(events);
     this.updateGateOccluder();
@@ -243,18 +265,28 @@ export class Game {
     this.focus.set(leader.prevPos.x + (leader.pos.x - leader.prevPos.x) * alpha, 1.4,
       leader.prevPos.z + (leader.pos.z - leader.prevPos.z) * alpha);
     const facingDelta = approachAngle(leader.prevFacing, leader.facing, Math.PI) - leader.prevFacing;
+    this.cameraRig.setLook(this.input.cameraTurn, this.input.lookBack);
     const hits = this.cameraRig.update(dt, this.focus, leader.prevFacing + facingDelta * alpha,
       state.phase === 'playing' && Math.hypot(leader.vel.x, leader.vel.z) > 0.15, this.effects.takeShake());
     this.city.setOccluderFade(hits, dt);
+    this.landmarks.setOccluderFade(hits, dt);
     this.fadeCheckpoint(hits, dt);
     this.input.updateHover();
     const hovered = this.input.hovered;
-    const targeted = state.order.type === 'attack' ? state.order.target : null;
+    this.targeted.length = 0;
+    this.targetedStructureIds.length = 0;
+    if (state.order.type === 'attack') this.targeted.push(state.order.target);
+    for (const squad of state.squads) this.targeted.push(squad.target);
+    for (const t of this.targeted) {
+      if (t.kind === 'structure') this.targetedStructureIds.push(t.id);
+    }
     this.entities.setHovered(hovered);
-    this.entities.setTargeted(targeted);
-    this.checkpoint.setGateHighlight(hovered?.kind === 'gate' || targeted?.kind === 'gate');
+    this.entities.setTargeted(this.targeted);
+    this.checkpoint.setGateHighlight(hovered?.kind === 'gate' || this.targeted.some(t => t.kind === 'gate'));
+    this.landmarks.setHighlight(hovered?.kind === 'structure' ? hovered.id : null, this.targetedStructureIds);
     // Refresh indicators after this frame's camera/hover raycast.
     this.entities.update(state, alpha, state.time, 0);
+    this.healthBars.update(state, alpha, this.camera);
     this.updateHud();
     this.renderer.render(this.scene, this.camera);
     this.frameId = requestAnimationFrame(this.frame);
@@ -264,30 +296,73 @@ export class Game {
     const state = this.sim.state;
     this.city.update(dt, state.time);
     this.checkpoint.update(state.gate, dt, state.time);
+    this.landmarks.update(state, dt, state.time);
     this.entities.update(state, alpha, state.time, dt);
     this.horde.update(state.zombies, alpha, state.time, state.abilities.rushTimeLeft > 0);
     let target: TargetRef | null = null;
     if (state.order.type === 'attack') target = this.sim.ctx.nav.effectiveTarget ?? state.order.target;
-    if (target?.kind === 'gate' && !state.gate.destroyed) {
-      this.marker.set(state.gate.center.x, 1.5, state.gate.center.z);
-      this.effects.setOrderMarker(this.marker);
-    } else if (target?.kind === 'guard') {
-      const guardId = target.id;
-      const guard = state.guards.find(g => g.id === guardId && g.state !== 'DEAD' && g.hp > 0);
-      if (guard) {
-        this.marker.set(guard.pos.x, guard.elevation + 2.2, guard.pos.z);
-        this.effects.setOrderMarker(this.marker);
-      } else this.effects.setOrderMarker(null);
-    } else this.effects.setOrderMarker(null);
+    this.effects.setOrderMarker(this.markerFor(target, this.marker) ? this.marker : null);
+    // Each extra selected target (split horde) gets its own marker; duplicates of the gate or same structure collapse.
+    let extra = 0;
+    for (const squad of state.squads) {
+      const t = this.sim.ctx.nav.squads.get(squad.id)?.effectiveTarget ?? squad.target;
+      const slot = this.extraMarkers[extra] ?? (this.extraMarkers[extra] = new THREE.Vector3());
+      const duplicateGate = t.kind === 'gate' && target?.kind === 'gate';
+      const duplicateStructure = t.kind === 'structure' && target?.kind === 'structure' && t.id === target.id;
+      if (this.markerFor(t, slot) && !duplicateGate && !duplicateStructure) extra++;
+    }
+    this.extraMarkerView.length = 0;
+    for (let i = 0; i < extra; i++) this.extraMarkerView.push(this.extraMarkers[i]);
+    this.effects.setExtraOrderMarkers(this.extraMarkerView);
     this.effects.update(dt, state);
     this.scene.updateMatrixWorld(true);
   }
 
+  private markerFor(target: TargetRef | null, out: THREE.Vector3): boolean {
+    const state = this.sim.state;
+    if (target?.kind === 'gate' && !state.gate.destroyed) {
+      out.set(state.gate.center.x, 1.5, state.gate.center.z);
+      return true;
+    }
+    if (target?.kind === 'structure') {
+      const structState = state.structures?.find(s => s.id === target.id);
+      if (structState) {
+        if (!structState.destroyed && structState.hp > 0) {
+          out.set(structState.center.x, 1.5, structState.center.z);
+          return true;
+        }
+        return false;
+      }
+      const structDef = this.sim.ctx.layout.structures?.find(s => s.id === target.id);
+      if (structDef) {
+        out.set((structDef.rect.minX + structDef.rect.maxX) / 2, 1.5, (structDef.rect.minZ + structDef.rect.maxZ) / 2);
+        return true;
+      }
+    }
+    if (target?.kind === 'guard') {
+      const guardId = target.id;
+      const guard = state.guards.find(g => g.id === guardId && g.state !== 'DEAD' && g.hp > 0);
+      if (guard) { out.set(guard.pos.x, guard.elevation + 2.2, guard.pos.z); return true; }
+    }
+    return false;
+  }
+
   private updateHud(): void {
     const target = this.input.hovered;
+    let hoverLabel: string | null = null;
+    if (target?.kind === 'gate') {
+      hoverLabel = 'GATE';
+    } else if (target?.kind === 'guard') {
+      const guard = this.sim.state.guards.find(g => g.id === target.id);
+      hoverLabel = guard?.role === 'civilian' ? 'CIVILIAN' : 'GUARD';
+    } else if (target?.kind === 'structure') {
+      const structState = this.sim.state.structures?.find(s => s.id === target.id);
+      const structDef = structState ?? this.sim.ctx.layout.structures?.find(s => s.id === target.id);
+      hoverLabel = structDef ? structureHudLabel(structDef.kind) : 'STRUCTURE';
+    }
     this.hud.update(this.sim.state, {
       fps: this.smoothFps, drawCalls: this.renderer.info.render.calls, showDebug: this.showDebug,
-      hoverLabel: target?.kind === 'gate' ? 'GATE' : target?.kind === 'guard' ? 'GUARD' : null,
+      hoverLabel,
     });
   }
 
@@ -302,6 +377,7 @@ export class Game {
     if (this.sim.state.gate.destroyed) {
       if (index !== -1) this.occluders.splice(index, 1);
     } else if (index === -1) this.occluders.push(this.gateOccluder);
+    this.landmarks.syncOccluders(this.occluders, this.sim.state);
   }
 
   private fadeCheckpoint(hits: Set<THREE.Object3D>, dt: number): void {

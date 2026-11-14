@@ -5,7 +5,7 @@ import type { EntityId, GameEvent, GameState, Vec3 } from '../core/types';
 const MAX_TRACERS = 64;
 const MAX_MUZZLES = 32;
 const MAX_PARTICLES = 256;
-const MAX_RINGS = 24;
+const MAX_RINGS = 36;
 const MAX_SWIRLS = 8;
 const MAX_ALERTS = 8;
 
@@ -56,6 +56,8 @@ interface RingSlot {
   startRadius: number;
   endRadius: number;
   colorHex: number;
+  thick: boolean;
+  brightness: number;
 }
 
 interface SwirlSlot {
@@ -124,6 +126,7 @@ export class Effects {
   private readonly orderOuterRing: THREE.Mesh;
   private readonly orderInnerRing: THREE.Mesh;
   private readonly orderChevron: THREE.Group;
+  private readonly extraOrderMarkers: THREE.Group[] = [];
   private readonly orderRingGeo: THREE.BufferGeometry;
   private readonly orderInnerGeo: THREE.BufferGeometry;
   private readonly orderChevronGeo: THREE.BufferGeometry;
@@ -245,7 +248,7 @@ export class Effects {
       depthWrite: false,
       side: THREE.DoubleSide,
     });
-    this.ringMesh = new THREE.InstancedMesh(this.ringGeo, this.ringMat, MAX_RINGS);
+    this.ringMesh = new THREE.InstancedMesh(this.ringGeo, this.ringMat, MAX_RINGS * 2);
     this.ringMesh.frustumCulled = false;
     this.ringMesh.count = 0;
     this.ringMesh.setColorAt(0, this.tempColor.setHex(0xffffff));
@@ -263,6 +266,8 @@ export class Effects {
         startRadius: 0.3,
         endRadius: 2.0,
         colorHex: 0xffffff,
+        thick: false,
+        brightness: 1.0,
       });
     }
 
@@ -377,12 +382,69 @@ export class Effects {
             this.requestShake(0.18);
           } else if (ev.target.kind === 'gate') {
             this.spawnBurst(ev.pos.x, 1.4, ev.pos.z, 6, 0xff9933, 3.8, 0.12, 0.3);
+          } else if (
+            ev.target.kind === 'structure' &&
+            !events.some((e) => e.type === 'structureDamaged')
+          ) {
+            this.spawnBurst(ev.pos.x, 1.35, ev.pos.z, 6, 0xff9933, 3.8, 0.12, 0.3);
           }
           break;
         }
         case 'recruited': {
-          this.spawnBurst(ev.pos.x, 0.9, ev.pos.z, 8, 0x9be35a, 3.5, 0.12, 0.48, -2.0);
-          this.spawnRing(ev.pos.x, 0.1, ev.pos.z, 0.35, 1.65, 0.45, 0x9be35a, 1.6);
+          const gen = ev.generation ?? 0;
+          const col = gen >= 2 ? 0xffe84a : gen >= 1 ? 0x5effb8 : 0xbfff47;
+          this.spawnBurst(ev.pos.x, 0.9, ev.pos.z, 8, col, 3.5, 0.12, 0.48, -2.0);
+          this.spawnRing(ev.pos.x, 0.1, ev.pos.z, 0.35, 1.65, 0.45, col, 1.6);
+          break;
+        }
+        case 'recruitPulse': {
+          const hasRecruits = (ev.recruits ?? 0) > 0;
+          const gen = ev.generation ?? 0;
+          const col = hasRecruits
+            ? gen >= 2
+              ? 0xffe84a
+              : gen >= 1
+                ? 0x5effb8
+                : 0xc4ff4d
+            : 0x6f9458;
+          this.spawnRing(
+            ev.pos.x,
+            0.06,
+            ev.pos.z,
+            0.35,
+            ev.radius,
+            0.45,
+            col,
+            0,
+            hasRecruits,
+            hasRecruits ? 1.0 : 0.55,
+          );
+          break;
+        }
+        case 'structureDamaged': {
+          this.spawnBurst(ev.pos.x, 1.35, ev.pos.z, 6, 0xff9933, 3.8, 0.12, 0.3);
+          break;
+        }
+        case 'structureDestroyed': {
+          const col =
+            ev.kind === 'storeDoor'
+              ? 0x88ccff
+              : ev.kind === 'busDoor'
+                ? 0xe59824
+                : 0xc9b99a;
+          this.spawnBurst(ev.pos.x, 1.3, ev.pos.z, 24, col, 6.5, 0.2, 0.65);
+          this.spawnBurst(ev.pos.x, 0.9, ev.pos.z, 16, 0x8a8478, 5.0, 0.18, 0.6);
+          this.spawnRing(ev.pos.x, 0.08, ev.pos.z, 0.5, 5.5, 0.5, 0xffb347, 0.1, true, 0.9);
+          this.requestShake(0.32);
+          break;
+        }
+        case 'released': {
+          if ((ev.count ?? 0) > 0) {
+            this.spawnBurst(ev.pos.x, 0.85, ev.pos.z, 18, 0xc2b8a3, 4.2, 0.22, 0.65, 2.2);
+            this.spawnBurst(ev.pos.x, 0.45, ev.pos.z, 12, 0x948c7c, 3.4, 0.18, 0.55, 1.6);
+            this.spawnRing(ev.pos.x, 0.07, ev.pos.z, 0.45, 4.2, 0.48, 0xc9b99a, 0.08, false, 0.8);
+            this.requestShake(0.22);
+          }
           break;
         }
         case 'rally': {
@@ -458,6 +520,22 @@ export class Effects {
     this.orderMarkerGroup.position.set(pos.x, pos.y, pos.z);
   }
 
+  /** Markers for additional selected targets (split horde). Clones share geometry/material. */
+  setExtraOrderMarkers(positions: readonly Vec3[]): void {
+    while (this.extraOrderMarkers.length < positions.length) {
+      const marker = this.orderMarkerGroup.clone(true);
+      marker.name = 'AttackOrderMarkerExtra';
+      this.rootGroup.add(marker);
+      this.extraOrderMarkers.push(marker);
+    }
+    for (let i = 0; i < this.extraOrderMarkers.length; i++) {
+      const marker = this.extraOrderMarkers[i];
+      const pos = positions[i];
+      marker.visible = !!pos;
+      if (pos) marker.position.set(pos.x, pos.y, pos.z);
+    }
+  }
+
   ping(pos: Vec3): void {
     this.spawnRing(pos.x, pos.y + 0.04, pos.z, 0.2, 2.1, 0.48, 0xf2f5fa, 0.05);
     this.spawnRing(pos.x, pos.y + 0.05, pos.z, 0.1, 1.1, 0.36, 0xd4e2f0, 0.05);
@@ -474,6 +552,14 @@ export class Effects {
       this.orderInnerRing.rotation.z = this.time * 2.6;
       this.orderChevron.position.y = 2.5 + 0.28 * Math.sin(this.time * 6.5);
       this.orderChevron.rotation.y = this.time * 3.0;
+    }
+    for (const marker of this.extraOrderMarkers) {
+      if (!marker.visible) continue;
+      const [outer, inner, chevron] = marker.children;
+      outer.scale.setScalar(1.0 + 0.16 * Math.sin(this.time * 8.0));
+      inner.rotation.z = this.time * 2.6;
+      chevron.position.y = 2.5 + 0.28 * Math.sin(this.time * 6.5);
+      chevron.rotation.y = this.time * 3.0;
     }
 
     // 1. Update Tracers
@@ -573,9 +659,19 @@ export class Effects {
       this.scaleVec.set(radius, 1, radius);
       this.dummyMatrix.compose(this.posVec, this.quat, this.scaleVec);
       this.ringMesh.setMatrixAt(ringCount, this.dummyMatrix);
-      this.tempColor.setHex(r.colorHex).multiplyScalar(1.0 - u * 0.65);
+      const fade = (1.0 - u * 0.65) * r.brightness;
+      this.tempColor.setHex(r.colorHex).multiplyScalar(fade);
       this.ringMesh.setColorAt(ringCount, this.tempColor);
       ringCount++;
+
+      if (r.thick) {
+        const innerRadius = Math.max(0.05, radius * 0.87);
+        this.scaleVec.set(innerRadius, 1, innerRadius);
+        this.dummyMatrix.compose(this.posVec, this.quat, this.scaleVec);
+        this.ringMesh.setMatrixAt(ringCount, this.dummyMatrix);
+        this.ringMesh.setColorAt(ringCount, this.tempColor);
+        ringCount++;
+      }
     }
     this.ringMesh.count = ringCount;
     this.ringMesh.instanceMatrix.needsUpdate = true;
@@ -766,6 +862,8 @@ export class Effects {
     duration: number,
     colorHex: number,
     riseSpeed: number,
+    thick = false,
+    brightness = 1.0,
   ): void {
     const slot = this.rings[this.nextRingIdx];
     this.nextRingIdx = (this.nextRingIdx + 1) % MAX_RINGS;
@@ -779,6 +877,8 @@ export class Effects {
     slot.endRadius = endRadius;
     slot.colorHex = colorHex;
     slot.riseSpeed = riseSpeed;
+    slot.thick = thick;
+    slot.brightness = brightness;
   }
 
   private spawnSwirl(x: number, z: number): void {

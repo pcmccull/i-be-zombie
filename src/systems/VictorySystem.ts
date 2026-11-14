@@ -7,7 +7,7 @@ export function checkVictory(ctx: SimContext): void {
     s.phase = 'defeat';
     // The damage system owns leaderDied; this system emits only the phase event.
     ctx.emit({ type: 'defeat' });
-  } else if (s.gate.destroyed && s.guards.every(g => g.state === 'DEAD')) {
+  } else if (s.gate.destroyed && s.guards.every(g => g.post !== 'checkpoint' || g.state === 'DEAD')) {
     s.phase = 'victory'; ctx.emit({ type: 'victory' });
   }
 }

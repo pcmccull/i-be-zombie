@@ -9,7 +9,7 @@ import { buildDistrictLayout } from '../src/world/districtLayout';
 const dt = BALANCE.sim.fixedDt;
 function isolated(): Simulation {
   const sim = new Simulation(buildDistrictLayout(), 11);
-  sim.state.zombies = [];
+  sim.state.zombies = []; sim.state.followerCount = 0;
   return sim;
 }
 function add(sim: Simulation, x: number, z: number, state: 'ambient' | 'rising' = 'ambient') {
@@ -23,20 +23,24 @@ function add(sim: Simulation, x: number, z: number, state: 'ambient' | 'rising' 
 describe('recruitment and initial state', () => {
   it('spawns the authored counts at deterministic clear points with independent entity data', () => {
     const sim = new Simulation(buildDistrictLayout(), 91);
-    expect(sim.state.zombies).toHaveLength(60);
-    expect(sim.state.guards).toHaveLength(8);
+    expect(sim.state.zombies).toHaveLength(BALANCE.horde.initialAmbient + BALANCE.horde.startFollowers);
+    expect(sim.state.zombies.filter(z => z.state === 'ambient')).toHaveLength(BALANCE.horde.initialAmbient);
+    expect(sim.state.zombies.filter(z => z.state === 'follower')).toHaveLength(BALANCE.horde.startFollowers);
+    expect(sim.state.guards).toHaveLength(sim.ctx.layout.guards.length);
+    expect(sim.state.guards.filter(g => g.post === 'checkpoint')).toHaveLength(BALANCE.guard.count);
     expect(sim.state.guards.filter(g => g.tower)).toHaveLength(2);
-    expect(new Set([sim.state.leader.id, ...sim.state.zombies.map(z => z.id), ...sim.state.guards.map(g => g.id)]).size).toBe(69);
+    expect(new Set([sim.state.leader.id, ...sim.state.zombies.map(z => z.id), ...sim.state.guards.map(g => g.id)]).size)
+      .toBe(1 + sim.state.zombies.length + sim.state.guards.length);
     for (const z of sim.state.zombies) {
       expect(sim.ctx.collision.isBlocked(z.pos, 0.45)).toBe(false);
-      expect(z.state).toBe('ambient'); expect(z.pos).not.toBe(z.prevPos);
+      expect(z.state).toBe(z.spawnZone === -1 ? 'follower' : 'ambient'); expect(z.pos).not.toBe(z.prevPos);
       expect(z.speedScale).toBeGreaterThanOrEqual(0.88); expect(z.speedScale).toBeLessThanOrEqual(1.12);
       expect(Math.hypot(z.followOffset.x, z.followOffset.z)).toBeLessThanOrEqual(6);
     }
     for (const g of sim.state.guards.filter(g => g.tower)) {
       expect(g.elevation).toBe(4); expect(g.towerColliderId).not.toBeNull();
     }
-    expect(sim.state.followerCount).toBe(0);
+    expect(sim.state.followerCount).toBe(BALANCE.horde.startFollowers);
     expect(sim.state).toEqual(new Simulation(buildDistrictLayout(), 91).state);
   });
 

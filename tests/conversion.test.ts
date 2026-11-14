@@ -9,7 +9,7 @@ import { countFollowers, recruitZombie } from '../src/systems/HordeSystem';
 
 const input = emptyInput(), dt = BALANCE.sim.fixedDt;
 function fixture(value = 0.69) {
-  const sim = new Simulation(); sim.state.zombies = []; sim.ctx.rng = { next: () => value }; return sim;
+  const sim = new Simulation(); sim.state.zombies = []; sim.state.followerCount = 0; sim.ctx.rng = { next: () => value }; return sim;
 }
 
 describe('conversion: design §15.10–11', () => {
@@ -48,7 +48,11 @@ describe('conversion: design §15.10–11', () => {
     updateConversion(sim.ctx, dt, input);
     expect(z.state).toBe('follower'); expect(z.stateTime).toBe(0); expect(z.anim).toBe('idle');
     expect(sim.state.followerCount).toBe(1); expect(countFollowers(sim.state)).toBe(1); expect(sim.state.stats.conversions).toBe(1);
-    expect(sim.drainEvents()).toEqual([{ type: 'converted', guardId: g.id, zombieId: z.id, pos }]);
+    expect(sim.drainEvents()).toEqual([
+      { type: 'converted', guardId: g.id, zombieId: z.id, pos },
+      { type: 'momentumGain', amount: BALANCE.momentum.gainConvert,
+        value: BALANCE.momentum.gainArmedKill + BALANCE.momentum.gainConvert, reason: 'convert' },
+    ]);
     updateConversion(sim.ctx, 5, input); expect(sim.state.stats.conversions).toBe(1);
   });
 

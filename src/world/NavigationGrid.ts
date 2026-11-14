@@ -79,6 +79,8 @@ export class NavigationGrid implements INavigationGrid {
     private readonly collision: ICollisionWorld,
     cellSize: number = BALANCE.world.navCellSize,
     private readonly agentRadius: number = BALANCE.world.navAgentRadius,
+    /** Colliders this grid treats as walkable (e.g. crawlable cars for the horde grid). */
+    private readonly passable: (c: Collider) => boolean = () => false,
   ) {
     if (!(cellSize > 0) || agentRadius < 0) throw new RangeError('Invalid navigation dimensions');
     this.cellSize = cellSize;
@@ -108,7 +110,7 @@ export class NavigationGrid implements INavigationGrid {
     }
     // Rasterize collider rectangles directly, rather than query the world for every cell.
     for (const c of this.collision.colliders) {
-      if (!c.enabled || !c.blocksMove) continue;
+      if (!c.enabled || !c.blocksMove || this.passable(c)) continue;
       const minX = Math.max(0, Math.ceil((c.minX - r - b.minX) / s - 0.5));
       const maxX = Math.min(this.cols - 1, Math.floor((c.maxX + r - b.minX) / s - 0.5));
       const minZ = Math.max(0, Math.ceil((c.minZ - r - b.minZ) / s - 0.5));
@@ -237,7 +239,7 @@ export class NavigationGrid implements INavigationGrid {
     const candidates = this.collision.queryAABB(box, this.clearanceCandidates);
     const worldDx = b.x - a.x, worldDz = b.z - a.z;
     for (const c of candidates) {
-      if (!c.blocksMove) continue;
+      if (!c.blocksMove || this.passable(c)) continue;
       let t0 = 0, t1 = 1;
       if (worldDx === 0) {
         if (a.x < c.minX - r || a.x > c.maxX + r) continue;

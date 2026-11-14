@@ -10,6 +10,7 @@ import type {
   PropDef,
   RoadMarking,
   SpawnZone,
+  StructureDef,
   Vec2,
 } from '../core/types';
 
@@ -384,11 +385,11 @@ export function buildDistrictLayout(): DistrictLayout {
   addBuilding(buildings, colliders, props, 84, -17, 100, -2, 12, 'office', 5, 'ec-bldg-1');
   addBuilding(buildings, colliders, props, 103, -17, 117, 2, 14, 'office', 6, 'ec-bldg-2');
   addBuilding(buildings, colliders, props, 48, 0, 68, 17, 9.5, 'storefront', 7, 'ec-bldg-3');
-  addBuilding(buildings, colliders, props, 72, 2, 94, 17, 11, 'garage', 0, 'ec-bldg-4');
+  addBuilding(buildings, colliders, props, 72, 0, 94, 17, 11, 'garage', 0, 'ec-bldg-4');
   addBuilding(buildings, colliders, props, 98, 5, 117, 17, 13, 'apartment', 1, 'ec-bldg-5');
 
   // --- SE BLOCK (x 45..120, z 40..90): DENSE MIXED BUILDINGS ---
-  addBuilding(buildings, colliders, props, 48, 42, 70, 58, 11, 'storefront', 2, 'se-bldg-1');
+  addBuilding(buildings, colliders, props, 58, 42, 70, 58, 11, 'storefront', 2, 'se-bldg-1');
   addBuilding(buildings, colliders, props, 74, 42, 95, 60, 15, 'office', 3, 'se-bldg-2');
   addBuilding(buildings, colliders, props, 99, 42, 117, 62, 14, 'apartment', 4, 'se-bldg-3');
   addBuilding(buildings, colliders, props, 48, 64, 72, 86, 16, 'apartment', 5, 'se-bldg-4');
@@ -398,6 +399,71 @@ export function buildDistrictLayout(): DistrictLayout {
   // --- NE BLOCK SIDE BUILDINGS (outside checkpoint compound x 62..104, z -84..-52) ---
   addBuilding(buildings, colliders, props, 47, -86, 57, -66, 9, 'warehouse', 0, 'ne-bldg-1');
   addBuilding(buildings, colliders, props, 108, -86, 118, -64, 10, 'warehouse', 1, 'ne-bldg-2');
+
+  // Hollow landmark shells are collision data only; Landmarks renders them in R3.
+  const structures: StructureDef[] = [
+    {
+      id: 1, kind: 'busDoor', landmark: 'bus', tag: 'bus-door',
+      rect: rect(-67, 32.6, -64.5, 33), facing: 0, defensive: false,
+      enclosure: rect(-71.6, 29.4, -60.4, 32.6),
+      approachOutside: [-66.4, -65.75, -65.1].map(x => ({ x, z: 34.2 })),
+      approachInside: [-66.2, -65.3].map(x => ({ x, z: 31.6 })),
+    },
+    {
+      id: 2, kind: 'alleyGate', landmark: 'alley', tag: 'alley-gate',
+      rect: rect(68, 17.4, 72, 18), facing: 0, defensive: false,
+      enclosure: rect(68.4, 0.6, 71.6, 17.2),
+      approachOutside: [69, 70, 71].map(x => ({ x, z: 19.2 })),
+      approachInside: [69, 71].map(x => ({ x, z: 16.4 })),
+    },
+    {
+      id: 3, kind: 'storeDoor', landmark: 'store', tag: 'store-door',
+      rect: rect(51, 42, 54, 42.5), facing: Math.PI, defensive: true,
+      enclosure: rect(48.5, 42.5, 56.5, 51.5),
+      approachOutside: [51.7, 52.5, 53.3].map(x => ({ x, z: 40.8 })),
+      approachInside: [51.7, 53.3].map(x => ({ x, z: 43.5 })),
+    },
+    {
+      id: 4, kind: 'penGate', landmark: 'barricade', tag: 'pen-gate',
+      rect: rect(8, 34, 8.4, 36.4), facing: -Math.PI / 2, defensive: true,
+      enclosure: rect(8.4, 33.4, 15.6, 36.6),
+      approachOutside: [34.65, 35.2, 35.75].map(z => ({ x: 6.8, z })),
+      approachInside: [34.8, 35.6].map(z => ({ x: 9.4, z })),
+    },
+  ];
+  const shell = (tag: string, footprint: AABB, kind: ColliderDef['kind'], height: number, blocksSight = true): void => {
+    colliders.push({ ...footprint, tag, kind, height, blocksMove: true, blocksSight });
+  };
+  shell('bus-shell-n', rect(-72, 29, -60, 29.4), 'vehicle', 3.2);
+  shell('bus-shell-w', rect(-72, 29, -71.6, 33), 'vehicle', 3.2);
+  shell('bus-shell-e', rect(-60.4, 29, -60, 33), 'vehicle', 3.2);
+  shell('bus-shell-sw', rect(-72, 32.6, -67, 33), 'vehicle', 3.2);
+  shell('bus-shell-se', rect(-64.5, 32.6, -60, 33), 'vehicle', 3.2);
+  shell('alley-wall-n', rect(68, -0.5, 72, 0.5), 'wall', 3);
+  shell('store-wall-nw', rect(48, 42, 51, 42.5), 'building', 5);
+  shell('store-wall-ne', rect(54, 42, 57, 42.5), 'building', 5);
+  shell('store-wall-w', rect(48, 42, 48.5, 52), 'building', 5);
+  shell('store-wall-e', rect(56.5, 42, 57, 52), 'building', 5);
+  shell('store-wall-s', rect(48, 51.5, 57, 52), 'building', 5);
+  shell('pen-fence-n', rect(8, 33, 16, 33.4), 'wall', 2.2, false);
+  shell('pen-fence-s', rect(8, 36.6, 16, 37), 'wall', 2.2, false);
+  shell('pen-fence-e', rect(15.6, 33, 16, 37), 'wall', 2.2, false);
+  shell('pen-fence-wn', rect(8, 33, 8.4, 34), 'wall', 2.2, false);
+  shell('pen-fence-ws', rect(8, 36.4, 8.4, 37), 'wall', 2.2, false);
+  const doorHeights = [2.6, 2.8, 2.6, 2.2];
+  structures.forEach((def, i) => shell(def.tag, def.rect, 'breakable', doorHeights[i]));
+
+  // Three roadblock sections leave 2.1 m gaps and open routes around either end.
+  for (const z of [24, 27, 30]) addBlockingProp(props, colliders, 'barrier', 20, z, Math.PI / 2);
+  addBlockingProp(props, colliders, 'car', 25, 38, Math.PI / 2, 1);
+
+  // Park along the courtyard edges, preserving the entire recruitment rectangle.
+  for (const z of [59, 68]) {
+    for (const x of [-19, 9]) {
+      addBlockingProp(props, colliders, 'car', x, z, 0, 2);
+      markings.push({ kind: 'parkingBay', rect: rect(x - 1.3, z - 2.5, x + 1.3, z + 2.5), rotation: 0 });
+    }
+  }
 
   // ---------------------------------------------------------------------------
   // 4. CHECKPOINT (NE BLOCK: compound x 62..104, z -84..-52, 42 x 32 m)
@@ -633,19 +699,22 @@ export function buildDistrictLayout(): DistrictLayout {
   }
 
   // ---------------------------------------------------------------------------
-  // 6. PLAYER START, SPAWN ZONES (sum = 60), AND GUARDS (8 total, 2 tower)
+  // 6. PLAYER START, CLUSTERED AMBIENT SPAWNS (85), AND HUMANS
   // ---------------------------------------------------------------------------
   const playerStart: Vec2 = { x: -85, z: 62 };
-  // Facing toward NE (+X, -Z): forward = (sin a, cos a) => a = 3*pi/4
-  const playerStartFacing = (3 * Math.PI) / 4;
+  const playerStartFacing = Math.atan2(-65.75 - playerStart.x, 32.8 - playerStart.z);
+  const startFollowerArea = rect(-90, 57, -80, 67);
 
   const spawnZones: SpawnZone[] = [
     { name: 'park-edge', rect: rect(-75, 42, -58, 54), count: 6 },
-    { name: 'residential-west', rect: rect(-96, -8, -78, 8), count: 10 },
-    { name: 'residential-south', rect: rect(-16, 56, 6, 72), count: 10 },
-    { name: 'commercial', rect: rect(-16, -6, 6, 6), count: 12 },
-    { name: 'alley', rect: rect(-22, -61, 8, -59), count: 12 },
-    { name: 'east-lot', rect: rect(52, -16, 72, -8), count: 10 },
+    // A 0.65 m inset retains the existing >= 0.6 m spawn clearance guarantee.
+    { name: 'bus', rect: rect(-70.95, 30.05, -61.05, 31.95), count: 15, heldBy: 1 },
+    { name: 'parking-lot', rect: rect(-16, 56, 6, 72), count: 12 },
+    { name: 'police-pen', rect: rect(9.05, 34.05, 14.95, 35.95), count: 10, heldBy: 4 },
+    { name: 'alley', rect: rect(69.05, 1.25, 70.95, 16.55), count: 20, heldBy: 2 },
+    { name: 'commercial', rect: rect(-16, -6, 6, 6), count: 8 },
+    { name: 'residential-west', rect: rect(-96, -8, -78, 8), count: 6 },
+    { name: 'east-lot', rect: rect(52, -16, 72, -8), count: 8 },
   ];
 
   const guards: GuardSpawn[] = [
@@ -726,6 +795,27 @@ export function buildDistrictLayout(): DistrictLayout {
     },
   ];
 
+  for (const guard of guards) {
+    guard.role = 'soldier';
+    guard.post = 'checkpoint';
+  }
+  const streetHome = rect(-82, 41, -56, 58);
+  for (const waypoints of [
+    [{ x: -74, z: 47 }, { x: -64, z: 49 }],
+    [{ x: -70, z: 52 }, { x: -62, z: 44 }],
+  ]) {
+    guards.push({ role: 'civilian', post: 'street', homeArea: streetHome,
+      pos: { ...waypoints[0] }, facing: Math.PI, tower: null, waypoints });
+  }
+  for (const z of [27, 33]) {
+    const pos = { x: 23, z };
+    guards.push({ role: 'soldier', post: 'barricade', pos, facing: -Math.PI / 2, tower: null, waypoints: [{ ...pos }] });
+  }
+  for (const pos of [{ x: 50, z: 45 }, { x: 54.5, z: 45 }, { x: 50, z: 49 }, { x: 54.5, z: 49 }]) {
+    guards.push({ role: 'civilian', post: 'store', shelter: 3, homeArea: structures[2].enclosure,
+      pos, facing: Math.PI, tower: null, waypoints: [{ ...pos }] });
+  }
+
   return {
     bounds,
     ground,
@@ -738,5 +828,7 @@ export function buildDistrictLayout(): DistrictLayout {
     spawnZones,
     checkpoint,
     guards,
+    structures,
+    startFollowerArea,
   };
 }

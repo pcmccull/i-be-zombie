@@ -1,7 +1,24 @@
 # AGENTS.md — I BE ZOMBIE
+# Universal Subagent Protocol
+
+1. **Mandatory Context Load:** Before modifying any file, read:
+   - `.agent-context/ARCHITECTURE.md`
+   - `.agent-context/MEMORY.md`
+   - `.agent-context/PROGRESS.md`
+2. **Strict File Scope:** Only create or edit files listed in your assigned `Locked Files` scope. Never alter files owned by another active task.
+3. **Progress & Memory Reporting:** Before exiting (including if you hit a rate limit, credit exhaustion, or quota error), you MUST write a structured report to `.agent-context/reports/<TASK_ID>-<agent>.md`:
+   - **Task ID & Agent:**
+   - **Status:** `COMPLETED` | `QUOTA_EXHAUSTED` | `BLOCKED` | `NEEDS_REVIEW`
+   - **Completed Work:** (files created/modified and what is already working)
+   - **Remaining Work:** (exact functions, files, or steps left unfinished—required if `QUOTA_EXHAUSTED`)
+   - **Public Interfaces/Exports Added:**
+   - **Verification Run:** (commands executed and pass/fail output)
+   - **Memory Notes:** (gotchas, edge cases, or decisions to append to `MEMORY.md`)
 
 Shared conventions for every agent (Claude orchestrator, Codex, Antigravity) working in this repo.
-**The game spec is [`docs/1_design.md`](docs/1_design.md)** (referred to by some prompts as GAME_DESIGN.md). When this file and
+**The game spec is [`docs/1_design.md`](docs/1_design.md)** (referred to by some prompts as GAME_DESIGN.md), extended by
+**[`docs/2_intial_recruitment_design.md`](docs/2_intial_recruitment_design.md)** ("recruitment spec": fast opening, cascades,
+landmark structures, momentum). Where they conflict on gameplay, the recruitment spec wins. When this file and
 the spec disagree on *architecture*, this file wins; on *gameplay*, the spec wins.
 
 ## Commands
@@ -37,8 +54,9 @@ src/
   core/Game.ts                 [3D] Owns renderer, scene, loop (fixed 1/60 accumulator), wires sim->visuals->HUD
   core/InputController.ts      [3D] Keyboard/pointer -> SimInput; click vs drag; raycast picking
   core/ThirdPersonCamera.ts    [3D] Orbit/follow/zoom/occlusion camera
+  core/cameraMath.ts           [pure] camera/occluder fade math shared by camera, CityDistrict, Landmarks
   sim/Simulation.ts            [pure] implements ISimulation; owns SimContext; fixed step order (below)
-  sim/createInitialState.ts    [pure] DistrictLayout + Rng -> GameState (leader, 60 ambient, 8 guards, gate)
+  sim/createInitialState.ts    [pure] DistrictLayout + Rng -> GameState (leader, 5 start followers, 85 ambient incl. 45 held, 16 humans, gate, structures, momentum)
   world/districtLayout.ts      [pure] buildDistrictLayout(): DistrictLayout — the authored city as data
   world/CollisionWorld.ts      [pure] implements ICollisionWorld
   world/NavigationGrid.ts      [pure] implements INavigationGrid (+ FlowField implements IFlowField)
@@ -47,13 +65,16 @@ src/
   entities/ZombieLeader.ts     [pure] createLeader, computeMoveVector, updateStamina, updateLeader
   entities/Zombie.ts           [pure] createZombie (ambient / converted)
   entities/HumanGuard.ts       [pure] createGuard
-  entities/Structure.ts        [pure] createGate
+  entities/Structure.ts        [pure] createGate, createStructures (layout.structures -> StructureState[])
   systems/HordeSystem.ts       [pure] applyHordeCommands, updateHorde (recruit, rally, rush, flocking, ambient wander)
   systems/NavigationSystem.ts  [pure] updateNavigation (shared flow fields, effective target, replans <= 5 Hz)
   systems/CombatSystem.ts      [pure] updateCombat + damage helpers + resolveTarget
   systems/HumanAISystem.ts     [pure] updateHumanAI (FSM PATROL/ALERT/COMBAT/RETREAT/DEAD, LOS, shooting)
   systems/ConversionSystem.ts  [pure] updateConversion (delayed 70% rise, cap)
-  systems/VictorySystem.ts     [pure] checkVictory
+  systems/VictorySystem.ts     [pure] checkVictory (gate destroyed AND every post==='checkpoint' human DEAD)
+  systems/StructureSystem.ts   [pure] findStructure, damageStructure, updateStructures (destroy -> release held zombies)
+  systems/MomentumSystem.ts    [pure] addMomentum, updateMomentum, momentumTier, recruitRadiusMultiplier, speedMultiplier
+  world/Landmarks.ts           [3D] Bus, locked alley, convenience store, police barricade/pen meshes + damage/release visuals + pick proxies
   visuals/LowPolyCharacters.ts [3D] Articulated humanoid builders + procedural animation
   visuals/HordeRenderer.ts     [3D] InstancedMesh-per-body-part renderer for all ZombieAgents
   visuals/EntityRenderer.ts    [3D] Leader + guards + gate sync from GameState (interpolated)
@@ -85,11 +106,12 @@ Agents only create/edit files listed in their task brief. **Never edit `src/core
   crosses its footprint at a point where the interpolated line height < collider.height. Tower guards (eye 5.2 m) see over
   compound walls (2.4 m) but not buildings (≥ 6 m). Cars are 1.7 m and block ground-level (1.5 m) sight.
 - Gate: one `ColliderDef` with `tag: 'gate'`, `kind: 'gate'`, blocksMove+blocksSight. Destroyed ⇒ `collision.setEnabled(id,false)`
-  then `navGrid.rebuild()` exactly once, emit `gateDestroyed`.
+  then `navGrid.rebuild()` + `crawlNavGrid.rebuild()` exactly once, emit `gateDestroyed`.
 - Towers: `kind:'tower'` blocking 3×3 m footprints inside the compound's front corners. Occupant stands on the platform
-  (elevation ≈ 4 m). **Defeat mechanic: attack proxy** — zombies within `attackRange + guard.radius + towerMeleeReachBonus`
-  of the occupant (horizontal) and with clear move-access (ignoring the tower's own collider) can claw it. Visuals show
-  zombies clawing the tower legs and the occupant flinching.
+  (elevation ≈ 4 m). **Defeat mechanic: climb** — zombies within `attackRange + guard.radius + towerMeleeReachBonus` of the occupant
+  (horizontal, clear move-access ignoring the tower's own collider) start climbing at `towerClimbSpeed` (max
+  `towerMaxClimbers` at once); only zombies on the platform (`elevation` ≈ platform height) can hit the occupant, and the
+  leader can't hit it from the ground (docs/todos.md item 3).
 
 ## Simulation conventions
 
@@ -105,6 +127,26 @@ Agents only create/edit files listed in their task brief. **Never edit `src/core
 - Dead entities never deal damage, never block movement, are never valid targets.
 - Avoid per-agent per-step allocation in hot loops (use `out` params / scratch objects).
 
+### Recruitment, structures & momentum (recruitment spec)
+
+- **Start:** `BALANCE.horde.startFollowers` (5) followers spawn inside `layout.startFollowerArea` with `recruitGen 0`,
+  `pulseAt -1` (they do not pulse), counted in `followerCount` but NOT in `stats.recruited`, no momentum.
+- **Recruitment generations:** leader proximity / rally / conversion ⇒ gen 0. Every newly recruited zombie (gen < `recruitPulse.maxGeneration`)
+  schedules exactly one pulse at `time + U(delayMin, delayMax)`; when it fires (`pulseAt` → -1) it recruits up to
+  `maxRecruitsPerPulse` ambient, **unheld** (`heldBy === 0`) zombies within `radius × recruitRadiusMultiplier` (spatial hash query)
+  whose segment to the pulser is not move-blocked; they get gen + 1. A zombie pulses at most once ever ⇒ no loops.
+  Leader proximity recruitment also requires a non-move-blocked segment (no recruiting through walls / the bus shell).
+  Capacity rule unchanged: `followers + rising < maxFollowers`; hitting it emits `capReached` as before.
+- **Held zombies** (`heldBy = structureId`) are ambient, wander only inside their spawn zone rect, are never recruited
+  (not by leader, rally or pulse). When that structure is destroyed they are released (`heldBy = 0`) and stumble out.
+- **Structures** (`layout.structures`, `state.structures`) are attackable like the gate via `TargetRef { kind:'structure', id }`.
+  Collider kind `'breakable'` (never crawlable). Destroy ⇒ disable collider, rebuild both nav grids once, release, events.
+  Attack field goals = `approachOutside`. Orders on a human with an intact `shelter` structure redirect (effectiveTarget) to it.
+- **Humans:** `GuardAgent.role` ('soldier' shoots; 'civilian' never shoots, flees threats inside `homeArea`), `post`.
+  `BALANCE.guard.count` = number of `post==='checkpoint'` humans (8). Any human killed by zombies uses the normal conversion roll.
+- **Momentum:** only `MomentumSystem` mutates `state.momentum`. Multipliers are read live (never cached on agents):
+  recruit radius (leader + pulses + rally), speed (leader walk/sprint + follower speed).
+
 ### `Simulation.step(dt, input)` order (authoritative)
 
 1. Copy `pos→prevPos`, `facing→prevFacing` for leader, zombies, guards.
@@ -112,10 +154,11 @@ Agents only create/edit files listed in their task brief. **Never edit `src/core
 3. `applyHordeCommands` (attack/recall order changes, rally, rush activation, cooldown ticking)
 4. `updateLeader` (movement, stamina; leader auto-melee is resolved in `updateCombat`)
 5. `updateNavigation` (flow fields / effective target; ≤ 5 Hz replans + immediate on order change / nav version change)
-6. `updateHorde` (spatial hash rebuild, passive recruit, ambient wander, follower steering & engagement selection)
+6. `updateHorde` (spatial hash rebuild, passive recruit, **fire due recruit pulses**, ambient/held wander, follower steering & engagement selection)
 7. `updateHumanAI` (perception at 10 Hz, FSM, movement, shooting → damage helpers)
 8. `updateCombat` (follower + leader melee resolution, gate damage, deaths, corpse timers)
 9. `updateConversion`
+9b. `updateStructures` (release steering, hitFlash) then `updateMomentum` (decay, tiers)
 10. `checkVictory` (victory: gate destroyed AND all guards DEAD; defeat: leader dead) → set phase, emit once
 11. Tick `hitFlash`, `animTime`, `capReachedFlash`; `state.time += dt`.
 
@@ -124,7 +167,7 @@ Agents only create/edit files listed in their task brief. **Never edit `src/core
 - Flat-shaded `MeshLambertMaterial`/`MeshStandardMaterial({flatShading:true})`, shared geometries/materials, merged static city
   geometry where possible (BufferGeometryUtils from `three/examples/jsm/utils/BufferGeometryUtils.js` is allowed — it ships with three).
 - Zombies (up to ~170 incl. corpses) are drawn by `HordeRenderer` with one `InstancedMesh` per body part
-  (head, torso, pelvis, upperArmL/R, legL/R, + accessory) and `instanceColor` for variants/rush tint/hit flash. Target < 40 draw calls for all zombies.
+  (head, torso, pelvis, armL/R, legL/R, + accessory) and `instanceColor` for variants/rush tint/hit flash. Target < 40 draw calls for all zombies.
 - Characters are articulated: head, torso, pelvis, 2 arms, 2 legs; pivot at shoulder/hip; procedural animation from
   `anim`, `animTime`, speed. Feet on ground. Interpolate pos/facing with render alpha.
 - Palette: asphalt `#4a5260`, sidewalk `#a9a294`, concrete `#c9b99a`, zombie skin `#7d9a6a`/`#6f8a72`, leader `#4f6b3a`,
@@ -140,10 +183,29 @@ Agents only create/edit files listed in their task brief. **Never edit `src/core
 
 ## Phased plan (orchestrator updates checkboxes)
 
+**Who does the work:** the Claude orchestrator delegates the bulk to codex/agy, but also implements tasks itself when
+that is the better path — isolated new modules while a worker runs on other files, integration glue, small fixes found
+in diff review, or work a blocked worker can't do. The same isolation rules apply to Claude: never edit files a running
+worker owns, and every change ends with `npx tsc --noEmit` + `npm test` green.
+
 - [x] **P1 Scaffold** (agy): package.json, tsconfig, vite.config, index.html, main.ts stub, README stub, `districtLayout.ts` + `tests/layout.test.ts`.
 - [x] **P2A Collision & Nav** (codex): utils/*, CollisionWorld, NavigationGrid + FlowField, tests/collision + tests/navigation.
 - [x] **P1B Visual layer** (agy): CityDistrict, Checkpoint, LowPolyCharacters, HordeRenderer, Effects, HUD, AudioSystem (render-only, driven by state).
 - [x] **P2B Leader & Horde** (codex): entities/*, createInitialState, Simulation, ZombieLeader, HordeSystem, NavigationSystem, tests.
 - [x] **P2C Combat, AI, Conversion, Victory** (codex): CombatSystem, HumanAISystem, ConversionSystem, VictorySystem, tests.
 - [x] **P3 Integration** : Game, InputController, ThirdPersonCamera, EntityRenderer, wiring events→Effects/Audio/HUD.
-- [ ] **P4 Review, playtest & tuning**: adversarial review (codex read-only), spec audit (agy), browser playthrough, README.
+- [x] **P4 Review, playtest & tuning**: adversarial review, spec audit, browser playthrough, README. (+ docs/todos.md items 1–4)
+
+### Recruitment overhaul (docs/2_intial_recruitment_design.md)
+
+- [x] **R0 Contracts** (orchestrator): types.ts (structures, momentum, cascade fields, human roles, events), balance.ts, contracts.ts, this file.
+- [x] **R1 Layout & state scaffolding** (codex — agy headless was permission-blocked): districtLayout (opening pacing, bus/alley/store/barricade landmarks, clustered spawn zones,
+      civilians + barricade soldiers), entities (Zombie/HumanGuard/Structure), createInitialState (5 start followers, held zombies,
+      structures, momentum), compile shims, tests/layout.test.ts.
+- [x] **R2a MomentumSystem** (claude): src/systems/MomentumSystem.ts + tests/momentum.test.ts (pure; wired into call sites by R2).
+- [x] **R2 Sim systems** (codex; finished by claude after codex hit its usage limit): cascade pulses + LOS recruitment + held wander + responsiveness (HordeSystem), StructureSystem,
+      structure targets in Combat/Navigation, civilian AI + barricade soldiers (HumanAISystem), Victory, Simulation order,
+      tests/cascade, tests/structures, tests/momentum, tests/opening (60 s scripted run reaches 30–50 followers).
+- [x] **R3 Visuals/HUD/audio/input** (agy): world/Landmarks.ts, pulse rings + recruit flash, momentum HUD meter, counter pop,
+      structure picking/markers/labels, audio cues.
+- [ ] **R4 Review & audit**: codex read-only adversarial review; agy spec/cross-file audit; fixes; browser playthrough of first 90 s.

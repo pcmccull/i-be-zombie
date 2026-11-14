@@ -32,9 +32,6 @@ interface GuardVisualEntry {
   factionDisc: THREE.Mesh;
   targetRing: THREE.Mesh;
   hoverRing: THREE.Mesh;
-  hpBarGroup: THREE.Group;
-  hpFillMesh: THREE.Mesh;
-  hpFillMat: THREE.MeshBasicMaterial;
 }
 
 export class EntityRenderer {
@@ -52,20 +49,18 @@ export class EntityRenderer {
   private readonly convertedGuardIds = new Set<EntityId>();
   private lastStateTime = -1;
   private hoveredGuardId: EntityId | null = null;
-  private targetedGuardId: EntityId | null = null;
+  private readonly targetedGuardIds = new Set<EntityId>();
 
   // Shared geometries & materials for guard indicators and pick proxies
   private readonly pickGeo: THREE.BufferGeometry;
   private readonly pickMat: THREE.MeshBasicMaterial;
   private readonly factionDiscGeo: THREE.BufferGeometry;
   private readonly factionDiscMat: THREE.MeshBasicMaterial;
+  private readonly civilianDiscMat: THREE.MeshBasicMaterial;
   private readonly targetRingGeo: THREE.BufferGeometry;
   private readonly targetRingMat: THREE.MeshBasicMaterial;
   private readonly hoverRingGeo: THREE.BufferGeometry;
   private readonly hoverRingMat: THREE.MeshBasicMaterial;
-  private readonly hpBgGeo: THREE.BufferGeometry;
-  private readonly hpBgMat: THREE.MeshBasicMaterial;
-  private readonly hpFillGeo: THREE.BufferGeometry;
 
   private readonly sharedGeometries = new Set<THREE.BufferGeometry>();
   private readonly disposableGeometries: THREE.BufferGeometry[] = [];
@@ -162,6 +157,16 @@ export class EntityRenderer {
       }),
     );
 
+    this.civilianDiscMat = this.trackMaterial(
+      new THREE.MeshBasicMaterial({
+        color: 0xd6cfc2,
+        transparent: true,
+        opacity: 0.55,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      }),
+    );
+
     this.targetRingGeo = this.trackGeometry(new THREE.RingGeometry(0.62, 0.86, 20));
     this.targetRingGeo.rotateX(-Math.PI / 2);
     this.targetRingMat = this.trackMaterial(
@@ -185,21 +190,6 @@ export class EntityRenderer {
         side: THREE.DoubleSide,
       }),
     );
-
-    this.hpBgGeo = this.trackGeometry(new THREE.PlaneGeometry(1.04, 0.16));
-    this.hpBgMat = this.trackMaterial(
-      new THREE.MeshBasicMaterial({
-        color: 0x161a20,
-        transparent: true,
-        opacity: 0.88,
-        depthWrite: false,
-        side: THREE.DoubleSide,
-      }),
-    );
-
-    // Unit-width bar anchored at left edge (x = 0..1) for easy horizontal scaling
-    this.hpFillGeo = this.trackGeometry(new THREE.PlaneGeometry(0.96, 0.1));
-    this.hpFillGeo.translate(0.48, 0, 0.005);
   }
 
   consume(events: readonly GameEvent[]): void {
@@ -215,7 +205,7 @@ export class EntityRenderer {
     this.convertedGuardIds.clear();
     this.lastStateTime = -1;
     this.hoveredGuardId = null;
-    this.targetedGuardId = null;
+    this.targetedGuardIds.clear();
   }
 
   update(state: GameState, alpha: number, time: number, _dt: number): void {
@@ -232,8 +222,10 @@ export class EntityRenderer {
     this.hoveredGuardId = target && target.kind === 'guard' ? target.id : null;
   }
 
-  setTargeted(target: TargetRef | null): void {
-    this.targetedGuardId = target && target.kind === 'guard' ? target.id : null;
+  /** All selected attack targets (the horde may be split across several). */
+  setTargeted(targets: readonly TargetRef[]): void {
+    this.targetedGuardIds.clear();
+    for (const t of targets) if (t.kind === 'guard') this.targetedGuardIds.add(t.id);
   }
 
   dispose(): void {
@@ -258,13 +250,11 @@ export class EntityRenderer {
     this.pickMat.dispose();
     this.factionDiscGeo.dispose();
     this.factionDiscMat.dispose();
+    this.civilianDiscMat.dispose();
     this.targetRingGeo.dispose();
     this.targetRingMat.dispose();
     this.hoverRingGeo.dispose();
     this.hoverRingMat.dispose();
-    this.hpBgGeo.dispose();
-    this.hpBgMat.dispose();
-    this.hpFillGeo.dispose();
     this.leaderOuterRingMat.dispose();
     this.leaderInnerRingMat.dispose();
 
@@ -306,7 +296,6 @@ export class EntityRenderer {
     for (const m of entry.rig.materials) {
       m.dispose();
     }
-    entry.hpFillMat.dispose();
     entry.pickProxy.visible = false;
     entry.pickProxy.userData.target = null;
     entry.pickProxy.position.y = -1000;
@@ -335,6 +324,7 @@ export class EntityRenderer {
     this.scratchParams.speed = speed;
     this.scratchParams.time = time;
     this.scratchParams.phase = 0;
+    this.scratchParams.guardState = undefined;
     computePose(this.scratchParams, this.scratchPose);
     applyPose(this.leaderRig, this.scratchPose);
 
@@ -408,17 +398,21 @@ export class EntityRenderer {
       entry.rig.root.rotation.y = facing;
 
       const anim: AnimAction = isDead ? 'dead' : g.anim;
-      this.scratchParams.kind = 'guard';
+      const role = g.role ?? 'soldier';
+      const post = g.post ?? 'checkpoint';
+      this.scratchParams.kind =
+        role === 'civilian' ? 'civilian' : post === 'barricade' ? 'police' : 'guard';
       this.scratchParams.anim = anim;
       this.scratchParams.animTime = g.animTime;
       this.scratchParams.speed = speed;
       this.scratchParams.time = time;
       this.scratchParams.phase = (g.id * 1.73) % TWO_PI;
+      this.scratchParams.guardState = g.state;
       computePose(this.scratchParams, this.scratchPose);
       applyPose(entry.rig, this.scratchPose);
 
       const isHovered = !isDead && this.hoveredGuardId === g.id;
-      const isTargeted = !isDead && this.targetedGuardId === g.id;
+      const isTargeted = !isDead && this.targetedGuardIds.has(g.id);
 
       // Hit flash or hover emissive outline
       const guardMat = entry.rig.materials[0] as THREE.MeshLambertMaterial | undefined;
@@ -442,7 +436,6 @@ export class EntityRenderer {
         entry.factionDisc.visible = false;
         entry.targetRing.visible = false;
         entry.hoverRing.visible = false;
-        entry.hpBarGroup.visible = false;
       } else {
         entry.pickProxy.visible = true;
         entry.pickProxy.position.set(gx, g.elevation + 1.05, gz);
@@ -458,22 +451,7 @@ export class EntityRenderer {
           entry.targetRing.scale.setScalar(ringPulse);
         }
 
-        // Guard health bar shown only when hp < maxHp or when targeted
-        const showHp = g.hp < g.maxHp || isTargeted;
-        entry.hpBarGroup.visible = showHp;
-        if (showHp) {
-          const frac = Math.max(0.001, Math.min(1, g.hp / Math.max(1, g.maxHp)));
-          entry.hpFillMesh.scale.x = frac;
-          if (frac > 0.55) {
-            entry.hpFillMat.color.setHex(0xe0782a);
-          } else if (frac > 0.28) {
-            entry.hpFillMat.color.setHex(0xf2a62c);
-          } else {
-            entry.hpFillMat.color.setHex(0xe83b2c);
-          }
-          // Keep billboard un-rotated in world space facing the camera
-          entry.hpBarGroup.rotation.y = -facing;
-        }
+        // Health bars are drawn by HealthBars (only once damaged).
       }
     }
 
@@ -487,14 +465,19 @@ export class EntityRenderer {
   }
 
   private createGuardEntry(g: GuardAgent, index: number): GuardVisualEntry {
-    const rig = createGuardRig(index);
+    const role = g.role ?? 'soldier';
+    const post = g.post ?? 'checkpoint';
+    const rig = createGuardRig(index, role, post);
     for (const m of rig.materials) {
       this.disposableMaterials.push(m);
     }
     this.rootGroup.add(rig.root);
 
-    // Subtle orange faction marker disc under guard
-    const factionDisc = new THREE.Mesh(this.factionDiscGeo, this.factionDiscMat);
+    // Subtle ground marker disc under human (orange for soldiers, neutral cream for civilians)
+    const factionDisc = new THREE.Mesh(
+      this.factionDiscGeo,
+      role === 'civilian' ? this.civilianDiscMat : this.factionDiscMat,
+    );
     factionDisc.position.y = 0.025;
     rig.root.add(factionDisc);
 
@@ -510,37 +493,6 @@ export class EntityRenderer {
     hoverRing.visible = false;
     rig.root.add(hoverRing);
 
-    // 2-part health bar billboard above guard
-    const hpBarGroup = new THREE.Group();
-    hpBarGroup.position.set(0, 2.15, 0);
-    hpBarGroup.visible = false;
-
-    const hpBgMesh = new THREE.Mesh(this.hpBgGeo, this.hpBgMat);
-    hpBgMesh.onBeforeRender = (_renderer, _scene, camera) => {
-      hpBarGroup.quaternion.copy(camera.quaternion);
-      if (rig.root.parent) {
-        // Cancel parent Y rotation so billboard faces camera
-        const parentQuat = rig.root.getWorldQuaternion(_billboardParentQuat);
-        parentQuat.invert();
-        hpBarGroup.quaternion.premultiply(parentQuat);
-      }
-      hpBarGroup.updateMatrixWorld(true);
-    };
-    hpBarGroup.add(hpBgMesh);
-
-    const hpFillMat = this.trackMaterial(
-      new THREE.MeshBasicMaterial({
-        color: 0xe0782a,
-        depthWrite: false,
-        side: THREE.DoubleSide,
-      }),
-    );
-    const hpFillMesh = new THREE.Mesh(this.hpFillGeo, hpFillMat);
-    hpFillMesh.position.set(-0.48, 0, 0.005);
-    hpBarGroup.add(hpFillMesh);
-
-    rig.root.add(hpBarGroup);
-
     // Invisible raycast pick proxy
     const pickProxy = new THREE.Mesh(this.pickGeo, this.pickMat);
     pickProxy.name = `GuardPickProxy_${g.id}`;
@@ -555,11 +507,7 @@ export class EntityRenderer {
       factionDisc,
       targetRing,
       hoverRing,
-      hpBarGroup,
-      hpFillMesh,
-      hpFillMat,
     };
   }
 }
 
-const _billboardParentQuat = new THREE.Quaternion();

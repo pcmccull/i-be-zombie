@@ -1,6 +1,12 @@
 import type { ICollisionWorld, SegmentOptions } from '../core/contracts';
 import type { AABB, Collider, ColliderDef, Vec2 } from '../core/types';
 import { clamp } from '../utils/math';
+import { BALANCE } from '../config/balance';
+
+/** Low obstacles a packed horde can clamber over (cars, dumpsters, barriers — not trucks/walls). */
+export function isCrawlable(c: Collider): boolean {
+  return (c.kind === 'vehicle' || c.kind === 'prop') && c.height <= BALANCE.horde.crawlMaxHeight;
+}
 
 export class CollisionWorld implements ICollisionWorld {
   readonly bounds: AABB;
@@ -76,7 +82,7 @@ export class CollisionWorld implements ICollisionWorld {
     return this.queryAABB(this.box, this.scratch);
   }
 
-  moveCircle(pos: Vec2, dx: number, dz: number, radius: number): void {
+  moveCircle(pos: Vec2, dx: number, dz: number, radius: number, passable?: (c: Collider) => boolean): void {
     if (!(radius > 0)) throw new RangeError('Circle radius must be positive');
     const steps = Math.max(1, Math.ceil(Math.hypot(dx, dz) / (radius * 0.5)));
     const sx = dx / steps;
@@ -84,11 +90,11 @@ export class CollisionWorld implements ICollisionWorld {
     for (let i = 0; i < steps; i++) {
       pos.x += sx;
       pos.z += sz;
-      this.resolveCircle(pos, radius);
+      this.resolveCircle(pos, radius, passable);
     }
   }
 
-  resolveCircle(pos: Vec2, radius: number): boolean {
+  resolveCircle(pos: Vec2, radius: number, passable?: (c: Collider) => boolean): boolean {
     const startX = pos.x;
     const startZ = pos.z;
     for (let iteration = 0; iteration < 4; iteration++) {
@@ -98,7 +104,7 @@ export class CollisionWorld implements ICollisionWorld {
       let pushed = false;
       for (let i = 0; i < candidates.length; i++) {
         const c = candidates[i];
-        if (!c.blocksMove) continue;
+        if (!c.blocksMove || (passable && passable(c))) continue;
         const dx = pos.x - clamp(pos.x, c.minX, c.maxX);
         const dz = pos.z - clamp(pos.z, c.minZ, c.maxZ);
         const d2 = dx * dx + dz * dz;
@@ -129,13 +135,13 @@ export class CollisionWorld implements ICollisionWorld {
     return pos.x !== startX || pos.z !== startZ;
   }
 
-  isBlocked(p: Vec2, radius: number): boolean {
+  isBlocked(p: Vec2, radius: number, passable?: (c: Collider) => boolean): boolean {
     const b = this.bounds;
     if (p.x - radius < b.minX || p.x + radius > b.maxX || p.z - radius < b.minZ || p.z + radius > b.maxZ) return true;
     const candidates = this.circleCandidates(p, radius);
     for (let i = 0; i < candidates.length; i++) {
       const c = candidates[i];
-      if (!c.blocksMove) continue;
+      if (!c.blocksMove || (passable && passable(c))) continue;
       const dx = p.x - clamp(p.x, c.minX, c.maxX);
       const dz = p.z - clamp(p.z, c.minZ, c.maxZ);
       if ((dx === 0 && dz === 0) || dx * dx + dz * dz < radius * radius) return true;

@@ -1,6 +1,12 @@
-import type { GameEvent } from '../core/types';
+import type { GameEvent, GameState, MomentumTier, StructureKind } from '../core/types';
 
 const MASTER_GAIN = 0.35;
+
+const TIER_RANK: Record<MomentumTier, number> = {
+  dormant: 0,
+  growing: 1,
+  full: 2,
+};
 
 export class AudioSystem {
   private ctx: AudioContext | null = null;
@@ -12,9 +18,21 @@ export class AudioSystem {
   private lastShotTime = -1;
   private lastMeleeTime = -1;
   private lastRecruitTime = -1;
+  private lastPulseTime = -1;
   private lastGateHitTime = -1;
+  private lastStructureHitTime = -1;
   private lastDeathTime = -1;
   private lastAlertTime = -1;
+  private lastScreamTime = -1;
+
+  // Previous momentum tier so the tier-up drum plays only on increase
+  private prevMomentumTier: MomentumTier = 'dormant';
+  private lastSimTime = -1;
+
+  reset(): void {
+    this.prevMomentumTier = 'dormant';
+    this.lastSimTime = -1;
+  }
 
   unlock(): void {
     try {
@@ -55,15 +73,33 @@ export class AudioSystem {
     return this.isMuted;
   }
 
-  consume(events: readonly GameEvent[]): void {
-    if (this.isMuted || !this.ctx || !this.masterGain || this.ctx.state !== 'running') {
-      return;
+  consume(events: readonly GameEvent[], state?: GameState): void {
+    if (state) {
+      if (this.lastSimTime >= 0 && state.time < this.lastSimTime) {
+        this.prevMomentumTier = 'dormant';
+      }
+      this.lastSimTime = state.time;
     }
 
+    const canPlay =
+      !this.isMuted && !!this.ctx && !!this.masterGain && this.ctx.state === 'running';
+
     try {
-      const now = this.ctx.currentTime;
+      const now = this.ctx ? this.ctx.currentTime : 0;
       for (let i = 0; i < events.length; i++) {
         const ev = events[i];
+        if (ev.type === 'momentumTier') {
+          const prevRank = TIER_RANK[this.prevMomentumTier] ?? 0;
+          const nextRank = TIER_RANK[ev.tier] ?? 0;
+          this.prevMomentumTier = ev.tier;
+          if (canPlay && nextRank > prevRank) {
+            this.playMomentumTierUp(now, nextRank);
+          }
+          continue;
+        }
+
+        if (!canPlay) continue;
+
         switch (ev.type) {
           case 'shot': {
             if (now - this.lastShotTime >= 0.082) {
@@ -86,6 +122,13 @@ export class AudioSystem {
             }
             break;
           }
+          case 'recruitPulse': {
+            if (now - this.lastPulseTime >= 0.07) {
+              this.lastPulseTime = now;
+              this.playRecruitPulse(now, ev.generation ?? 0);
+            }
+            break;
+          }
           case 'rally': {
             this.playRallyWhoosh(now);
             break;
@@ -94,12 +137,40 @@ export class AudioSystem {
             this.playRushRoar(now);
             break;
           }
+          case 'structureDamaged': {
+            if (now - this.lastStructureHitTime >= 0.09) {
+              this.lastStructureHitTime = now;
+              this.playStructureDamaged(now, ev.kind);
+            }
+            break;
+          }
+          case 'structureDestroyed': {
+            this.playStructureDestroyed(now, ev.kind);
+            break;
+          }
+          case 'released': {
+            if ((ev.count ?? 0) > 0) {
+              this.playReleasedMoan(now, ev.count);
+            }
+            break;
+          }
           case 'damage': {
             if (ev.target.kind === 'gate' && now - this.lastGateHitTime >= 0.09) {
               this.lastGateHitTime = now;
               this.playGateHit(now);
             } else if (ev.target.kind === 'leader') {
               this.playLeaderHit(now);
+            } else if (
+              ev.target.kind === 'structure' &&
+              !events.some((e) => e.type === 'structureDamaged') &&
+              now - this.lastStructureHitTime >= 0.09
+            ) {
+              const structId = ev.target.id;
+              const s = state?.structures?.find((st) => st.id === structId);
+              if (s) {
+                this.lastStructureHitTime = now;
+                this.playStructureDamaged(now, s.kind);
+              }
             }
             break;
           }
@@ -127,7 +198,12 @@ export class AudioSystem {
             break;
           }
           case 'guardAlert': {
-            if (now - this.lastAlertTime >= 0.18) {
+            if (ev.role === 'civilian') {
+              if (now - this.lastScreamTime >= 0.22) {
+                this.lastScreamTime = now;
+                this.playCivilianScream(now);
+              }
+            } else if (now - this.lastAlertTime >= 0.18) {
               this.lastAlertTime = now;
               this.playAlertBeep(now);
             }
@@ -247,6 +323,91 @@ export class AudioSystem {
   private playRecruitChime(t: number): void {
     this.playTone('triangle', 330, 495, t, 0.14, 0.24);
     this.playTone('sine', 495, 660, t + 0.06, 0.16, 0.22);
+  }
+
+  private playRecruitPulse(t: number, generation: number): void {
+    const gen = Math.max(0, Math.min(4, generation));
+    const pitchMul = Math.pow(1.18, gen);
+    this.playNoiseBurst(t, 0.24, 'bandpass', 190 * pitchMul, 540 * pitchMul, 0.22);
+    this.playTone('sawtooth', 110 * pitchMul, 195 * pitchMul, t, 0.22, 0.18);
+    this.playTone('triangle', 165 * pitchMul, 290 * pitchMul, t + 0.03, 0.2, 0.16);
+  }
+
+  private playStructureDamaged(t: number, kind: StructureKind): void {
+    switch (kind) {
+      case 'busDoor':
+        // Hollow sheet metal + glass rattle
+        this.playTone('triangle', 360, 140, t, 0.1, 0.3);
+        this.playTone('square', 620, 240, t, 0.06, 0.14);
+        this.playNoiseBurst(t, 0.075, 'bandpass', 1100, 400, 0.2);
+        break;
+      case 'alleyGate':
+        // Wood plank thud + chain clink
+        this.playTone('triangle', 175, 65, t, 0.11, 0.32);
+        this.playNoiseBurst(t, 0.07, 'highpass', 2200, 880, 0.18);
+        break;
+      case 'storeDoor':
+        // Taut storefront glass tap/crack
+        this.playTone('sine', 980, 420, t, 0.08, 0.24);
+        this.playTone('triangle', 1480, 680, t, 0.06, 0.18);
+        this.playNoiseBurst(t, 0.055, 'highpass', 2600, 1200, 0.18);
+        break;
+      case 'penGate':
+      default:
+        // Heavy steel riot gate clang
+        this.playTone('square', 460, 170, t, 0.11, 0.26);
+        this.playTone('triangle', 720, 260, t, 0.08, 0.22);
+        this.playNoiseBurst(t, 0.08, 'bandpass', 1350, 460, 0.22);
+        break;
+    }
+  }
+
+  private playStructureDestroyed(t: number, kind: StructureKind): void {
+    switch (kind) {
+      case 'busDoor':
+        this.playNoiseBurst(t, 0.55, 'bandpass', 1500, 180, 0.52);
+        this.playTone('sawtooth', 95, 34, t, 0.5, 0.42);
+        this.playTone('triangle', 420, 110, t + 0.04, 0.35, 0.32);
+        break;
+      case 'alleyGate':
+        this.playNoiseBurst(t, 0.6, 'lowpass', 1200, 150, 0.54);
+        this.playTone('sawtooth', 82, 30, t, 0.52, 0.44);
+        this.playTone('square', 310, 85, t + 0.05, 0.36, 0.26);
+        break;
+      case 'storeDoor':
+        this.playNoiseBurst(t, 0.48, 'highpass', 3200, 850, 0.5);
+        this.playTone('sine', 1850, 720, t, 0.22, 0.28);
+        this.playTone('triangle', 2400, 960, t + 0.05, 0.24, 0.24);
+        this.playTone('sine', 1360, 510, t + 0.11, 0.28, 0.22);
+        break;
+      case 'penGate':
+      default:
+        this.playNoiseBurst(t, 0.6, 'bandpass', 1800, 200, 0.55);
+        this.playTone('square', 520, 115, t, 0.42, 0.34);
+        this.playTone('sawtooth', 90, 32, t + 0.04, 0.52, 0.44);
+        break;
+    }
+  }
+
+  private playReleasedMoan(t: number, count: number): void {
+    const scale = Math.min(1.25, 0.85 + count * 0.02);
+    this.playNoiseBurst(t, 0.65, 'bandpass', 320, 680, 0.32 * scale);
+    this.playTone('sawtooth', 98, 138, t, 0.58, 0.24 * scale);
+    this.playTone('triangle', 124, 166, t + 0.06, 0.55, 0.22 * scale);
+    this.playTone('sawtooth', 148, 108, t + 0.14, 0.52, 0.2 * scale);
+  }
+
+  private playMomentumTierUp(t: number, rank: number): void {
+    const pitchBoost = rank >= 2 ? 1.18 : 1.0;
+    this.playTone('sine', 118 * pitchBoost, 36, t, 0.38, 0.48);
+    this.playTone('triangle', 176 * pitchBoost, 54, t + 0.02, 0.32, 0.32);
+    this.playNoiseBurst(t, 0.22, 'lowpass', 340, 80, 0.34);
+  }
+
+  private playCivilianScream(t: number): void {
+    this.playTone('triangle', 580, 880, t, 0.11, 0.24);
+    this.playTone('sine', 880, 490, t + 0.09, 0.16, 0.22);
+    this.playNoiseBurst(t, 0.18, 'bandpass', 1400, 720, 0.16);
   }
 
   private playRallyWhoosh(t: number): void {

@@ -35,7 +35,8 @@ export type ColliderKind =
   | 'prop' // dumpsters, barriers, large planters (small litter is NOT a collider)
   | 'wall' // checkpoint perimeter, sandbag walls
   | 'gate'
-  | 'tower';
+  | 'tower'
+  | 'breakable'; // destructible landmark obstruction (bus door, alley gate, store door, pen gate)
 
 export interface ColliderDef extends AABB {
   kind: ColliderKind;
@@ -108,9 +109,50 @@ export interface SpawnZone {
   name: string; // 'residential', 'commercial', 'alley', 'courtyard', ...
   rect: AABB;
   count: number; // ambient walkers spawned here; all zones sum to BALANCE.horde.initialAmbient
+  /** Structure id (StructureDef.id) that traps these zombies until it is destroyed. Omitted/0 = free. */
+  heldBy?: number;
 }
 
+/** Destructible landmark obstruction (environmental recruitment opportunities). */
+export type StructureKind = 'busDoor' | 'alleyGate' | 'storeDoor' | 'penGate';
+
+/** Which landmark a structure / zone / human belongs to (visuals + HUD labels). */
+export type LandmarkKind = 'bus' | 'alley' | 'store' | 'barricade';
+
+export interface StructureDef {
+  /** Stable id >= 1, unique within the layout (0 means "none" elsewhere). */
+  id: number;
+  kind: StructureKind;
+  landmark: LandmarkKind;
+  /** Tag of exactly one ColliderDef (kind 'breakable', blocksMove + blocksSight) with this exact footprint. */
+  tag: string;
+  rect: AABB;
+  /** Facing of the structure's outer face (entity facing convention): points from the enclosure toward attackers. */
+  facing: number;
+  /** Walkable world points on the outside where attackers stand (>= 3). */
+  approachOutside: Vec2[];
+  /** Walkable world points just inside the enclosure (release exit path / sheltered side), >= 2. */
+  approachInside: Vec2[];
+  /** Interior area this structure seals (trapped zombies / sheltered humans live here). */
+  enclosure: AABB;
+  /** Awards BALANCE.momentum.gainStructure when destroyed. */
+  defensive: boolean;
+}
+
+/** 'soldier' = armed human (shoots). 'civilian' = unarmed, flees, never shoots. */
+export type HumanRole = 'soldier' | 'civilian';
+/** Where a human belongs. Victory only requires every 'checkpoint' human DEAD. */
+export type HumanPost = 'checkpoint' | 'barricade' | 'street' | 'store';
+
 export interface GuardSpawn {
+  /** Default 'soldier'. */
+  role?: HumanRole;
+  /** Default 'checkpoint'. */
+  post?: HumanPost;
+  /** Optional area the human stays inside (civilian flee clamp, store interior). */
+  homeArea?: AABB;
+  /** Structure id this human is sheltered behind (store door). Horde attack orders redirect to it while intact. */
+  shelter?: number;
   pos: Vec2;
   facing: number;
   tower: 'W' | 'E' | null; // tower occupant?
@@ -138,14 +180,19 @@ export interface DistrictLayout {
   playerStartFacing: number;
   spawnZones: SpawnZone[];
   checkpoint: CheckpointLayout;
-  guards: GuardSpawn[]; // exactly BALANCE.guard.count, exactly 2 with tower != null
+  /** All humans. Exactly BALANCE.guard.count with post 'checkpoint' (2 of them in towers), plus outposts/civilians. */
+  guards: GuardSpawn[];
+  /** Destructible landmark obstructions (bus door, alley gate, store door, police pen gate). */
+  structures: StructureDef[];
+  /** Walkable area around playerStart where BALANCE.horde.startFollowers initial followers spawn. */
+  startFollowerArea: AABB;
 }
 
 // ---------------------------------------------------------------------------
 // Entities (logical state; meshes mirror these, never the reverse)
 // ---------------------------------------------------------------------------
 
-export type AnimAction = 'idle' | 'walk' | 'run' | 'attack' | 'hit' | 'dead' | 'rise';
+export type AnimAction = 'idle' | 'walk' | 'run' | 'attack' | 'hit' | 'dead' | 'rise' | 'climb';
 
 interface MobileBase {
   id: EntityId;
@@ -188,6 +235,18 @@ export interface ZombieAgent extends MobileBase {
   stateTime: number; // seconds in current state
   stuckTimer: number;
   isConverted: boolean; // came from a guard conversion
+  /** 0 = group attacking `GameState.order` (or following); otherwise the id of a `Squad`. */
+  squad: number;
+  /** Height above ground (m): climbing a watchtower or crawling over a car. Visual + tower melee gate. */
+  elevation: number;
+  /** Structure id trapping this ambient zombie (0 = free). Held zombies cannot be recruited and wander only in their zone. */
+  heldBy: number;
+  /** Recruitment generation: -1 never recruited; 0 = joined via leader/rally/start/conversion; n = via a gen n-1 pulse. */
+  recruitGen: number;
+  /** Sim time at which this zombie's single recruitment pulse fires; -1 = none pending (fired or never scheduled). */
+  pulseAt: number;
+  /** Seconds remaining of the "just recruited" highlight (visual flash + catch-up speed boost). */
+  recruitFlash: number;
 }
 
 export type GuardState = 'PATROL' | 'ALERT' | 'COMBAT' | 'RETREAT' | 'DEAD';
@@ -195,6 +254,11 @@ export type GuardState = 'PATROL' | 'ALERT' | 'COMBAT' | 'RETREAT' | 'DEAD';
 export type DamageSource = 'zombie' | 'other';
 
 export interface GuardAgent extends MobileBase {
+  role: HumanRole;
+  post: HumanPost;
+  homeArea: AABB | null;
+  /** Structure id sheltering this human (0 = none). */
+  shelter: number;
   state: GuardState;
   stateTime: number;
   tower: 'W' | 'E' | null;
@@ -222,6 +286,33 @@ export interface GateState {
   hitFlash: number;
 }
 
+export interface StructureState {
+  id: number; // StructureDef.id
+  kind: StructureKind;
+  landmark: LandmarkKind;
+  colliderId: number;
+  rect: AABB;
+  center: Vec2;
+  hp: number;
+  maxHp: number;
+  destroyed: boolean;
+  hitFlash: number;
+  /** Sim time of destruction (release animation timing); null while intact. */
+  destroyedAt: number | null;
+}
+
+export type MomentumTier = 'dormant' | 'growing' | 'full';
+export type MomentumReason = 'recruit' | 'convert' | 'armedKill' | 'structure';
+
+export interface MomentumState {
+  value: number; // 0..BALANCE.momentum.max
+  /** Seconds since the last gain (decay starts after BALANCE.momentum.graceTime). */
+  idleTime: number;
+  tier: MomentumTier;
+  /** Seconds remaining of the HUD "gain" pulse. */
+  gainFlash: number;
+}
+
 // ---------------------------------------------------------------------------
 // Targets, orders, abilities
 // ---------------------------------------------------------------------------
@@ -229,10 +320,21 @@ export interface GateState {
 export type TargetRef =
   | { kind: 'guard'; id: EntityId }
   | { kind: 'gate' }
+  | { kind: 'structure'; id: number } // StructureState.id
   | { kind: 'zombie'; id: EntityId } // used by guards only
   | { kind: 'leader' }; // used by guards only
 
 export type HordeOrder = { type: 'follow' } | { type: 'attack'; target: TargetRef };
+
+/**
+ * An extra selected attack target. Clicking targets toggles them in/out of the selection:
+ * `GameState.order` holds the first selected target (group 0), `squads` the others, and
+ * followers are split evenly between all selected targets.
+ */
+export interface Squad {
+  id: number;
+  target: TargetRef;
+}
 
 export interface AbilityState {
   rallyCooldown: number; // seconds remaining, 0 = ready
@@ -253,6 +355,9 @@ export interface GameStats {
   conversions: number; // counted when the new follower becomes active
   losses: number; // followers that died
   guardsKilled: number;
+  /** Followers gained through cascade pulses (subset of recruited). */
+  cascadeRecruits: number;
+  structuresDestroyed: number;
 }
 
 export type GamePhase = 'playing' | 'victory' | 'defeat';
@@ -265,7 +370,11 @@ export interface GameState {
   zombies: ZombieAgent[]; // ambient + rising + followers + dead (corpses until faded)
   guards: GuardAgent[];
   gate: GateState;
+  structures: StructureState[];
+  momentum: MomentumState;
   order: HordeOrder;
+  /** Additional selected targets; zombies with `squad === id` attack that squad's target instead of `order`. */
+  squads: Squad[];
   abilities: AbilityState;
   pendingConversions: PendingConversion[];
   stats: GameStats;
@@ -289,7 +398,7 @@ export interface SimInput {
   rally: boolean;
   rush: boolean;
   recall: boolean;
-  attackTarget: TargetRef | null; // left-click on a valid guard/gate
+  attackTarget: TargetRef | null; // left-click on a valid guard/gate/structure: toggles it in/out of the selection
 }
 
 export function emptyInput(): SimInput {
@@ -310,7 +419,13 @@ export function emptyInput(): SimInput {
 // ---------------------------------------------------------------------------
 
 export type GameEvent =
-  | { type: 'recruited'; zombieId: EntityId; pos: Vec2; viaRally: boolean }
+  | { type: 'recruited'; zombieId: EntityId; pos: Vec2; viaRally: boolean; generation: number }
+  | { type: 'recruitPulse'; zombieId: EntityId; pos: Vec2; radius: number; generation: number; recruits: number }
+  | { type: 'structureDamaged'; id: number; kind: StructureKind; hp: number; maxHp: number; pos: Vec2 }
+  | { type: 'structureDestroyed'; id: number; kind: StructureKind; landmark: LandmarkKind; pos: Vec2 }
+  | { type: 'released'; structureId: number; count: number; pos: Vec2 }
+  | { type: 'momentumGain'; amount: number; value: number; reason: MomentumReason }
+  | { type: 'momentumTier'; tier: MomentumTier; value: number }
   | { type: 'rally'; pos: Vec2; radius: number }
   | { type: 'rushStart' }
   | { type: 'rushEnd' }
@@ -320,8 +435,8 @@ export type GameEvent =
   | { type: 'melee'; attacker: 'leader' | 'zombie'; attackerId: EntityId; target: TargetRef; pos: Vec2 }
   | { type: 'damage'; target: TargetRef; amount: number; pos: Vec2 }
   | { type: 'zombieDied'; zombieId: EntityId; pos: Vec2 }
-  | { type: 'guardDied'; guardId: EntityId; pos: Vec2; source: DamageSource }
-  | { type: 'guardAlert'; guardId: EntityId; pos: Vec2 }
+  | { type: 'guardDied'; guardId: EntityId; pos: Vec2; source: DamageSource; role: HumanRole }
+  | { type: 'guardAlert'; guardId: EntityId; pos: Vec2; role?: HumanRole } // role: set by R2; absent = soldier
   | { type: 'gateDestroyed'; pos: Vec2 }
   | { type: 'conversionStart'; guardId: EntityId; zombieId: EntityId; pos: Vec2 }
   | { type: 'converted'; guardId: EntityId; zombieId: EntityId; pos: Vec2 }

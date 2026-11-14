@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
+import { BALANCE } from '../src/config/balance';
 import type { AABB, ColliderDef, Vec2 } from '../src/core/types';
+import { createGuard } from '../src/entities/HumanGuard';
+import { createStructures } from '../src/entities/Structure';
+import { createZombie } from '../src/entities/Zombie';
+import { createInitialState } from '../src/sim/createInitialState';
+import { mulberry32 } from '../src/utils/rng';
+import { CollisionWorld, isCrawlable } from '../src/world/CollisionWorld';
+import { NavigationGrid } from '../src/world/NavigationGrid';
 import { buildDistrictLayout } from '../src/world/districtLayout';
 
 function pointToAABBDistance(p: Vec2, box: AABB): number {
@@ -121,17 +129,29 @@ describe('buildDistrictLayout', () => {
     expect(layout2).toEqual(layout);
   });
 
-  it('(a) has exactly 8 guards and exactly 2 tower guards (W and E)', () => {
-    expect(layout.guards).toHaveLength(8);
-    const towerGuards = layout.guards.filter((g) => g.tower !== null);
+  it('(a) preserves 8 checkpoint soldiers and exactly 2 tower guards (W and E)', () => {
+    const checkpointGuards = layout.guards.filter(g => g.post === 'checkpoint');
+    expect(checkpointGuards).toHaveLength(BALANCE.guard.count);
+    expect(checkpointGuards.every(g => g.role === 'soldier')).toBe(true);
+    const towerGuards = checkpointGuards.filter((g) => g.tower !== null);
     expect(towerGuards).toHaveLength(2);
     expect(towerGuards.map((g) => g.tower).sort()).toEqual(['E', 'W']);
   });
 
-  it('(b) has spawn zone counts summing to exactly 60', () => {
+  it('(b) has the authored spawn zone distribution summing to exactly 85', () => {
     expect(layout.spawnZones.length).toBeGreaterThanOrEqual(5);
     const total = layout.spawnZones.reduce((sum, z) => sum + z.count, 0);
-    expect(total).toBe(60);
+    expect(total).toBe(BALANCE.horde.initialAmbient);
+    expect(layout.spawnZones.map(z => [z.name, z.count, z.heldBy ?? 0])).toEqual([
+      ['park-edge', 6, 0], ['bus', 15, 1], ['parking-lot', 12, 0], ['police-pen', 10, 4],
+      ['alley', 20, 2], ['commercial', 8, 0], ['residential-west', 6, 0], ['east-lot', 8, 0],
+    ]);
+    for (const zone of layout.spawnZones) if (zone.heldBy) {
+      const def = layout.structures.find(s => s.id === zone.heldBy);
+      expect(def).toBeDefined();
+      expect(pointInsideAABB({ x: zone.rect.minX, z: zone.rect.minZ }, def!.enclosure)).toBe(true);
+      expect(pointInsideAABB({ x: zone.rect.maxX, z: zone.rect.maxZ }, def!.enclosure)).toBe(true);
+    }
   });
 
   it('(c) has exactly one collider with kind "gate" and tag "gate"', () => {
@@ -204,10 +224,10 @@ describe('buildDistrictLayout', () => {
     expect(gridIntact.isBlockedCell(layout.playerStart)).toBe(false);
     expect(gridIntact.isReachable(layout.playerStart)).toBe(true);
 
-    // Every spawn zone center is reachable
+    // Free clusters are reachable; trapped clusters stay sealed until their structure opens.
     for (const zone of layout.spawnZones) {
       const center = rectCenter(zone.rect);
-      expect(gridIntact.isReachable(center)).toBe(true);
+      expect(gridIntact.isReachable(center)).toBe(!zone.heldBy);
     }
 
     // North service alley (around x = -5, z = -60) is reachable
@@ -219,7 +239,7 @@ describe('buildDistrictLayout', () => {
     }
 
     // Separate ground guards into inside vs outside compound
-    const groundGuards = layout.guards.filter((g) => g.tower === null);
+    const groundGuards = layout.guards.filter((g) => g.post === 'checkpoint' && g.tower === null);
     const outsideGuards = groundGuards.filter((g) => !pointInsideAABB(g.pos, layout.checkpoint.bounds));
     const insideGuards = groundGuards.filter((g) => pointInsideAABB(g.pos, layout.checkpoint.bounds));
 
@@ -260,6 +280,148 @@ describe('buildDistrictLayout', () => {
       for (const wp of g.waypoints) {
         expect(gridGateOpen.isReachable(wp)).toBe(true);
       }
+    }
+  });
+
+  it('authors one solid breakable per structure and hollow non-crawlable shells', () => {
+    expect(layout.structures.map(s => s.id)).toEqual([1, 2, 3, 4]);
+    expect(layout.structures.map(s => [s.kind, s.landmark, s.defensive])).toEqual([
+      ['busDoor', 'bus', false], ['alleyGate', 'alley', false],
+      ['storeDoor', 'store', true], ['penGate', 'barricade', true],
+    ]);
+    expect(layout.colliders.filter(c => c.kind === 'breakable')).toHaveLength(4);
+    for (const def of layout.structures) {
+      const matches = layout.colliders.filter(c => c.tag === def.tag);
+      expect(matches).toHaveLength(1);
+      expect(matches[0]).toMatchObject({ ...def.rect, kind: 'breakable', blocksMove: true, blocksSight: true });
+      expect(def.approachOutside.length).toBeGreaterThanOrEqual(3);
+      expect(def.approachInside.length).toBeGreaterThanOrEqual(2);
+      for (const building of layout.buildings) {
+        expect(pointInsideAABB(rectCenter(def.enclosure), building.footprint)).toBe(false);
+      }
+    }
+    const collision = new CollisionWorld(layout.bounds, layout.colliders);
+    const busShell = collision.colliders.filter(c => c.tag?.startsWith('bus-shell-'));
+    expect(busShell).toHaveLength(5);
+    expect(busShell.every(c => c.kind === 'vehicle' && c.height === 3.2 && c.blocksSight && !isCrawlable(c))).toBe(true);
+    const fences = layout.colliders.filter(c => c.tag?.startsWith('pen-fence-'));
+    expect(fences).toHaveLength(5);
+    expect(fences.every(c => c.kind === 'wall' && c.height === 2.2 && c.blocksMove && !c.blocksSight)).toBe(true);
+  });
+
+  it('keeps approaches walkable and opens every enclosure after disabling structures and rebuilding nav', () => {
+    const collision = new CollisionWorld(layout.bounds, layout.colliders);
+    const nav = new NavigationGrid(collision);
+    expect(nav.isWalkable(rectCenter(layout.startFollowerArea))).toBe(true);
+    for (const c of layout.colliders.filter(c => c.blocksMove)) {
+      expect(aabbToAABBDistance(layout.startFollowerArea, c)).toBeGreaterThanOrEqual(BALANCE.world.navAgentRadius);
+    }
+    for (const def of layout.structures) {
+      for (const point of [...def.approachOutside, ...def.approachInside]) {
+        expect(nav.isWalkable(point), `${def.tag} approach ${JSON.stringify(point)}`).toBe(true);
+        expect(collision.isBlocked(point, BALANCE.world.navAgentRadius)).toBe(false);
+      }
+      expect(nav.isWalkable(rectCenter(def.enclosure))).toBe(true);
+      expect(nav.findPath(layout.playerStart, rectCenter(def.enclosure)), def.tag).toBeNull();
+    }
+    expect(nav.findPath(layout.playerStart, rectCenter(layout.checkpoint.stagingArea))).not.toBeNull();
+    for (const point of layout.checkpoint.gateApproachOutside) expect(nav.findPath(layout.playerStart, point)).not.toBeNull();
+    for (const def of layout.structures) collision.setEnabled(collision.findByTag(def.tag)!.id, false);
+    nav.rebuild();
+    for (const def of layout.structures) {
+      expect(nav.findPath(layout.playerStart, rectCenter(def.enclosure)), def.tag).not.toBeNull();
+    }
+  });
+
+  it('places visible early civilians and bus, barricade soldiers, store residents and edge parking', () => {
+    const collision = new CollisionWorld(layout.bounds, layout.colliders);
+    const bus = layout.structures[0];
+    expect(Math.hypot(rectCenter(bus.rect).x - layout.playerStart.x, rectCenter(bus.rect).z - layout.playerStart.z)).toBeLessThan(45);
+    expect(collision.segmentBlocked(layout.playerStart, rectCenter(bus.rect), { ignoreIds: [collision.findByTag(bus.tag)!.id] })).toBe(false);
+    expect(layout.playerStartFacing).toBeCloseTo(Math.atan2(rectCenter(bus.rect).x - layout.playerStart.x, rectCenter(bus.rect).z - layout.playerStart.z));
+    const street = layout.guards.filter(g => g.post === 'street');
+    expect(street).toHaveLength(2);
+    for (const g of street) {
+      expect(g.role).toBe('civilian');
+      expect(Math.hypot(g.pos.x - layout.playerStart.x, g.pos.z - layout.playerStart.z)).toBeLessThan(30);
+      expect(collision.segmentBlocked(layout.playerStart, g.pos)).toBe(false);
+      expect(g.homeArea).toEqual({ minX: -82, minZ: 41, maxX: -56, maxZ: 58 });
+    }
+    const barricade = layout.guards.filter(g => g.post === 'barricade');
+    expect(barricade).toHaveLength(BALANCE.outposts.barricadeGuards);
+    for (const g of barricade) {
+      expect(g.role).toBe('soldier'); expect(g.facing).toBe(-Math.PI / 2); expect(g.waypoints).toEqual([g.pos]);
+    }
+    const store = layout.guards.filter(g => g.post === 'store');
+    expect(store).toHaveLength(4);
+    for (const g of store) {
+      expect(g.role).toBe('civilian'); expect(g.shelter).toBe(3); expect(g.homeArea).toEqual(layout.structures[2].enclosure);
+      expect(pointInsideAABB(g.pos, g.homeArea!)).toBe(true);
+    }
+    const lot = layout.spawnZones.find(z => z.name === 'parking-lot')!.rect;
+    const parking = layout.markings.filter(m => m.kind === 'parkingBay' && m.rect.minZ > 54 && m.rect.maxZ < 76);
+    expect(parking.length).toBeGreaterThanOrEqual(4);
+    expect(parking.length).toBeLessThanOrEqual(6);
+    for (const bay of parking) {
+      expect(aabbToAABBDistance(bay.rect, lot)).toBeGreaterThan(0);
+      expect(layout.props.some(p => p.kind === 'car' && p.blocking && pointInsideAABB(p.pos, bay.rect))).toBe(true);
+    }
+  });
+
+  it('initializes deterministic, independent followers, held ambient, humans, structures and momentum', () => {
+    const collision = new CollisionWorld(layout.bounds, layout.colliders);
+    const state = createInitialState(layout, collision, mulberry32(91));
+    expect(state).toEqual(createInitialState(layout, collision, mulberry32(91)));
+    const followers = state.zombies.filter(z => z.state === 'follower');
+    const ambient = state.zombies.filter(z => z.state === 'ambient');
+    expect(followers).toHaveLength(BALANCE.horde.startFollowers);
+    expect(state.followerCount).toBe(followers.length);
+    expect(ambient).toHaveLength(BALANCE.horde.initialAmbient);
+    expect(state.stats).toEqual({ recruited: 0, conversions: 0, losses: 0, guardsKilled: 0, cascadeRecruits: 0, structuresDestroyed: 0 });
+    expect(state.momentum).toEqual({ value: 0, idleTime: 0, tier: 'dormant', gainFlash: 0 });
+    expect(new Set([state.leader.id, ...state.zombies.map(z => z.id), ...state.guards.map(g => g.id)]).size)
+      .toBe(1 + state.zombies.length + state.guards.length);
+    expect(state.nextEntityId).toBe(2 + state.zombies.length + state.guards.length);
+    for (const z of followers) {
+      expect(pointInsideAABB(z.pos, layout.startFollowerArea)).toBe(true);
+      expect(collision.isBlocked(z.pos, 0.45)).toBe(false);
+      expect(z).toMatchObject({ recruitGen: 0, pulseAt: -1, recruitFlash: 0, heldBy: 0, spawnZone: -1, anim: 'idle' });
+      expect(z.pos).not.toBe(z.prevPos);
+      for (const other of followers) if (other !== z) expect(Math.hypot(z.pos.x - other.pos.x, z.pos.z - other.pos.z)).toBeGreaterThanOrEqual(2 * z.radius);
+    }
+    for (const z of ambient) {
+      const zone = layout.spawnZones[z.spawnZone];
+      expect(z.heldBy).toBe(zone.heldBy ?? 0);
+      expect(pointInsideAABB(z.pos, zone.rect)).toBe(true);
+      expect(z).toMatchObject({ recruitGen: -1, pulseAt: -1, recruitFlash: 0 });
+      expect(collision.isBlocked(z.pos, 0.45)).toBe(false);
+    }
+    for (const g of state.guards) {
+      const civilian = g.role === 'civilian';
+      expect(g.hp).toBe(civilian ? BALANCE.civilian.maxHp : BALANCE.guard.maxHp);
+      expect(g.maxHp).toBe(g.hp);
+      expect(g.radius).toBe(civilian ? BALANCE.civilian.radius : BALANCE.guard.radius);
+      expect(g.homeArea).toEqual(layout.guards.find(spawn => spawn.pos.x === g.pos.x && spawn.pos.z === g.pos.z)!.homeArea ?? null);
+    }
+    for (const s of state.structures) {
+      const def = layout.structures.find(d => d.id === s.id)!;
+      expect(s).toMatchObject({ kind: def.kind, landmark: def.landmark, rect: def.rect, center: rectCenter(def.rect),
+        hp: BALANCE.structures[s.kind].maxHp, maxHp: BALANCE.structures[s.kind].maxHp, destroyed: false, destroyedAt: null, hitFlash: 0 });
+      expect(collision.colliders[s.colliderId].tag).toBe(def.tag);
+      expect(s.rect).not.toBe(def.rect);
+    }
+    expect(state.structures).toHaveLength(4);
+    collision.setEnabled(state.structures[0].colliderId, false);
+    expect(() => createStructures(layout, collision)).toThrow('bus-door');
+  });
+
+  it('defaults legacy guard and zombie factory callers to checkpoint soldiers and unheld ambient/rising', () => {
+    const collision = new CollisionWorld(layout.bounds, layout.colliders);
+    const guard = createGuard(1, { pos: layout.playerStart, facing: 0, tower: null, waypoints: [layout.playerStart] }, collision);
+    expect(guard).toMatchObject({ role: 'soldier', post: 'checkpoint', homeArea: null, shelter: 0, hp: BALANCE.guard.maxHp, radius: BALANCE.guard.radius });
+    for (const state of ['ambient', 'rising'] as const) {
+      const zombie = createZombie(2, layout.playerStart, { state, variant: 0, spawnZone: -1, isConverted: false, rng: mulberry32(1) });
+      expect(zombie).toMatchObject({ heldBy: 0, recruitGen: -1, pulseAt: -1, recruitFlash: 0 });
     }
   });
 });

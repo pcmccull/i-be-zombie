@@ -4,10 +4,15 @@ import type { GuardAgent, GuardSpawn } from '../core/types';
 
 export function createGuard(id: number, spawn: GuardSpawn, collision: ICollisionWorld): GuardAgent {
   const tower = spawn.tower ? collision.findByTag('tower' + spawn.tower) : undefined;
+  const role = spawn.role ?? 'soldier';
+  const civilian = role === 'civilian';
+  const maxHp = civilian ? BALANCE.civilian.maxHp : BALANCE.guard.maxHp;
   return {
+    role, post: spawn.post ?? 'checkpoint', homeArea: spawn.homeArea ? { ...spawn.homeArea } : null,
+    shelter: spawn.shelter ?? 0,
     id, pos: { ...spawn.pos }, prevPos: { ...spawn.pos }, vel: { x: 0, z: 0 },
-    facing: spawn.facing, prevFacing: spawn.facing, radius: BALANCE.guard.radius,
-    hp: BALANCE.guard.maxHp, maxHp: BALANCE.guard.maxHp, attackCooldown: 0,
+    facing: spawn.facing, prevFacing: spawn.facing, radius: civilian ? BALANCE.civilian.radius : BALANCE.guard.radius,
+    hp: maxHp, maxHp, attackCooldown: 0,
     anim: 'idle', animTime: 0, hitFlash: 0, state: 'PATROL', stateTime: 0,
     tower: spawn.tower, towerColliderId: tower?.id ?? null, elevation: spawn.tower ? 4 : 0,
     waypoints: spawn.waypoints.map(p => ({ ...p })), waypointIndex: 0, path: [], pathIndex: 0,

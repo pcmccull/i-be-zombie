@@ -57,6 +57,9 @@ export class HordeRenderer {
   private readonly colorRush = new THREE.Color(0xff4a1c);
   private readonly colorFollowerBoost = new THREE.Color(0x88cc58);
   private readonly colorAmbientMute = new THREE.Color(0x6d736e);
+  private readonly colorRecruitGen0 = new THREE.Color(0xc8ff47);
+  private readonly colorRecruitCascade = new THREE.Color(0x5effb8);
+  private readonly colorRecruitDeepCascade = new THREE.Color(0xffe84a);
 
   private readonly pose: Pose = {
     bodyY: 0,
@@ -185,7 +188,7 @@ export class HordeRenderer {
       computePose(this.poseParams, this.pose);
 
       // Root world transform
-      this.posVec.set(ix, sinkY, iz);
+      this.posVec.set(ix, sinkY + z.elevation, iz);
       this.euler.set(0, facing, 0, 'XYZ');
       this.quat.setFromEuler(this.euler);
       this.rootMatrix.compose(this.posVec, this.quat, this.unitScale);
@@ -211,6 +214,22 @@ export class HordeRenderer {
         // Ambient zombies slightly grayer/muted
         this.colorSkin.lerp(this.colorAmbientMute, 0.3);
         this.colorShirt.lerp(this.colorAmbientMute, 0.25);
+      }
+
+      if ((z.recruitFlash ?? 0) > 0) {
+        const boostDur = Math.max(0.01, BALANCE.horde.recruitBoostTime);
+        const normFlash = Math.min(1, z.recruitFlash / boostDur);
+        const flashAmt = Math.min(1, Math.pow(normFlash, 1.4) * 0.85);
+        const flashCol =
+          (z.recruitGen ?? 0) >= 2
+            ? this.colorRecruitDeepCascade
+            : (z.recruitGen ?? 0) >= 1
+              ? this.colorRecruitCascade
+              : this.colorRecruitGen0;
+        this.colorSkin.lerp(flashCol, flashAmt);
+        this.colorShirt.lerp(flashCol, flashAmt * 0.78);
+        this.colorPants.lerp(flashCol, flashAmt * 0.45);
+        this.colorAcc.lerp(flashCol, flashAmt * 0.85);
       }
 
       if (z.hitFlash > 0) {
