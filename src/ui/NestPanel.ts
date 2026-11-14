@@ -47,6 +47,9 @@ export class NestPanel {
 
   /** `atNest` = leader is within equip range of an active nest. */
   update(state: GameState, atNest: boolean): void {
+    // Playtest (T016): an empty loadout panel at the start nest covered the objective tracker and the intro card.
+    // Only open it once there is something to equip.
+    atNest = atNest && equippableAbilities(state).length > 0;
     if (atNest !== this._visible) {
       this._visible = atNest;
       this.element.classList.toggle('is-visible', atNest);

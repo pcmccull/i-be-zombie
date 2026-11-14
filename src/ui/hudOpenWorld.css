@@ -586,3 +586,10 @@
   font-size: 11px;
   color: #a6b2a0;
 }
+
+/* Playtest (T016): the control reminder sat on top of the ability slot bar at 1024 px wide. Lift it above the bar. */
+.is-open-world .ibz-bottom-right {
+  bottom: 86px;
+  font-size: 11px;
+  opacity: 0.85;
+}

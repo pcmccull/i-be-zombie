@@ -232,7 +232,7 @@ export const BALANCE = {
   police: {
     // role 'police' (pistols); 'soldier' keeps BALANCE.guard (rifles).
     maxHp: 45,
-    damage: 6,
+    damage: 5, // T016 playtest: 6 let three suburb police kill a full-HP Alpha in ~10 s (spec: early danger, not instant death)
     range: 16,
     fireCooldown: 0.9,
     hitChance: 0.55,
