@@ -146,6 +146,7 @@ export class Game {
     if (this.disposed) return;
     this.sim.reset();
     this.effects.reset();
+    this.entities.reset();
     this.input.clear();
     this.accumulator = 0;
     this.lastTime = null;
@@ -228,6 +229,7 @@ export class Game {
     this.effects.consume(events, state);
     this.audio.consume(events);
     this.hud.consume(events);
+    this.entities.consume(events);
     this.updateGateOccluder();
     this.syncVisuals(alpha, dt);
     const leader = state.leader;
@@ -269,7 +271,7 @@ export class Game {
         this.effects.setOrderMarker(this.marker);
       } else this.effects.setOrderMarker(null);
     } else this.effects.setOrderMarker(null);
-    this.effects.update(dt);
+    this.effects.update(dt, state);
     this.scene.updateMatrixWorld(true);
   }
 
