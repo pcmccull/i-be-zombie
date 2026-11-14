@@ -13,3 +13,4 @@ Record architectural decisions, library quirks, solved bugs, and conventions her
 - **[Design]** Momentum: only `MomentumSystem` mutates `state.momentum`; multipliers read live. Start followers give no momentum.
 - **[Bug]** Tests that clear `state.zombies` must also reset `followerCount` (5 start followers exist now).
 - **[Tests]** Long full-world sims (opening autopilot, 5400 steps) need ≥ 30 s timeout under parallel suite load; perf assertions belong in the dedicated stress test.
+- **[Persistence]** `applySave` only triggers `navGrid.rebuild()` + `crawlNavGrid.rebuild()` when a structure or gate transitions from intact/enabled to destroyed/disabled, keeping repeated `applySave` calls idempotent (including `navGrid.version`). `encodeBits`/`decodeBits` use a pure lookup-table Base64 implementation (no `Buffer`/`btoa`) and normalize `DiscoveryState.bits` to `0 | 1` with a full `revealed` recount on load.
