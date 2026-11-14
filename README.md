@@ -1,25 +1,43 @@
 # I BE ZOMBIE
 
-A stylized low-poly 3D third-person urban horde-action prototype built with Three.js, TypeScript, and Vite. Roam a quarantined 240 m × 180 m city district as the undead leader, start an outbreak that cascades through the neighbourhood, break open landmarks packed with the infected, and storm a fortified human checkpoint to breach its gate and convert the defenders.
+A stylized low-poly 3D open-world zombie horde game built with Three.js, TypeScript and Vite. You are the **Alpha**. Infect a seamless
+400 m × 320 m city, grow a horde of up to 40, storm human strongholds in any order, claim districts, and unlock permanent mutations.
+Progress is saved in the browser.
 
-## What's new: fast opening & outbreak recruitment
+## What's new: the open world
 
-Implemented from [`docs/2_intial_recruitment_design.md`](docs/2_intial_recruitment_design.md):
+Implemented from [`docs/3_open_world.md`](docs/3_open_world.md). The task board and reports are in [`.agent-context/`](.agent-context/).
 
-- **Start with 5 followers** in the park plaza, with 2 civilians and the abandoned bus in view.
-- **Cascading recruitment:** every new recruit sends one staggered pulse (0.1–0.3 s, 10 m) that recruits up to 8 nearby wandering zombies, up to 3 generations deep. Pulses never pass through walls, never re-fire, and respect the 100-zombie cap. Ground rings, recruit highlights and an aggregated "+N" counter show the spread.
-- **Landmarks with trapped zombies:**
+- **One continuous city with four districts.** There are no loading screens between them.
 
-  | Landmark | Inside | Defenders |
-  |---|---|---|
-  | Abandoned bus | 15 zombies | none |
-  | Police barricade holding pen | 10 zombies | 2 armed police |
-  | Convenience store | 4 sheltering civilians | none |
-  | Locked alley | 20 zombies | none |
+  | District | Quadrant | Landmark | Stronghold (tier) | Capture reward |
+  |---|---|---|---|---|
+  | Maple Heights (suburbs) | SW, start | homes, park, start nest | Suburb Police Checkpoint (1) | +15 biomass, nest |
+  | Civic Center (police) | NW | fortified police station | Police Station (2) | **Alpha Claws** |
+  | Galleria District (shopping) | SE | mall and parking lot | Mall Security Center (1) | **Horde Frenzy** |
+  | Dockside Works (industrial) | NE | warehouses, gated yard with towers | Industrial Security Yard (3) | **Brute Evolution** |
 
-  Click a door or gate to break it. Freed zombies burst out and can be recruited, and the navigation grid reopens.
-- **Outbreak Momentum (0–100):** recruits +1, conversions +3, armed kills +5, defensive structures and the gate +10. Momentum raises recruit radius (up to +50%) and horde speed (up to +20%). It decays slowly after 8 s idle. The HUD meter shows DORMANT / GROWING OUTBREAK / FULL OUTBREAK.
-- **Responsiveness:** fresh recruits get a short speed boost. Stragglers beyond 14 m move faster than the leader walks, and beyond 22 m they regroup via the shared flow field.
+- **Strongholds fall to objectives, not extermination.** You break doors, shutters or the gate, overrun defenders and hold control
+  points, and the HUD tracks each step. A capture happens exactly once. It grants its unlock, turns the district *infected*, activates
+  a nest there, and autosaves.
+- **Fog of war is separate from territory.** Walking reveals the map, but a district only changes owner when you capture its
+  stronghold. Unexplored, human, contested and infected areas each look different on the minimap and the world map (`M`).
+- **Mutations and biomass.** You earn biomass by infecting, killing armed humans, breaking structures and capturing strongholds.
+  - **Alpha Claws:** while equipped, LMB becomes a three-hit combo whose finisher staggers.
+  - **Horde Frenzy:** nearby followers get +40% speed and +50% attack rate for 8 s.
+  - **Brute Evolution:** spend 15 biomass per Brute to mutate the nearest followers into siege Brutes (180 HP, 3.5× structure damage).
+  - Change your Q/E/R/F loadout at any active nest.
+- **The Alpha fights directly.** LMB bite has windup, recovery and forgiving auto-aim. Humans you kill yourself always rise as
+  followers.
+- **Nests and respawn.** If the Alpha dies, it respawns at the active nest after 4 s, keeping its unlocks, biomass and territory.
+  Standing near an active nest tops the horde back up to 10.
+- **Bounded living world.**
+  - Only actors within 110 m are simulated.
+  - Districts respawn civilians up to their budget, and captured districts thin out.
+  - Raised alert brings up to three police reinforcement waves per stronghold. Waves never repeat endlessly.
+  - The city renders in 80 m chunks that stream around the camera, with at most 12 loaded.
+- **Earlier mechanics carry over:** cascading recruitment pulses, held-zombie landmarks (bus, alley, store, pen), Outbreak Momentum,
+  tower climbing, crawling over cars, and civilians who outrun a horde that isn't in Frenzy.
 
 ## Requirements & Commands
 
@@ -31,52 +49,52 @@ Implemented from [`docs/2_intial_recruitment_design.md`](docs/2_intial_recruitme
 | Start dev server | `npm run dev` | Serves at `http://localhost:5173` |
 | Type-check & production build | `npm run build` | Runs `tsc --noEmit && vite build` |
 | Preview production build | `npm run preview` | Serves the built bundle locally via `vite preview` |
-| Run automated tests | `npm test` | Runs headless pure-simulation unit/integration suites (`vitest run`) |
+| Run automated tests | `npm test` | Headless pure-simulation suites (`vitest run`), including the spec §10 open-world scenarios |
 
 ## How to Play
 
-### Objective
-Capture the fortified human checkpoint in the northeast block (`CAPTURE THE CHECKPOINT`):
-- **Victory (`CHECKPOINT OVERRUN`):** Destroy the checkpoint front gate (400 HP) **and** defeat all 8 checkpoint guards (6 ground patrol guards + 2 elevated watchtower guards). Civilians and the barricade police are optional.
-- **Defeat (`THE LEADER HAS FALLEN`):** The zombie leader's HP reaches 0. Losing all followers does not end the run as long as the leader survives and can recruit more walkers or fight on.
+You start in Maple Heights beside the start nest with 5 followers. There is no final victory screen. The goal is to conquer all four
+strongholds, in whatever order you like. Saves are automatic on captures, unlocks, discoveries, loadout changes and respawns. You can
+also save from the pause menu (`Esc`), which has **Reset Save** to start over.
 
-### Suggested Strategy
-1. **Start the outbreak (first ~60 s):** catch the two civilians at the park edge. Then click the **bus door**; breaking it frees 15 zombies, and their pulses chain into the park-edge walkers.
-   - Head east past the **parking-lot courtyard** (12 zombies).
-   - Order the horde onto the **two police** at the barricade, then break the **pen gate** (10 zombies).
-   - Raid the **convenience store**: click a civilian inside and the horde breaks the door first.
-   - Open the **locked alley** across the street (20 zombies).
-   - Walking within **9 m** recruits passively; **`E` (Rally)** pulls in everything within **15 m**. Both radii grow with momentum.
-   - A reasonably effective run reaches about 30 followers by about 25 s and 30–50 by 60 s.
-2. **Use urban cover & stage the assault:** Avoid marching small groups straight down the exposed main avenue under guard and watchtower fire. Route through the 5 m north service alley or behind city blocks, and gather your pack in the **east parking lot staging area** (`x: 48..80, z: -19..-5`).
-3. **Breach the gate:** Left-click the checkpoint gate (or an interior guard, which automatically redirects the horde to the gate until breached) to order **`ATTACK: GATE`**, then press **`Space` (Rush)** for +45% movement speed and +25% attack rate.
-4. **Overrun & convert the defenders:** Once the gate collapses, target remaining guards with Left-Click. Guards killed by zombie melee have a **70% chance** to rise after 3 seconds and join your horde. **Tower guards** are defeated by ordering zombies to attack them. Up to 5 walkers at a time climb the tower legs, and only those on the platform can hit the occupant.
+### 10-minute demo path
+
+1. **0:00–0:30, outbreak.** Walk toward the bus and the nearby walkers. Walking within 9 m recruits passively, and `Space` (Rally)
+   pulls in everything within 15 m. LMB a civilian to infect it. A scripted run reaches about 20 followers by 30 s.
+2. **0:30–2:00, Suburb Police Checkpoint.** RMB the holding-pen gate. The horde breaks it, the 20 zombies inside join, and the horde
+   moves on to the police. Kill the last defender (RMB it, or LMB it yourself).
+   - Capture: suburbs turn green, a new nest activates, and "SAVED" flashes.
+   - Keep the Alpha behind the horde. Three police pistols will still kill you if you tank them.
+3. **2:00–4:00, a second stronghold, your choice.**
+   - **Mall Security Center (tier 1, SE):** RMB the security shutter, then stand your horde inside the office until "Take the security
+     office" fills. Reward: Horde Frenzy, auto-equipped on Q.
+   - **Police Station (tier 2, NW):** breach the station doors, then hold the command courtyard. Reward: Alpha Claws.
+4. **4:00–6:00, mutations.** Use Frenzy (`Q`) before a charge. Visit an active nest to rearrange slots. Press `M` to see territory
+   versus fog.
+5. **6:00–10:00, the industrial yard (tier 3, NE).** Recruit back up to 40, break the yard gate (Brutes help if you have them), climb
+   the towers, and hold the yard office.
+6. **Persistence check.** Reload the page. Captures, unlocks, biomass, fog and the active nest return, and the horde restarts at 5 by
+   the nest. Die once to see the nest respawn.
 
 ## Controls
 
-All gameplay inputs implemented in [`src/core/InputController.ts`](src/core/InputController.ts) and [`src/core/Game.ts`](src/core/Game.ts):
+Implemented in [`src/core/InputController.ts`](src/core/InputController.ts) and [`src/core/Game.ts`](src/core/Game.ts).
 
 | Input | Action |
 |---|---|
-| `W A S D` / `Arrow Keys` | Move leader relative to camera yaw (diagonal input is normalized) |
-| `Shift` (`ShiftLeft` / `ShiftRight`) | Sprint while stamina allows (drains 25/s; requires 20% recovery after exhaustion) |
-| `Left-Click` (while mouse is not captured) | Capture the mouse (Pointer Lock) and dismiss the intro without selecting or pinging a target |
-| `Mouse Move` (while captured) | Orbit camera yaw and tilt (`20°`–`78°`); the camera stays where you leave it until `C` |
-| `Left-Click` on guard / civilian / gate / landmark door | Toggle the target under the centre crosshair (or cursor when not captured) in or out of the attack selection. The horde splits evenly across all selected targets. Clicking a civilian inside the intact store sends the horde to the store door first |
-| `Left-Click` on empty ground | Place a visual world ping at the centre crosshair (or cursor when not captured) |
-| `Right-Click` (without drag) | **Recall** horde to `FOLLOWING` mode (clears active attack target) |
-| `Esc` | Release captured mouse (also released when opening `Tab` help or on Victory / Defeat) |
-| `Left-` or `Right-Drag` (past 6 px threshold, when not captured) | Orbit camera yaw and tilt (`20°`–`78°`) when mouse is not captured; stays where you leave it until `C` |
-| `Z` / `X` | Rotate camera left / right |
-| Hold `V` | Look back at the horde |
-| `Mouse Wheel` | Zoom camera between close view (`8 m`) and tactical overview (`48 m`) |
-| `Space` | Trigger **Horde Rush** (4 s duration, 15 s cooldown: +45% follower speed, +25% attack rate) |
-| `E` | Trigger **Rally** pulse (8 s cooldown: instantly recruits eligible walkers within 15 m) |
-| `C` | Smoothly recenter camera behind leader heading |
-| `Tab` | Toggle the controls & commands help panel |
-| `F3` | Toggle performance & entity debug overlay (FPS, draw calls, live zombies, followers, guards) |
-| `M` | Mute / unmute synthesized Web Audio SFX |
-| `R` (or HUD `Restart` button) | Restart the game on Victory or Defeat screens |
+| `W A S D` / arrows | Move relative to the camera; `Shift` sprints while stamina lasts |
+| **LMB** | Alpha attack: bite, or the 3-hit claw combo with Alpha Claws equipped. Auto-aims at the nearest enemy in front |
+| **RMB** on human / gate / door | Horde attack order. `Ctrl+RMB` adds or removes a split target |
+| **RMB** on ground | Horde move order (marker; reverts to follow on arrival or after 20 s) |
+| `Space` / `Shift+RMB` | Rally / regroup: pull in and recruit nearby walkers (8 s cooldown) |
+| `G` | Recall: everyone follows |
+| `Q` `E` `R` `F` | Activate the equipped mutation slot |
+| `M` | World map. Click it to set or clear a waypoint |
+| `Esc` | Pause menu: Continue, Save, Reset Save (with confirmation), Sound |
+| `N` | Mute / unmute |
+| Mouse (captured) or LMB/RMB drag | Orbit and tilt the camera. `C` recenters, hold `V` to look back, `Z`/`X` turn, wheel zooms (8–64 m) |
+| At a nest | Loadout panel: click a slot then an ability, or use keys `1`–`4` and `[` `]` |
+| `Tab` / `F3` | Controls help / debug overlay (FPS, draw calls, chunks, active and dormant actors, district states) |
 
 ## Architecture Overview
 
@@ -84,36 +102,45 @@ The codebase enforces a strict separation between pure gameplay simulation and T
 - **Pure Simulation (`[pure]`):** Located in [`src/sim/`](src/sim/), [`src/systems/`](src/systems/), [`src/entities/`](src/entities/), [`src/world/districtLayout.ts`](src/world/districtLayout.ts), [`src/world/CollisionWorld.ts`](src/world/CollisionWorld.ts), [`src/world/NavigationGrid.ts`](src/world/NavigationGrid.ts), and [`src/utils/`](src/utils/). Zero `three` imports; executes deterministically at a fixed `1/60 s` timestep (`BALANCE.sim.fixedDt`) with a seeded PRNG (`mulberry32`) and runs headlessly in Node/Vitest.
 - **3D Visuals & Audio (`[3D]`):** Located in [`src/world/CityDistrict.ts`](src/world/CityDistrict.ts), [`src/world/Checkpoint.ts`](src/world/Checkpoint.ts), [`src/visuals/`](src/visuals/), [`src/audio/AudioSystem.ts`](src/audio/AudioSystem.ts), and [`src/ui/HUD.ts`](src/ui/HUD.ts). Reads `GameState` with render-alpha transform interpolation and consumes per-frame events from `Simulation.drainEvents()` to trigger pooled particles/tracers, camera shake, Web Audio synth cues, and DOM HUD updates.
 
-### Authoritative `Simulation.step(dt, input)` Order
-1. Copy `pos → prevPos` and `facing → prevFacing` for leader, zombies, and guards (for render interpolation).
-2. If `phase !== 'playing'`: advance animation timers and corpse fade timers only, then return.
-3. `applyHordeCommands`: process Attack/Follow order changes, Rally pulse, Rush activation, and ability cooldowns.
-4. `updateLeader`: camera-relative movement, stamina drain/recovery/exhaustion latch, and 2D circle-vs-AABB sliding collision.
-5. `updateNavigation`: update shared `followField` and `attackField` flow fields (throttled to ≤ 5 Hz for moving goals, immediate on order or `navGrid.version` change) and resolve `effectiveTarget` (redirecting enclosed targets to the intact gate).
-6. `updateHorde`: rebuild uniform-grid `SpatialHash`, passive 9 m recruitment (line-of-sight), due cascade pulses, ambient and held wandering, follower flow-field + flocking steering, and local engagement selection.
-7. `updateHumanAI`: staggered 10 Hz guard perception and LOS checks, FSM (`PATROL` / `ALERT` / `COMBAT` / `RETREAT` / `DEAD`), A* patrol/retreat movement, and hitscan shooting.
-8. `updateCombat`: follower and leader melee damage against guards and gate, death handling, and corpse fade-out removal.
-9. `updateConversion`: tick 3 s conversion delays and 1.2 s rising animations, promoting converted humans into active followers when capacity allows. Each one sends its own recruit pulse.
-9b. `updateStructures` (release bursts, hit flashes), then `updateMomentum` (grace, decay, tier events).
-10. `checkVictory`: transition to `'defeat'` if the leader died, or `'victory'` if the gate is destroyed and all 8 checkpoint guards are `DEAD`.
-11. Tick `hitFlash`, `animTime`, `capReachedFlash`, and advance `state.time += dt`.
+### Authoritative `Simulation.step(dt, input)` Order (open world)
+1. Copy `pos → prevPos`, `facing → prevFacing` (render interpolation).
+2. `updatePopulation`: marks actors beyond 110 m dormant (2 Hz) and runs budgeted civilian/ambient respawns under hard caps.
+3. `applyHordeCommands`: attack, split, move, regroup and follow orders, plus rally.
+4. `updateProgression`: ability slots, loadout at nests, cooldowns, the Frenzy timer and Brute Evolution.
+5. `updateLeader`: movement, stamina, and the LMB windup/recovery/combo state machine. Skipped while respawning.
+6. `updateNavigation`: bounded (140 m) shared flow fields at ≤ 5 Hz, and effective-target redirects.
+7. `updateHorde`: spatial hash, recruitment and cascade pulses, follower steering, move orders, straggler catch-up.
+8. `updateHumanAI`: police, soldier and civilian FSMs, aim delay, stagger, patrols and reinforcements.
+9. `updateCombat`, then `updateConversion` (the single damage/infection path; Alpha kills always rise).
+10. `updateStructures`, then `updateMomentum`.
+11. `updateConquest`: fog reveal, objectives, contested/capture-once, district metrics, alert and reinforcements, nest replenishment.
+12. `updateRespawn`: death → `respawning` → nest respawn.
+13. Timers; `state.time += dt`.
+
+The legacy district (`new Simulation()` without a layout) keeps the recruitment-milestone order with `checkVictory`.
 
 ### Directory Structure
 ```text
 index.html                     Canvas host (#app) + HUD root (#hud)
 src/
-  main.ts                      [3D] Entry point: mounts Game(#app, #hud)
-  config/balance.ts            [pure] Centralized tuning constants (BALANCE)
+  main.ts                      [3D] Entry point
+  config/balance.ts            [pure] All tuning constants (BALANCE), incl. openWorld/alpha/police/frenzy/brute/conquest/nest/save
+  content/                     [pure] abilities, strongholds, districts (data-driven content)
   core/                        types.ts, contracts.ts, cameraMath.ts [pure]; Game.ts, InputController.ts, ThirdPersonCamera.ts [3D]
   sim/                         [pure] Simulation.ts, createInitialState.ts
-  world/                       districtLayout.ts, CollisionWorld.ts, NavigationGrid.ts [pure]; CityDistrict.ts, Checkpoint.ts, Landmarks.ts [3D]
+  world/                       districtLayout.ts + layout/* (open world), legacyDistrictLayout.ts, worldQueries.ts (districts,
+                               chunks, ChunkStreamer), CollisionWorld.ts, NavigationGrid.ts [pure];
+                               CityDistrict.ts (chunk streaming), Checkpoint.ts, Landmarks.ts, NestMarkers.ts [3D]
   entities/                    [pure] ZombieLeader.ts, Zombie.ts, HumanGuard.ts, Structure.ts
-  systems/                     [pure] HordeSystem.ts, NavigationSystem.ts, CombatSystem.ts, HumanAISystem.ts, ConversionSystem.ts, VictorySystem.ts, StructureSystem.ts, MomentumSystem.ts
-  visuals/                     [3D] LowPolyCharacters.ts, HordeRenderer.ts, EntityRenderer.ts, Effects.ts
-  audio/                       AudioSystem.ts (Web Audio procedural synthesizer)
-  ui/                          HUD.ts, hud.css (DOM/CSS overlay)
+  systems/                     [pure] Horde, Navigation, Combat, HumanAI, Conversion, Structure, Momentum, Progression,
+                               Conquest, Respawn, Population, Victory (legacy)
+  persistence/                 saveSchema.ts [pure] (versioned WorldSave, migrations), SaveStore.ts (localStorage, never throws)
+  visuals/                     [3D] LowPolyCharacters.ts, HordeRenderer.ts, EntityRenderer.ts, Effects.ts, HealthBars.ts
+  audio/                       AudioSystem.ts (Web Audio synth)
+  ui/                          HUD.ts, Minimap.ts, WorldMap.ts, PauseMenu.ts, NestPanel.ts, DebugOverlay.ts, mapRender.ts,
+                               uiHelpers.ts [pure], hud.css, hudOpenWorld.css
   utils/                       [pure] math.ts, spatialHash.ts, rng.ts
-tests/                         Vitest suites importing [pure] modules only
+tests/                         Vitest suites importing [pure] modules only (openWorld.test.ts = spec §10 scenarios)
 ```
 
 ## Key Design Decisions
@@ -222,16 +249,18 @@ The embedded pane caps `requestAnimationFrame` at about 50 Hz even when idle, so
 
 ## Known Limitations
 
-- **60 FPS not verified on a standalone browser** (see Performance). The production bundle is about 650 kB (about 170 kB gzipped), and Vite warns about chunk size.
-- **Order succession is automatic.** After one attack order the horde chains to nearby reachable guards by itself; right-click recall always overrides it.
-- **Tower occupants never descend.** Zombies have to climb to reach them.
-- **Momentum only scales speed and recruit radius.** It has no effect on damage or attack rate.
-- **The opening pacing figures come from the scripted autopilot.** Human play varies; the barricade police can kill a leader who walks past without ordering an attack, which is intended as high risk.
-- **`R` restarts only from the victory/defeat screens.**
-- **Camera:** buildings between the camera and the leader fade out and the camera pulls in (4 m minimum). Very tight gaps can still produce close, steep views.
-- **Desktop browsers only:** Designed for keyboard + mouse input at `1280×720` or larger; no mobile or touch controls are implemented.
-- **Single-district vertical slice:** Features one handcrafted city district and one fortified checkpoint objective with no save/load persistence, audio volume slider (beyond `M` mute toggle), or multi-level interior navigation.
-- **Web Audio gesture unlock:** Browser autoplay policies require an initial pointer click or key press before synthesized audio begins playing.
+- **Performance.** Measured in the desktop app's browser pane at 1024×768: about 50–97 FPS with 36 followers, 9–12 chunks and
+  120–215 draw calls. A sustained 60 FPS on midrange hardware has not been profiled. Vite warns about the chunk size of the bundle.
+- **Saves keep progress, not position.** After a reload the Alpha starts at the active nest with 5 fresh followers.
+- **The early stronghold defenders are dangerous.** If the Alpha tanks the suburb police instead of sending the horde in, it dies
+  in about 12 s. You then respawn at the nest.
+- **No recapture.** Humans never take back a captured district (a data hook exists for later).
+- **Pounce** exists only as data; nothing unlocks it in this build.
+- **Pointer lock** may be unavailable in embedded browsers. Every click then attacks toward the cursor, and drag orbits the camera.
+- **Desktop only**, keyboard and mouse, 1280×720 or larger. There is no mobile or touch control.
+- **Web Audio** starts after the first click or key press, because of browser autoplay rules.
+- **Legacy district.** The recruitment-milestone district is kept as a test fixture (`buildLegacyDistrictLayout()`, the default for
+  `new Simulation()`). Its checkpoint victory, Rush and click-to-select rules apply only there.
 
 ## Credits & Licensing
 

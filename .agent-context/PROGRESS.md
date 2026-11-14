@@ -3,7 +3,7 @@
 Spec: `docs/3_open_world.md`. Architecture/contracts: `.agent-context/ARCHITECTURE.md`. Conventions: `AGENTS.md`.
 Previous milestone (recruitment overhaul R0–R4): complete, committed (1eee817, fec178f, 1f274d1).
 
-## Active Milestone: OW — Open World. T001 VERIFIED + committed on branch `open-world`; Wave A next.
+## Active Milestone: OW — Open World. T001–T016 VERIFIED on branch `open-world`; Phase 3 verification gate running.
 
 Baseline (2026-11-14 10:31): `npx tsc --noEmit` 0 errors, `npm test` 25 files / 216 tests passing.
 
@@ -36,8 +36,8 @@ Every task ends with `npx tsc --noEmit` + `npm test` green and a report at `.age
 | T012 | C | Sim integration: new step order, createInitialState from world + save, remove victory call, open-world integration tests (spec §10 items 1–12 headless) | claude-worker | `src/sim/{Simulation,createInitialState}.ts`, `src/systems/VictorySystem.ts` (delete), `tests/{victory,openWorld}.test.ts` | T002–T009 | VERIFIED (snapshot 393/393; spec §10 1-12 headless pass; opening 21 followers @30 s; t=0 reveal deferred to first step) |
 | T013 | C | UI + audio: HUD (health, followers, biomass, Q/E/R/F slots, objectives, toasts, respawn overlay), minimap, world map (fog ≠ territory), pause menu, nest equip panel, debug overlay, audio cues | ~~agy~~ → claude-worker | `src/ui/**`, `src/audio/AudioSystem.ts` | T001, T011 | VERIFIED (snapshot 379/379 + build; wiring list in report for T014) |
 | T014 | D | Client integration: new input model, Game wiring (save boot, autosave, pause, chunk streaming, map/HUD/FX/audio events), camera range | claude-worker | `src/core/{Game,InputController,ThirdPersonCamera}.ts`, `src/main.ts`, `index.html`, `tests/{picking,pointerLock,cameraMath}.test.ts` | T010–T013 | VERIFIED (402/402 + build; headless smoke boot/move/map/pause/save-reload OK; LMB/abilities/borders need GPU playtest in T016) |
-| T015 | E | ~~Remove rush/victory/checkpoint fields~~ **descoped**: they stay as the isolated legacy-district test fixture (gated by `layout.strongholds.length === 0`; ~25 files, no player value). Docs: README controls + 10-min demo path, AGENTS.md/ARCHITECTURE drift | orchestrator | contract files, `README.md`, `AGENTS.md` | T014 | PENDING |
-| T016 | E | Browser playthrough + tuning (spec Gate 4) | orchestrator | `src/config/balance.ts` + small fixes by owner | T015 | PENDING |
+| T015 | E | ~~Remove rush/victory/checkpoint fields~~ **descoped**: they stay as the isolated legacy-district test fixture (gated by `layout.strongholds.length === 0`; ~25 files, no player value). Docs: README controls + 10-min demo path, AGENTS.md/ARCHITECTURE drift | orchestrator | contract files, `README.md`, `AGENTS.md` | T014 | VERIFIED (README/AGENTS.md updated; see reports/T016-orchestrator.md) |
+| T016 | E | Browser playthrough + tuning (spec Gate 4) | orchestrator | `src/config/balance.ts` + small fixes by owner | T015 | VERIFIED (browser: boot, districts, LMB, pen breach, capture, death/respawn, reload; 3 fixes) |
 | V1 | F | Spec completeness audit (read-only, plan mode) | agy | none | T016 | PENDING |
 | V2 | F | Adversarial bug/edge-case review (read-only) | codex | none | T016 | PENDING |
 | V3 | F | Full build + test run, `reports/FINAL-VERIFICATION.md` | claude-worker | `reports/FINAL-VERIFICATION.md` | V1, V2 fixes | PENDING |

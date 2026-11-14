@@ -1,0 +1,26 @@
+# T016 — Browser playthrough & tuning (orchestrator) + T015 docs
+
+- **Task ID & Agent:** T015 + T016 / orchestrator
+- **Status:** COMPLETED
+- **Completed Work:**
+  - Desktop app browser pane, dev server `vite-5181` (added to `.claude/launch.json`), 1024×768. The run covered:
+    - Boot, with no console errors.
+    - Intro, then walking. W held moved about 4.3 m/s, and passive recruitment took the horde from 5 to 8.
+    - A test-only teleport tour of all four districts. Chunks streamed (11 loaded), the district looks read clearly, and fps settled back to about 53 after each teleport.
+    - LMB attackSwing events firing through the real input path. Pointer lock is unavailable in the pane, so the fallback applies: every click attacks.
+    - RMB on the pen gate: the pen was breached, 20 zombies were released and recruited, the objective completed and the horde chained onto the guards.
+    - Alpha death, then respawn at the start nest with progression kept and the horde regrouped (36).
+    - RMB on the last defender: suburb_checkpoint captured. The district went infected, the nest activated and autosaved, and the tracker moved to the Police Station.
+    - Page reload: capture, biomass, nest, broken pen and fog all restored, with "Your conquest continues".
+    - World map (fog separate from territory, legend), pause menu, F3 overlay: 97 fps, 9–12 chunks, 118–215 draw calls.
+  - Fixes:
+    - `NestPanel` hides while there is nothing to equip. It had covered the tracker and the intro card.
+    - The open-world control hint now sits above the ability slots.
+    - `BALANCE.police.damage` 6 → 5, because 3 suburb police killed a full-HP Alpha in about 10 s.
+  - Killed a leftover headless SwiftShader Edge from T014's smoke test. It was pegging the CPU and causing 20 s vitest timeouts.
+  - T015 (descoped): the legacy fields stay as the isolated legacy-district fixture. README rewritten: open world, 10-minute demo path, controls, step order, directory map, limitations. AGENTS.md checkboxes updated.
+- **Remaining Work:**
+  - Not exercised in the browser: a real Police Station / mall / yard capture by hand, Frenzy and Brute visuals, Claws combo visuals. All are covered headless by `tests/openWorld.test.ts` items 6–8.
+  - An uncommitted `src/ui/HUD.ts` diff (help text and capture hint for pointer-lock-less play, mtime 13:15) has an unknown author. It was left untouched for the user to decide.
+- **Verification Run:** `npx tsc --noEmit` 0; `npm test` 38 files / 402 tests; `npm run build` OK (3 s).
+- **Memory Notes:** kill headless Edge (`edgeprof` profile) after smoke tests; teleport helpers for playtests: set `pos` and `prevPos` on the leader and followers.
