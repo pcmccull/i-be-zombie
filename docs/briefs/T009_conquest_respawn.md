@@ -7,8 +7,9 @@ NestDef/DistrictDef, StrongholdState, DistrictState, DiscoveryState, events), `s
 `src/systems/{ConquestSystem,RespawnSystem}.ts`, `src/systems/StructureSystem.ts`, `src/systems/ProgressionSystem.ts` (read only).
 
 ## Locked files
-`src/systems/ConquestSystem.ts`, `src/systems/RespawnSystem.ts`, `src/systems/StructureSystem.ts`, `tests/structures.test.ts`,
-`tests/{conquest,discovery,respawn}.test.ts` (new). Nothing else. (Simulation does not call your systems yet — T012 wires the step order;
+`src/systems/ConquestSystem.ts`, `src/systems/RespawnSystem.ts`, `src/systems/StructureSystem.ts`,
+`tests/{conquest,discovery,respawn}.test.ts` (new). Nothing else — `tests/structures.test.ts` is being edited by T004; put new StructureSystem
+assertions in `tests/conquest.test.ts`. (Simulation does not call your systems yet — T012 wires the step order;
 your tests call `updateConquest`/`updateRespawn` explicitly after `sim.step`.)
 
 ## Deliver
