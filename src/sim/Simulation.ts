@@ -15,6 +15,12 @@ import { updateConversion } from '../systems/ConversionSystem';
 import { checkVictory } from '../systems/VictorySystem';
 import { updateStructures } from '../systems/StructureSystem';
 import { updateMomentum } from '../systems/MomentumSystem';
+import { updatePopulation } from '../systems/PopulationSystem';
+import { updateProgression } from '../systems/ProgressionSystem';
+import { updateConquest } from '../systems/ConquestSystem';
+import { updateRespawn } from '../systems/RespawnSystem';
+import { applySave } from '../persistence/saveSchema';
+import type { WorldSave } from '../core/types';
 import { createInitialState } from './createInitialState';
 
 function copyPrevious(e: GameState['leader'] | GameState['zombies'][number] | GameState['guards'][number]): void {
@@ -30,13 +36,14 @@ export class Simulation implements ISimulation {
   private events: GameEvent[] = [];
   private seed: number;
 
-  constructor(private readonly layout: DistrictLayout = buildDistrictLayout(), seed: number = BALANCE.sim.seed) {
-    this.seed = seed; this.reset(seed);
+  constructor(private readonly layout: DistrictLayout = buildDistrictLayout(), seed: number = BALANCE.sim.seed,
+    save: WorldSave | null = null) {
+    this.seed = seed; this.reset(seed, save);
   }
 
   get state(): GameState { return this.ctx.state; }
 
-  reset(seed: number = this.seed): void {
+  reset(seed: number = this.seed, save: WorldSave | null = null): void {
     this.seed = seed; this.events = [];
     const collision = new CollisionWorld(this.layout.bounds, this.layout.colliders);
     // The constructor rebuilds once; fresh/reset simulations therefore have identical versions.
@@ -50,6 +57,7 @@ export class Simulation implements ISimulation {
       nav: { followField: null, attackField: null, effectiveTarget: null, squads: new Map() },
       emit: event => this.events.push(event), newId: () => state.nextEntityId++,
     };
+    if (save) applySave(this.ctx, save);
   }
 
   drainEvents(): GameEvent[] { const events = this.events; this.events = []; return events; }
@@ -59,7 +67,9 @@ export class Simulation implements ISimulation {
     copyPrevious(s.leader);
     for (const z of s.zombies) copyPrevious(z);
     for (const g of s.guards) copyPrevious(g);
-    if (s.phase !== 'playing') {
+    const openWorld = this.layout.strongholds.length > 0;
+    // Legacy district: victory/defeat freeze the sim. Open world: only 'playing' and 'respawning' exist and both simulate.
+    if (s.phase !== 'playing' && !(openWorld && s.phase === 'respawning')) {
       // Freeze gameplay, including cooldowns and sim time. Only animation/corpse ages advance.
       s.leader.animTime += dt;
       for (const g of s.guards) g.animTime += dt;
@@ -72,8 +82,10 @@ export class Simulation implements ISimulation {
       s.zombies.length = write;
       return;
     }
+    if (openWorld) updatePopulation(this.ctx, dt);
     applyHordeCommands(this.ctx, dt, input);
-    updateLeader(this.ctx, dt, input);
+    updateProgression(this.ctx, dt, input);
+    if (s.phase === 'playing') updateLeader(this.ctx, dt, input);
     updateNavigation(this.ctx, dt, input);
     updateHorde(this.ctx, dt, input);
     updateHumanAI(this.ctx, dt, input);
@@ -81,7 +93,7 @@ export class Simulation implements ISimulation {
     updateConversion(this.ctx, dt, input);
     updateStructures(this.ctx, dt);
     updateMomentum(this.ctx, dt);
-    checkVictory(this.ctx);
+    if (openWorld) { updateConquest(this.ctx, dt); updateRespawn(this.ctx, dt); } else checkVictory(this.ctx);
     tickVisualTimers(s.leader, dt);
     for (const z of s.zombies) tickVisualTimers(z, dt);
     for (const g of s.guards) tickVisualTimers(g, dt);

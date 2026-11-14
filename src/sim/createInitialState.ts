@@ -43,7 +43,7 @@ export function createInitialState(layout: DistrictLayout, collision: ICollision
     if (spawn.tower) guard.elevation = layout.checkpoint.towers.find(t => t.id === spawn.tower)?.platformHeight ?? 4;
     return guard;
   });
-  return {
+  const state: GameState = {
     time: 0, phase: 'playing', nextEntityId: id, leader, zombies, guards, gate: createGate(collision),
     structures: createStructures(layout, collision), momentum: { value: 0, idleTime: 0, tier: 'dormant', gainFlash: 0 },
     order: { type: 'follow' }, squads: [], abilities: { rallyCooldown: 0, rushCooldown: 0, rushTimeLeft: 0 },
@@ -57,6 +57,9 @@ export function createInitialState(layout: DistrictLayout, collision: ICollision
     discovery: createDiscovery(layout),
     activeNestId: layout.nests.find(n => n.strongholdId === null)?.id ?? '', deaths: 0,
   };
+  // NOTE: no t=0 fog reveal here: tests/discovery + persistence assume a blank fog before the first step. The first
+  // updateConquest step (revealTimer starts at 0) reveals around the start, so the start district reads human at t=dt.
+  return state;
 }
 
 export function createDistrictStates(): Record<DistrictId, DistrictState> {

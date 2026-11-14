@@ -4,6 +4,7 @@ import { emptyInput } from '../src/core/types';
 import { Simulation } from '../src/sim/Simulation';
 import { damageGate, damageGuard, damageLeader } from '../src/systems/CombatSystem';
 import { recruitZombie } from '../src/systems/HordeSystem';
+import { buildDistrictLayout } from '../src/world/districtLayout';
 import { checkVictory } from '../src/systems/VictorySystem';
 
 const dt = BALANCE.sim.fixedDt;
@@ -69,5 +70,17 @@ describe('victory, defeat and restart: design §15.12–13,15', () => {
     sim.step(dt, { ...emptyInput(), attackTarget: { kind: 'gate' } });
     damageGate(sim.ctx, BALANCE.gate.maxHp); sim.step(dt, emptyInput()); expect(sim.state.order.type).toBe('follow');
     expect(sim.ctx.nav.effectiveTarget).toBeNull();
+  });
+
+  it('open world: Simulation never enters victory/defeat; leader death goes to respawning and back', () => {
+    const sim = new Simulation(buildDistrictLayout());
+    damageGate(sim.ctx, BALANCE.gate.maxHp);
+    for (const g of sim.state.guards) damageGuard(sim.ctx, g, 500, 'other');
+    sim.step(dt, emptyInput()); expect(sim.state.phase).toBe('playing');
+    damageLeader(sim.ctx, 1e6); sim.step(dt, emptyInput());
+    expect(sim.state.phase).toBe('respawning');
+    for (let i = 0; i < Math.ceil(BALANCE.respawn.delay / dt) + 2; i++) sim.step(dt, emptyInput());
+    expect(sim.state.phase).toBe('playing'); expect(sim.state.leader.alive).toBe(true);
+    expect(sim.drainEvents().some(e => e.type === 'victory' || e.type === 'defeat')).toBe(false);
   });
 });
