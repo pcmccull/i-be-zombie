@@ -7,7 +7,7 @@ import { isTargetAlive, resolveTargetPos } from './CombatSystem';
 interface Recovery { x: number; z: number; nudgeLeft: number; nx: number; nz: number }
 interface Scratch {
   byId: Map<number, ZombieAgent>; neighbors: number[];
-  access: Map<number, SegmentOptions>;
+  access: Map<number, SegmentOptions>; gateAccess: SegmentOptions; recallGrace: number;
 }
 const recoveries = new WeakMap<ZombieAgent, Recovery>();
 const scratches = new WeakMap<SimContext, Scratch>();
@@ -28,8 +28,18 @@ export function countFollowers(state: GameState): number {
 
 export function recruitZombie(ctx: SimContext, z: ZombieAgent, viaRally: boolean): boolean {
   if (z.state !== 'ambient' || z.hp <= 0) return false;
+  return recruitWithReservation(ctx, z, viaRally, countRising(ctx.state));
+}
+
+function countRising(state: GameState): number {
   let rising = 0;
-  for (const other of ctx.state.zombies) if (other.state === 'rising') rising++;
+  for (const z of state.zombies) if (z.state === 'rising') rising++;
+  return rising;
+}
+
+/** Reservation count is stable during a recruitment pass; followerCount advances per recruit. */
+function recruitWithReservation(ctx: SimContext, z: ZombieAgent, viaRally: boolean, rising: number): boolean {
+  if (z.state !== 'ambient' || z.hp <= 0) return false;
   if (ctx.state.followerCount + rising >= BALANCE.horde.maxFollowers) {
     if (ctx.state.capReachedFlash <= 0) {
       ctx.state.capReachedFlash = 1.5;
@@ -64,20 +74,27 @@ function follow(ctx: SimContext): void {
 
 export function applyHordeCommands(ctx: SimContext, dt: number, input: SimInput): void {
   const s = ctx.state, a = s.abilities;
+  const memory = scratch(ctx);
+  memory.recallGrace = Math.max(0, memory.recallGrace - dt);
   a.rallyCooldown = Math.max(0, a.rallyCooldown - dt);
   a.rushCooldown = Math.max(0, a.rushCooldown - dt);
   const wasRushing = a.rushTimeLeft > 0;
   a.rushTimeLeft = Math.max(0, a.rushTimeLeft - dt);
   if (a.rushTimeLeft < 1e-9) a.rushTimeLeft = 0;
   if (wasRushing && a.rushTimeLeft === 0) ctx.emit({ type: 'rushEnd' });
-  if (input.recall) follow(ctx);
+  if (input.recall) {
+    follow(ctx);
+    memory.recallGrace = 2.5;
+    for (const z of s.zombies) if (z.state === 'follower') z.engageTarget = null;
+  }
   if (s.leader.alive && input.attackTarget &&
       (input.attackTarget.kind === 'guard' || input.attackTarget.kind === 'gate') && isTargetAlive(ctx, input.attackTarget)) {
     s.order = { type: 'attack', target: { ...input.attackTarget } };
     ctx.emit({ type: 'orderChanged', order: s.order });
   }
   if (input.rally && a.rallyCooldown <= 1e-9 && s.leader.alive) {
-    for (const z of s.zombies) if (distSq(z.pos, s.leader.pos) <= BALANCE.rally.radius ** 2) recruitZombie(ctx, z, true);
+    const rising = countRising(s);
+    for (const z of s.zombies) if (distSq(z.pos, s.leader.pos) <= BALANCE.rally.radius ** 2) recruitWithReservation(ctx, z, true, rising);
     ctx.emit({ type: 'rally', pos: { ...s.leader.pos }, radius: BALANCE.rally.radius });
     a.rallyCooldown = BALANCE.rally.cooldown;
   }
@@ -124,7 +141,8 @@ function wander(ctx: SimContext, z: ZombieAgent, dt: number): void {
 function scratch(ctx: SimContext): Scratch {
   let s = scratches.get(ctx);
   if (!s) {
-    s = { byId: new Map(), neighbors: [], access: new Map() };
+    s = { byId: new Map(), neighbors: [], access: new Map(),
+      gateAccess: { mode: 'move', ignoreIds: [ctx.state.gate.colliderId] }, recallGrace: 0 };
     scratches.set(ctx, s);
     for (const g of ctx.state.guards) s.access.set(g.id,
       g.towerColliderId === null ? moveAccess : { mode: 'move', ignoreIds: [g.towerColliderId] });
@@ -138,10 +156,14 @@ function selectEngagement(ctx: SimContext, z: ZombieAgent, s: Scratch): void {
     return;
   }
   if (distSq(z.pos, ctx.state.leader.pos) > 20 * 20) { z.engageTarget = null; return; }
+  const engageRadius = s.recallGrace > 1e-9 ? 1.8 : BALANCE.walker.autoEngageRadius;
+  const retainRadius = s.recallGrace > 1e-9 ? engageRadius : engageRadius * 2;
   if (z.engageTarget && (!resolveTargetPos(ctx, z.engageTarget, targetPos) ||
-      distSq(z.pos, targetPos) > (BALANCE.walker.autoEngageRadius * 2) ** 2)) z.engageTarget = null;
+      distSq(z.pos, targetPos) > retainRadius ** 2 ||
+      ctx.collision.segmentBlocked(z.pos, targetPos, z.engageTarget.kind === 'guard'
+        ? s.access.get(z.engageTarget.id) ?? moveAccess : moveAccess))) z.engageTarget = null;
   if (z.engageTarget) return;
-  let nearest = BALANCE.walker.autoEngageRadius ** 2;
+  let nearest = engageRadius ** 2;
   let id = -1;
   for (const g of ctx.state.guards) {
     if (g.state === 'DEAD' || g.hp <= 0) continue;
@@ -160,11 +182,12 @@ export function updateHorde(ctx: SimContext, dt: number, _input: SimInput): void
     ctx.zombieHash.insert(z.id, z.pos.x, z.pos.z); s.byId.set(z.id, z);
   }
   if (leader.alive) {
+    const rising = countRising(state);
     s.neighbors.length = 0;
     ctx.zombieHash.query(leader.pos.x, leader.pos.z, BALANCE.leader.recruitRadius, s.neighbors);
     for (const id of s.neighbors) {
       const z = s.byId.get(id)!;
-      if (distSq(z.pos, leader.pos) <= BALANCE.leader.recruitRadius ** 2) recruitZombie(ctx, z, false);
+      if (distSq(z.pos, leader.pos) <= BALANCE.leader.recruitRadius ** 2) recruitWithReservation(ctx, z, false, rising);
     }
   }
   const sin = Math.sin(leader.facing), cos = Math.cos(leader.facing);
@@ -179,7 +202,9 @@ export function updateHorde(ctx: SimContext, dt: number, _input: SimInput): void
     const maxSpeed = speed;
     direction.x = direction.z = 0;
     let inRange = false;
+    let followLeader = true;
     if (z.engageTarget && resolveTargetPos(ctx, z.engageTarget, targetPos)) {
+      followLeader = false;
       goal.x = targetPos.x; goal.z = targetPos.z;
       let reach: number = BALANCE.walker.attackRange;
       let options = moveAccess;
@@ -189,9 +214,10 @@ export function updateHorde(ctx: SimContext, dt: number, _input: SimInput): void
           const p = approaches[z.id % approaches.length]; goal.x = p.x; goal.z = p.z;
         }
         const r = state.gate.rect;
-        const dx = z.pos.x - Math.max(r.minX, Math.min(r.maxX, z.pos.x));
-        const dz = z.pos.z - Math.max(r.minZ, Math.min(r.maxZ, z.pos.z));
-        inRange = Math.hypot(dx, dz) <= reach;
+        targetPos.x = Math.max(r.minX, Math.min(r.maxX, z.pos.x));
+        targetPos.z = Math.max(r.minZ, Math.min(r.maxZ, z.pos.z));
+        inRange = distSq(z.pos, targetPos) <= reach * reach &&
+          !ctx.collision.segmentBlocked(z.pos, targetPos, s.gateAccess);
       } else if (z.engageTarget.kind === 'guard') {
         const id = z.engageTarget.id;
         const g = state.guards.find(g => g.id === id)!;
@@ -210,9 +236,12 @@ export function updateHorde(ctx: SimContext, dt: number, _input: SimInput): void
         const dx = goal.x - z.pos.x, dz = goal.z - z.pos.z, d = Math.hypot(dx, dz);
         if (ctx.navGrid.hasClearWalk(z.pos, goal) || (d < 4 && !ctx.collision.segmentBlocked(z.pos, goal, options))) {
           if (d > 0) { direction.x = dx / d; direction.z = dz / d; }
-        } else if (state.order.type === 'attack') ctx.nav.attackField?.sample(z.pos, direction);
+        } else if (state.order.type === 'attack') {
+          followLeader = !ctx.nav.attackField?.sample(z.pos, direction);
+        } else followLeader = true;
       }
-    } else {
+    }
+    if (followLeader) {
       goal.x = leader.pos.x + cos * z.followOffset.x + sin * z.followOffset.z;
       goal.z = leader.pos.z - sin * z.followOffset.x + cos * z.followOffset.z;
       const dx = goal.x - z.pos.x, dz = goal.z - z.pos.z, d = Math.hypot(dx, dz);

@@ -101,6 +101,11 @@ describe('horde commands and guidance', () => {
   it('auto-engages only reachable living guards, disengages far away, and stops in melee range', () => {
     const sim = new Simulation(); sim.state.zombies = [];
     const g = sim.state.guards[5];
+    // Isolate horde steering: live guard AI otherwise backs away and shoots this follower dead.
+    for (const guard of sim.state.guards) {
+      guard.attackCooldown = 1e9; guard.perceptionTimer = 1e9; guard.idleTimer = 1e9;
+      if (guard !== g) guard.pos = { x: 110, z: -75 };
+    }
     sim.state.leader.pos = { x: g.pos.x, z: g.pos.z + 6 };
     const z = add(sim, { x: g.pos.x, z: g.pos.z + 1.8 });
     run(sim, 60); expect(z.engageTarget).toEqual({ kind: 'guard', id: g.id });
@@ -174,6 +179,11 @@ describe('horde commands and guidance', () => {
 describe('horde integration', () => {
   it('leads forty recruits around blocks and through the north alley into a broad separated pack', () => {
     const sim = new Simulation(buildDistrictLayout(), 24);
+    // This route measures following and separation without combat interference.
+    for (const guard of sim.state.guards) {
+      guard.attackCooldown = 1e9; guard.perceptionTimer = 1e9; guard.idleTimer = 1e9;
+      guard.pos = { x: 110, z: -75 };
+    }
     sim.state.zombies = sim.state.zombies.slice(0, 40);
     sim.state.zombies.forEach((z, i) => {
       z.pos.x = -89 + (i % 8) * 1.1; z.pos.z = 59 + Math.floor(i / 8) * 1.1;

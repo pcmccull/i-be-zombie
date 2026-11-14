@@ -1,6 +1,6 @@
 import { BALANCE } from '../config/balance';
-import type { ICollisionWorld, IFlowField, INavigationGrid } from '../core/contracts';
-import type { Vec2 } from '../core/types';
+import type { ICollisionWorld, IFlowField, INavigationGrid, SegmentOptions } from '../core/contracts';
+import type { AABB, Collider, Vec2 } from '../core/types';
 import { clamp, copyVec, normalizeInPlace, set } from '../utils/math';
 
 /** Indexed binary heap: one entry per cell, with allocation-free decrease-key. */
@@ -72,6 +72,8 @@ export class NavigationGrid implements INavigationGrid {
   private readonly closed: Uint8Array;
   private readonly heap: CellHeap;
   private readonly route: number[] = [];
+  private readonly clearanceBox: AABB = { minX: 0, minZ: 0, maxX: 0, maxZ: 0 };
+  private readonly clearanceCandidates: Collider[] = [];
 
   constructor(
     private readonly collision: ICollisionWorld,
@@ -149,9 +151,12 @@ export class NavigationGrid implements INavigationGrid {
     let best = -1;
     let bestDistance = Infinity;
     // Full ring search keeps the result nearest in world distance, including off-grid inputs.
-    for (let ring = 0; ring <= 20; ring++) {
+    const maxRing = Math.max(cx, cz, this.cols - 1 - cx, this.rows - 1 - cz);
+    for (let ring = 0; ring <= maxRing; ring++) {
       for (let z = Math.max(0, cz - ring); z <= Math.min(this.rows - 1, cz + ring); z++) {
-        for (let x = Math.max(0, cx - ring); x <= Math.min(this.cols - 1, cx + ring); x++) {
+        const minX = Math.max(0, cx - ring), maxX = Math.min(this.cols - 1, cx + ring);
+        const stepX = Math.abs(z - cz) === ring ? 1 : Math.max(1, maxX - minX);
+        for (let x = minX; x <= maxX; x += stepX) {
           if (Math.max(Math.abs(x - cx), Math.abs(z - cz)) !== ring || !this.open(x, z)) continue;
           const dx = b.minX + (x + 0.5) * this.cellSize - p.x;
           const dz = b.minZ + (z + 0.5) * this.cellSize - p.z;
@@ -162,6 +167,14 @@ export class NavigationGrid implements INavigationGrid {
           }
         }
       }
+      // Every unsearched cell lies beyond one of the next ring's four sides.
+      let remaining = Infinity;
+      const next = ring + 1, size = this.cellSize;
+      if (cx - next >= 0) remaining = Math.min(remaining, Math.abs(b.minX + (cx - next + 0.5) * size - p.x));
+      if (cx + next < this.cols) remaining = Math.min(remaining, Math.abs(b.minX + (cx + next + 0.5) * size - p.x));
+      if (cz - next >= 0) remaining = Math.min(remaining, Math.abs(b.minZ + (cz - next + 0.5) * size - p.z));
+      if (cz + next < this.rows) remaining = Math.min(remaining, Math.abs(b.minZ + (cz + next + 0.5) * size - p.z));
+      if (best >= 0 && remaining * remaining > bestDistance) break;
     }
     return best >= 0 ? this.center(best, out) : copyVec(out, p);
   }
@@ -179,6 +192,9 @@ export class NavigationGrid implements INavigationGrid {
 
   hasClearWalk(a: Vec2, b: Vec2): boolean {
     const bounds = this.collision.bounds;
+    const r = this.agentRadius;
+    if (Math.min(a.x, b.x) < bounds.minX + r || Math.max(a.x, b.x) > bounds.maxX - r ||
+        Math.min(a.z, b.z) < bounds.minZ + r || Math.max(a.z, b.z) > bounds.maxZ - r) return false;
     const ax = (a.x - bounds.minX) / this.cellSize;
     const az = (a.z - bounds.minZ) / this.cellSize;
     const bx = (b.x - bounds.minX) / this.cellSize;
@@ -213,8 +229,31 @@ export class NavigationGrid implements INavigationGrid {
         nextZ += tz;
       }
     }
-    // Thin, sub-cell geometry must not disappear during string pulling.
-    return !this.collision.segmentBlocked(a, b, { mode: 'move' });
+    // Sweep against expanded footprints too: cell centers alone miss thin props
+    // and off-center paths whose agent circle grazes a neighboring collider.
+    const box = this.clearanceBox;
+    box.minX = Math.min(a.x, b.x) - r; box.maxX = Math.max(a.x, b.x) + r;
+    box.minZ = Math.min(a.z, b.z) - r; box.maxZ = Math.max(a.z, b.z) + r;
+    const candidates = this.collision.queryAABB(box, this.clearanceCandidates);
+    const worldDx = b.x - a.x, worldDz = b.z - a.z;
+    for (const c of candidates) {
+      if (!c.blocksMove) continue;
+      let t0 = 0, t1 = 1;
+      if (worldDx === 0) {
+        if (a.x < c.minX - r || a.x > c.maxX + r) continue;
+      } else {
+        const u = (c.minX - r - a.x) / worldDx, v = (c.maxX + r - a.x) / worldDx;
+        t0 = Math.max(t0, Math.min(u, v)); t1 = Math.min(t1, Math.max(u, v));
+      }
+      if (worldDz === 0) {
+        if (a.z < c.minZ - r || a.z > c.maxZ + r) continue;
+      } else {
+        const u = (c.minZ - r - a.z) / worldDz, v = (c.maxZ + r - a.z) / worldDz;
+        t0 = Math.max(t0, Math.min(u, v)); t1 = Math.min(t1, Math.max(u, v));
+      }
+      if (t0 <= t1) return false;
+    }
+    return true;
   }
 
   private heuristic(x: number, z: number, goalX: number, goalZ: number): number {
@@ -280,8 +319,8 @@ export class NavigationGrid implements INavigationGrid {
 
   buildFlowField(goals: readonly Vec2[], reuse?: IFlowField): FlowField {
     const b = this.collision.bounds;
-    const field = reuse instanceof FlowField && reuse.matches(this.cols, this.rows, this.cellSize, b.minX, b.minZ, b.maxX, b.maxZ)
-      ? reuse : new FlowField(this.cols, this.rows, this.cellSize, b.minX, b.minZ, b.maxX, b.maxZ);
+    const field = reuse instanceof FlowField && reuse.matches(this.cols, this.rows, this.cellSize, b.minX, b.minZ, b.maxX, b.maxZ, this.collision)
+      ? reuse : new FlowField(this.cols, this.rows, this.cellSize, b.minX, b.minZ, b.maxX, b.maxZ, this.collision);
     const snapped: Vec2[] = [];
     for (const goal of goals) {
       const point = this.nearestWalkable(goal);
@@ -334,6 +373,8 @@ export class FlowField implements IFlowField {
   readonly directionZ: Float32Array;
   readonly goalIndex: Int32Array;
   private readonly walkable: Uint8Array;
+  private readonly neighborCenter: Vec2 = { x: 0, z: 0 };
+  private readonly moveAccess: SegmentOptions = { mode: 'move' };
 
   constructor(
     private readonly cols: number,
@@ -343,6 +384,7 @@ export class FlowField implements IFlowField {
     private readonly minZ: number,
     private readonly maxX: number = minX + cols * cellSize,
     private readonly maxZ: number = minZ + rows * cellSize,
+    private readonly collision?: ICollisionWorld,
   ) {
     const size = cols * rows;
     this.distance = new Float32Array(size).fill(Infinity);
@@ -352,9 +394,9 @@ export class FlowField implements IFlowField {
     this.walkable = new Uint8Array(size);
   }
 
-  matches(cols: number, rows: number, size: number, x: number, z: number, maxX: number, maxZ: number): boolean {
+  matches(cols: number, rows: number, size: number, x: number, z: number, maxX: number, maxZ: number, collision?: ICollisionWorld): boolean {
     return this.cols === cols && this.rows === rows && this.cellSize === size && this.minX === x && this.minZ === z &&
-      this.maxX === maxX && this.maxZ === maxZ;
+      this.maxX === maxX && this.maxZ === maxZ && this.collision === collision;
   }
 
   reset(goals: readonly Vec2[], version: number, walkable: Uint8Array): void {
@@ -416,7 +458,7 @@ export class FlowField implements IFlowField {
     return id >= 0 && this.walkable[id] !== 0 && Number.isFinite(this.distance[id]);
   }
 
-  private recoveryCell(id: number): number {
+  private recoveryCell(id: number, p: Vec2): number {
     if (id < 0) return -1;
     if (this.walkable[id]) return this.reachable(id) ? id : -1;
     const x = id % this.cols;
@@ -430,6 +472,8 @@ export class FlowField implements IFlowField {
         if (nx < 0 || nz < 0 || nx >= this.cols || nz >= this.rows) continue;
         const neighbor = nz * this.cols + nx;
         if (this.reachable(neighbor) && this.distance[neighbor] < distance) {
+          set(this.neighborCenter, this.minX + (nx + 0.5) * this.cellSize, this.minZ + (nz + 0.5) * this.cellSize);
+          if (this.collision?.segmentBlocked(p, this.neighborCenter, this.moveAccess)) continue;
           best = neighbor;
           distance = this.distance[neighbor];
         }
@@ -438,11 +482,32 @@ export class FlowField implements IFlowField {
     return best;
   }
 
+  /** Multiple actual goals may share one raster cell. Choose the nearest to p. */
+  private nearestGoal(id: number, p: Vec2): number {
+    let best = this.goalIndex[id];
+    if (best < 0) return -1;
+    let distance = Infinity;
+    for (let i = 0; i < this.goals.length; i++) {
+      const g = this.goals[i];
+      if (this.cell(g) !== id) continue;
+      const d = (g.x - p.x) ** 2 + (g.z - p.z) ** 2;
+      if (d < distance) { best = i; distance = d; }
+    }
+    return best;
+  }
+
   sample(p: Vec2, out: Vec2): boolean {
     const id = this.cell(p);
-    const recovered = this.recoveryCell(id);
+    const recovered = this.recoveryCell(id, p);
     set(out, 0, 0);
     if (recovered < 0) return false;
+    const goal = recovered === id ? this.nearestGoal(id, p) : -1;
+    if (goal >= 0) {
+      set(out, this.goals[goal].x - p.x, this.goals[goal].z - p.z);
+      if (Math.hypot(out.x, out.z) <= 0.05) set(out, 0, 0);
+      else normalizeInPlace(out);
+      return true;
+    }
     if (recovered !== id) {
       set(out, this.minX + (recovered % this.cols + 0.5) * this.cellSize - p.x,
         this.minZ + (Math.floor(recovered / this.cols) + 0.5) * this.cellSize - p.z);
@@ -477,8 +542,11 @@ export class FlowField implements IFlowField {
   }
 
   distanceAt(p: Vec2): number {
-    const id = this.recoveryCell(this.cell(p));
+    const cell = this.cell(p);
+    const id = this.recoveryCell(cell, p);
     if (id < 0) return Infinity;
+    const goal = id === cell ? this.nearestGoal(id, p) : -1;
+    if (goal >= 0) return Math.hypot(p.x - this.goals[goal].x, p.z - this.goals[goal].z);
     const dx = p.x - (this.minX + (id % this.cols + 0.5) * this.cellSize);
     const dz = p.z - (this.minZ + (Math.floor(id / this.cols) + 0.5) * this.cellSize);
     return this.distance[id] + Math.hypot(dx, dz);
