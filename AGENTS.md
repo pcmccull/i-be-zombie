@@ -208,4 +208,4 @@ worker owns, and every change ends with `npx tsc --noEmit` + `npm test` green.
       tests/cascade, tests/structures, tests/momentum, tests/opening (60 s scripted run reaches 30–50 followers).
 - [x] **R3 Visuals/HUD/audio/input** (agy): world/Landmarks.ts, pulse rings + recruit flash, momentum HUD meter, counter pop,
       structure picking/markers/labels, audio cues.
-- [ ] **R4 Review & audit**: codex read-only adversarial review; agy spec/cross-file audit; fixes; browser playthrough of first 90 s.
+- [x] **R4 Review & audit**: codex read-only adversarial review; agy spec/cross-file audit; fixes; browser playthrough of first 90 s.

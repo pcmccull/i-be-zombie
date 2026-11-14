@@ -291,12 +291,18 @@ export class CheckpointVisual {
     const glowGeoms: THREE.BufferGeometry[] = [];
     const cpBounds = layout.checkpoint.bounds;
 
-    // 1. Perimeter walls & Sandbag walls from layout.colliders
+    // 1. Perimeter walls & Sandbag walls from layout.colliders within checkpoint bounds (expanded by ~1 m)
+    const wallPad = 1.0;
     for (let i = 0; i < layout.colliders.length; i++) {
       const c = layout.colliders[i];
-      if (c.kind === 'wall' && c.height >= 2.0) {
+      const overlapsCheckpoint =
+        c.maxX >= cpBounds.minX - wallPad &&
+        c.minX <= cpBounds.maxX + wallPad &&
+        c.maxZ >= cpBounds.minZ - wallPad &&
+        c.minZ <= cpBounds.maxZ + wallPad;
+      if (c.kind === 'wall' && overlapsCheckpoint && c.height >= 2.0) {
         this.appendPerimeterWall(c, staticGeoms);
-      } else if (c.kind === 'wall' && c.height < 2.0) {
+      } else if (c.kind === 'wall' && overlapsCheckpoint && c.height < 2.0) {
         this.appendSandbagWall(c, staticGeoms);
       } else if (
         c.kind === 'building' &&

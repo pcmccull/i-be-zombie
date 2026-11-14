@@ -11,6 +11,7 @@ import type {
   StructureDef,
   StructureKind,
   StructureState,
+  TargetRef,
 } from '../core/types';
 
 const COLOR_BUS_YELLOW = 0xe59824;
@@ -171,8 +172,10 @@ interface BreakableVisual {
   d: number;
   pickY: number;
   intactGroup: THREE.Group;
+  doorPivot: THREE.Group;
   intactMesh: THREE.Mesh;
   intactMat: THREE.MeshLambertMaterial;
+  glassPanes: THREE.Mesh[];
   crackMesh: THREE.Mesh | null;
   rubbleGroup: THREE.Group;
   highlightMesh: THREE.Mesh;
@@ -200,6 +203,9 @@ export class Landmarks {
   private readonly storeOccluders = new Set<THREE.Object3D>();
   private storeOpacity = 1.0;
 
+  private readonly glassIntactMat: THREE.MeshLambertMaterial;
+  private readonly glassCrackedMat: THREE.MeshLambertMaterial;
+
   private readonly policeRedMat: THREE.MeshBasicMaterial;
   private readonly policeBlueMat: THREE.MeshBasicMaterial;
 
@@ -218,6 +224,25 @@ export class Landmarks {
 
     this.storeFadeMat = this.trackMaterial(
       new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true }),
+    );
+    this.glassIntactMat = this.trackMaterial(
+      new THREE.MeshLambertMaterial({
+        color: COLOR_STORE_GLASS,
+        flatShading: true,
+        transparent: true,
+        opacity: 0.42,
+        depthWrite: false,
+      }),
+    );
+    this.glassCrackedMat = this.trackMaterial(
+      new THREE.MeshLambertMaterial({
+        color: 0x9ad4f5,
+        emissive: 0x163247,
+        flatShading: true,
+        transparent: true,
+        opacity: 0.62,
+        depthWrite: false,
+      }),
     );
     this.policeRedMat = this.trackMaterial(new THREE.MeshBasicMaterial({ color: 0xff2e24 }));
     this.policeBlueMat = this.trackMaterial(new THREE.MeshBasicMaterial({ color: 0x247bff }));
@@ -306,6 +331,39 @@ export class Landmarks {
     }
   }
 
+  reset(): void {
+    this.highlightedIds.clear();
+    this.busBodyGroup.rotation.set(0, 0, 0);
+    this.busBodyGroup.position.copy(this.busOrigin);
+    for (const b of this.breakables.values()) {
+      this.resetBreakableOffsets(b);
+      b.intactMat.emissive.setHex(0x000000);
+      b.highlightMesh.visible = false;
+    }
+  }
+
+  private resetBreakableOffsets(b: BreakableVisual): void {
+    b.localDestroyedAt = null;
+    b.intactGroup.visible = true;
+    b.intactGroup.position.set(b.cx, 0, b.cz);
+    b.intactGroup.rotation.set(0, 0, 0);
+    b.doorPivot.position.set(0, 0, 0);
+    b.doorPivot.rotation.set(0, 0, 0);
+    b.rubbleGroup.visible = false;
+    for (let i = 0; i < b.glassPanes.length; i++) {
+      const pane = b.glassPanes[i];
+      pane.visible = true;
+      pane.material = this.glassIntactMat;
+    }
+    if (b.crackMesh) {
+      b.crackMesh.visible = false;
+      b.crackMesh.scale.set(1, 1, 1);
+    }
+    b.pickMesh.visible = true;
+    b.pickMesh.position.set(b.cx, b.pickY, b.cz);
+    b.pickMesh.userData.target = { kind: 'structure', id: b.id };
+  }
+
   update(state: GameState, _dt: number, time: number): void {
     // 1. Toggle flashing police red/blue lightbar materials (emissive-style color toggle, no PointLights)
     const flashPhase = Math.sin(time * 9.5);
@@ -368,24 +426,41 @@ export class Landmarks {
       const isHighlighted = this.highlightedIds.has(id);
 
       if (!destroyed) {
-        b.localDestroyedAt = null;
-        b.intactGroup.visible = true;
-        b.rubbleGroup.visible = false;
-        b.pickMesh.visible = true;
-        b.pickMesh.position.set(b.cx, b.pickY, b.cz);
-        if (!b.pickMesh.userData.target) {
-          b.pickMesh.userData.target = { kind: 'structure', id };
-        }
-
         const hpFrac = Math.max(0, Math.min(1, hp / Math.max(1, maxHp)));
         const dmg = 1.0 - hpFrac;
+
+        if (hpFrac >= 0.999) {
+          this.resetBreakableOffsets(b);
+        } else {
+          b.localDestroyedAt = null;
+          b.intactGroup.visible = true;
+          b.rubbleGroup.visible = false;
+          b.doorPivot.position.set(0, 0, 0);
+          b.doorPivot.rotation.set(0, 0, 0);
+          b.pickMesh.visible = true;
+          b.pickMesh.position.set(b.cx, b.pickY, b.cz);
+          if (!b.pickMesh.userData.target) {
+            b.pickMesh.userData.target = { kind: 'structure', id };
+          }
+          for (let i = 0; i < b.glassPanes.length; i++) {
+            const pane = b.glassPanes[i];
+            pane.visible = true;
+            pane.material = dmg > 0.05 ? this.glassCrackedMat : this.glassIntactMat;
+          }
+          if (b.crackMesh) {
+            b.crackMesh.visible = dmg > 0.05;
+            const crackScale = 0.5 + dmg * 0.65;
+            b.crackMesh.scale.set(crackScale, crackScale, 1);
+          }
+        }
 
         // Shake on hit + idle rattle on alley gate while held zombies push from inside
         let shake = hitFlash > 0 ? Math.sin(time * 58 + id * 1.7) * 0.08 : 0;
         const landmarkHeldCount = this.heldCountByLandmark.get(b.landmark) ?? 0;
         if (b.landmark === 'alley' && landmarkHeldCount > 0 && shake === 0) {
-          const rattle = Math.max(0, Math.sin(time * 5.2)) * Math.sin(time * 22.0);
+          const rattle = (0.35 + 0.65 * Math.max(0, Math.sin(time * 5.2))) * Math.sin(time * 22.0);
           shake = rattle * 0.03;
+          b.doorPivot.rotation.z = rattle * 0.015;
         }
 
         const dirX = Math.sin(b.def.facing);
@@ -401,13 +476,6 @@ export class Landmarks {
         b.intactGroup.rotation.z = -dirX * dmg * 0.22;
         b.intactGroup.rotation.y = shake * 0.35;
 
-        // Show glass cracks on store door when damaged
-        if (b.crackMesh) {
-          b.crackMesh.visible = dmg > 0.05;
-          const crackScale = 0.5 + dmg * 0.65;
-          b.crackMesh.scale.set(crackScale, crackScale, 1);
-        }
-
         // Material hitFlash / highlight emissive
         if (hitFlash > 0) {
           b.intactMat.emissive.setHex(0x884418);
@@ -420,12 +488,18 @@ export class Landmarks {
 
         b.highlightMesh.visible = isHighlighted;
       } else {
-        // Destroyed: clear pick proxy immediately
+        // Destroyed: clear pick proxy and hide intact glass/cracks immediately
         b.pickMesh.visible = false;
         b.pickMesh.userData.target = null;
         b.pickMesh.position.set(b.cx, -1000, b.cz);
         b.highlightMesh.visible = false;
         b.intactMat.emissive.setHex(0x000000);
+        for (let i = 0; i < b.glassPanes.length; i++) {
+          b.glassPanes[i].visible = false;
+        }
+        if (b.crackMesh) {
+          b.crackMesh.visible = false;
+        }
 
         const destroyedAt =
           s && s.destroyedAt !== null
@@ -446,8 +520,12 @@ export class Landmarks {
             -ease * 0.35,
             b.cz + dirZ * ease * 1.15,
           );
-          b.intactGroup.rotation.x = dirZ * ease * (Math.PI * 0.46);
-          b.intactGroup.rotation.z = -dirX * ease * (Math.PI * 0.46);
+          b.intactGroup.rotation.set(0, 0, 0);
+          b.doorPivot.rotation.set(
+            dirZ * ease * (Math.PI * 0.46),
+            0,
+            -dirX * ease * (Math.PI * 0.46),
+          );
         } else {
           b.intactGroup.visible = false;
           b.rubbleGroup.visible = true;
@@ -1248,11 +1326,15 @@ export class Landmarks {
       intactGroup.position.set(cx, 0, cz);
       this.group.add(intactGroup);
 
+      const doorPivot = new THREE.Group();
+      doorPivot.name = `StructureDoorPivot_${def.tag}`;
+      intactGroup.add(doorPivot);
+
       const intactMat = this.trackMaterial(
         new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true }),
       );
 
-      const { intactGeom, crackMesh, rubbleGeom } = this.createBreakableGeometries(
+      const { intactGeom, glassPanes, crackMesh, rubbleGeom } = this.createBreakableGeometries(
         def.kind,
         w,
         h,
@@ -1263,10 +1345,14 @@ export class Landmarks {
       const intactMesh = new THREE.Mesh(intactGeom, intactMat);
       intactMesh.castShadow = true;
       intactMesh.receiveShadow = true;
-      intactGroup.add(intactMesh);
+      doorPivot.add(intactMesh);
+
+      for (let gIdx = 0; gIdx < glassPanes.length; gIdx++) {
+        doorPivot.add(glassPanes[gIdx]);
+      }
 
       if (crackMesh) {
-        intactGroup.add(crackMesh);
+        doorPivot.add(crackMesh);
       }
 
       const rubbleGroup = new THREE.Group();
@@ -1324,8 +1410,10 @@ export class Landmarks {
         d,
         pickY,
         intactGroup,
+        doorPivot,
         intactMesh,
         intactMat,
+        glassPanes,
         crackMesh,
         rubbleGroup,
         highlightMesh,
@@ -1344,23 +1432,28 @@ export class Landmarks {
     facing: number,
   ): {
     intactGeom: THREE.BufferGeometry;
+    glassPanes: THREE.Mesh[];
     crackMesh: THREE.Mesh | null;
     rubbleGeom: THREE.BufferGeometry;
   } {
     const parts: THREE.BufferGeometry[] = [];
     const rubble: THREE.BufferGeometry[] = [];
+    const glassPanes: THREE.Mesh[] = [];
     let crackMesh: THREE.Mesh | null = null;
     const dirX = Math.sin(facing);
     const dirZ = Math.cos(facing);
 
     if (kind === 'busDoor') {
-      // Double folding yellow/orange bus doors with dark window panes & hazard bar
+      // Double folding yellow/orange bus doors with window panes & hazard bar
       const leafW = w * 0.46;
       for (const sign of [-1, 1]) {
         const lx = sign * (w * 0.25);
         parts.push(makeBox(leafW, h - 0.1, d * 0.72, lx, h * 0.5, 0, COLOR_BUS_YELLOW));
-        parts.push(makeBox(leafW * 0.76, h * 0.42, d * 0.84, lx, h * 0.66, 0, 0x1e2b36));
         parts.push(makeBox(leafW * 0.9, 0.2, d * 0.9, lx, h * 0.36, 0, COLOR_BUS_TRIM));
+        const paneGeom = this.trackGeometry(new THREE.BoxGeometry(leafW * 0.76, h * 0.42, d * 0.84));
+        const paneMesh = new THREE.Mesh(paneGeom, this.glassIntactMat);
+        paneMesh.position.set(lx, h * 0.66, 0);
+        glassPanes.push(paneMesh);
       }
       // Emergency diagonal hazard bar across bus doors
       parts.push(makeBox(w * 0.92, 0.2, d * 0.96, 0, 1.15, 0, COLOR_HAZARD_ORANGE, 0, 0, 0.12));
@@ -1420,8 +1513,15 @@ export class Landmarks {
       // Push bar & wooden plank across glass door
       parts.push(makeBox(w * 0.88, 0.1, d * 0.9, 0, 1.05, 0, 0xc8d0d8));
       parts.push(makeBox(w * 0.92, 0.22, d * 0.92, 0, 1.35, 0, COLOR_WOOD_PLANK, 0, 0, -0.06));
-      // Bluish door glass backing
-      parts.push(makeBox(w - 0.32, h - 0.5, 0.1, 0, h * 0.52, 0, COLOR_STORE_GLASS));
+      // Left & right transparent door glass panes
+      const paneW = Math.max(0.2, (w - 0.5) * 0.48);
+      const paneH = Math.max(0.4, h - 0.5);
+      for (const sign of [-1, 1]) {
+        const paneGeom = this.trackGeometry(new THREE.BoxGeometry(paneW, paneH, 0.1));
+        const paneMesh = new THREE.Mesh(paneGeom, this.glassIntactMat);
+        paneMesh.position.set(sign * (w * 0.23), h * 0.52, 0);
+        glassPanes.push(paneMesh);
+      }
 
       // Glass crack lines mesh (hidden at full HP, revealed as HP drops)
       const crackGeoms: THREE.BufferGeometry[] = [
@@ -1487,6 +1587,7 @@ export class Landmarks {
 
     return {
       intactGeom: this.trackGeometry(mergeAndDispose(parts)),
+      glassPanes,
       crackMesh,
       rubbleGeom: this.trackGeometry(mergeAndDispose(rubble)),
     };

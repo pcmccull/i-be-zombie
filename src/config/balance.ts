@@ -141,6 +141,10 @@ export const BALANCE = {
   outposts: {
     barricadeGuards: 2, // armed soldiers at the police barricade (post 'barricade')
     barricadeRange: 16, // their effective range (lighter than checkpoint guards)
+    // "Lightly defended" (spec §1): pistols, not rifles. Two police at 10 dmg / 75% killed an idle 100 HP leader in ~5 s
+    // during playtest; at 6 dmg / 55% that takes ~12 s, leaving time to order the horde in.
+    barricadeDamage: 6,
+    barricadeHitChance: 0.55,
   },
   // Outbreak Momentum (§5)
   momentum: {

@@ -142,7 +142,7 @@ All gameplay numbers are centralized in [`src/config/balance.ts`](src/config/bal
 | **Checkpoint Gate** | `maxHp`: `400` |
 | **Cascade** | `recruitPulse.radius`: `10 m`, delay `0.1–0.3 s`, `maxGeneration`: `3`, `maxRecruitsPerPulse`: `8`; `recruitBoostTime`: `2 s` at `1.35×`; `regroupDistance`: `22 m`; `catchUpLeaderMargin`: `1.12×` leader walk |
 | **Structures** | HP: bus door `90`, alley gate `140`, store door `110`, pen gate `120`; release burst `2.6 m/s` for `2.5 s` |
-| **Civilians & Outposts** | civilian `maxHp` `30`, flee `4.2 m/s`, panic radius `12 m`; barricade police: 2, range `16 m` |
+| **Civilians & Outposts** | civilian `maxHp` `30`, flee `4.2 m/s`, panic radius `12 m`; barricade police: 2, range `16 m`, damage `6`, hit chance `0.55` (checkpoint guards: `10` / `0.75`) |
 | **Momentum** | gains +1/+3/+5/+10, `graceTime`: `8 s`, `decayPerSecond`: `1.5`, radius `+0.5%`/pt, speed `+0.2%`/pt, tiers at `30` / `70` |
 | **Conversion** | `chance`: `0.7` (70%), `delay`: `3 s`, `riseDuration`: `1.2 s` |
 
@@ -159,7 +159,8 @@ All gameplay numbers are centralized in [`src/config/balance.ts`](src/config/bal
 
 - **Catch-up floor.** Before, catch-up speed was `3.7 × speedScale × 1.35`, which is below the leader's 5 m/s walk for slow-rolled walkers, so stragglers could never close the gap. Stragglers now move at least `1.12×` the leader's (momentum-scaled) walk. This also brought the opening into the spec band: the scripted run dropped from 69 to about 49 followers at 60 s.
 - **Momentum decay.** It was a 5 s grace and 3/s decay, and momentum never got past about 22 even in near-optimal opening play. Now it's an 8 s grace and 1.5/s decay: GROWING OUTBREAK at about 40 s, FULL at about 70 s, and a slow fade when idle.
-- **Opening autopilot** (`tests/opening.test.ts`, seeded, normal controls, one click per door or soldier): 38 / 49 / 71 followers at 30 / 60 / 90 s, first 30 at about 23 s, all four landmarks opened, no defeat.
+- **Barricade police.** In the browser playthrough, two police at checkpoint-guard stats (10 damage, 75% hit) killed an idle leader in about 5 s, which is too harsh for a "lightly defended" early encounter. They now do 6 damage at 55%, so an idle leader lasts about 12 s.
+- **Opening autopilot** (`tests/opening.test.ts`, seeded, normal controls, one click per door or soldier): 38 / 50 / 74 followers at 30 / 60 / 90 s, first 30 at about 23 s, all four landmarks opened, no defeat.
 
 **Measured balance (scripted "player-like" assault: leader parked at the staging lot, one click per target, Rush on cooldown):**
 
@@ -201,6 +202,17 @@ Measured in Chrome 156 (8 logical cores) inside the Claude desktop app's embedde
 | Simulation step (fixed 1/60 s) | 0.58 ms | 0.90 ms |
 | `renderer.render` submit | 1.65 ms | 2.5 ms |
 | Draw calls (whole scene) | 139 | — |
+
+**Recruitment update playthrough** (same embedded pane, 992×1172, DPR 1, pane visible, 94 live zombies with 72 following):
+
+| Metric | Average | p95 |
+|---|---|---|
+| Frame interval | 9.97 ms (100 FPS at the display cap) | 10.1 ms |
+| Simulation step | 0.72 ms | 0.90 ms |
+| `renderer.render` submit | 1.35 ms | 2.1 ms |
+| Draw calls | 38 | — |
+
+A full run reached 49 followers at 54 s, opened all four landmarks, and won at 3:15. Details: [`.agent-context/reports/R4c-orchestrator.md`](.agent-context/reports/R4c-orchestrator.md).
 | Triangles | ~60k | — |
 
 The embedded pane caps `requestAnimationFrame` at about 50 Hz even when idle, so 60 FPS **could not be confirmed** in this environment. Observed frame intervals averaged 23 ms. The CPU work above uses well under a 16.7 ms frame. Press **F3** in-game to see FPS and draw calls on your own machine. Headless (Node), 100 followers run 600 steps in about 0.3–0.4 s, and a flow-field rebuild takes 4–11 ms.

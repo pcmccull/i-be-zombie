@@ -12,7 +12,7 @@ import { CityDistrict } from '../world/CityDistrict';
 import { Landmarks } from '../world/Landmarks';
 import { InputController } from './InputController';
 import { ThirdPersonCamera } from './ThirdPersonCamera';
-import { emptyInput, type DistrictLayout, type TargetRef } from './types';
+import { emptyInput, type TargetRef } from './types';
 import { approachAngle, approachOccluderOpacity } from './cameraMath';
 
 export class Game {
@@ -79,11 +79,7 @@ export class Game {
     this.sim = new Simulation();
     const layout = this.sim.ctx.layout;
     this.city = new CityDistrict(layout);
-    const checkpointLayout: DistrictLayout = {
-      ...layout,
-      colliders: layout.colliders.filter(c => !(c.tag?.startsWith('pen-fence-') || c.tag === 'alley-wall-n')),
-    };
-    this.checkpoint = new CheckpointVisual(checkpointLayout);
+    this.checkpoint = new CheckpointVisual(layout);
     this.landmarks = new Landmarks(layout);
     this.entities = new EntityRenderer(this.scene);
     this.horde = new HordeRenderer();
@@ -180,6 +176,7 @@ export class Game {
     this.entities.setHovered(null);
     this.entities.setTargeted([]);
     this.checkpoint.setGateHighlight(false);
+    this.landmarks.reset();
     this.landmarks.setHighlight(null);
     this.updateGateOccluder();
     this.resetCamera();

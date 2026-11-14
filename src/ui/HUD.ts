@@ -771,15 +771,15 @@ export class HUD {
       const busDoor = structures.find((s) => s.kind === 'busDoor');
       const penGate = structures.find((s) => s.kind === 'penGate');
       const storeDoor = structures.find((s) => s.kind === 'storeDoor');
+      const alleyGate = structures.find((s) => s.kind === 'alleyGate');
 
-      if (busDoor && !busDoor.destroyed && state.followerCount < 18) {
-        return 'Free the bus horde';
-      }
-      if (penGate && !penGate.destroyed && state.followerCount < 28) {
-        return 'Break the police barricade';
-      }
-      if (storeDoor && !storeDoor.destroyed && state.followerCount < 35) {
-        return 'Raid the store';
+      // Suggest the next intact landmark in route order (never skipping ahead because a cascade grew the horde fast);
+      // once the horde is clearly assault-sized, point at the gate instead. Suggestions only — nothing is forced.
+      if (state.followerCount < 50) {
+        if (busDoor && !busDoor.destroyed) return 'Free the bus horde';
+        if (penGate && !penGate.destroyed) return 'Break the police barricade';
+        if (storeDoor && !storeDoor.destroyed) return 'Raid the store';
+        if (alleyGate && !alleyGate.destroyed) return 'Open the locked alley';
       }
       return state.followerCount < 22 ? 'Find zombies' : 'Break the gate';
     }

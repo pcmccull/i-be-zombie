@@ -192,11 +192,13 @@ function fire(ctx: SimContext, s: Scratch, g: GuardAgent, m: GuardMemory): void 
   if (!target || !m.visible || g.attackCooldown > 1e-9) return;
   // Visibility is cached at 10 Hz, but geometry and target life are authoritative at fire time.
   if (!visible(ctx, g, m, target.pos, 'state' in target && target.state === 'ambient')) return;
-  const hit = ctx.rng.next() < BALANCE.guard.hitChance;
+  const barricade = g.post === 'barricade';
+  const hit = ctx.rng.next() < (barricade ? BALANCE.outposts.barricadeHitChance : BALANCE.guard.hitChance);
+  const damage = barricade ? BALANCE.outposts.barricadeDamage : BALANCE.guard.damage;
   const to = { x: target.pos.x, y: BALANCE.targetHeights.zombieTorso, z: target.pos.z };
   if (hit) {
-    if (g.target?.kind === 'leader') damageLeader(ctx, BALANCE.guard.damage);
-    else damageZombie(ctx, target as ZombieAgent, BALANCE.guard.damage);
+    if (g.target?.kind === 'leader') damageLeader(ctx, damage);
+    else damageZombie(ctx, target as ZombieAgent, damage);
   } else {
     const dx = target.pos.x - g.pos.x, dz = target.pos.z - g.pos.z, d = Math.hypot(dx, dz) || 1;
     const offset = (ctx.rng.next() < 0.5 ? -1 : 1) * (0.8 + ctx.rng.next() * 0.4);

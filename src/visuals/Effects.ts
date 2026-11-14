@@ -727,8 +727,12 @@ export class Effects {
   }
 
   reset(): void {
+    this.time = 0;
     this.shakeMagnitude = 0;
     this.orderMarkerGroup.visible = false;
+    for (let i = 0; i < this.extraOrderMarkers.length; i++) {
+      this.extraOrderMarkers[i].visible = false;
+    }
 
     for (let i = 0; i < MAX_TRACERS; i++) this.tracers[i].active = false;
     for (let i = 0; i < MAX_MUZZLES; i++) this.muzzles[i].active = false;
@@ -743,14 +747,27 @@ export class Effects {
       this.alerts[i].group.visible = false;
     }
 
+    this.nextTracerIdx = 0;
+    this.nextMuzzleIdx = 0;
+    this.nextParticleIdx = 0;
+    this.nextRingIdx = 0;
+    this.nextSwirlIdx = 0;
+    this.nextAlertIdx = 0;
+
     this.tracerMesh.count = 0;
     this.tracerMesh.instanceMatrix.needsUpdate = true;
     this.muzzleMesh.count = 0;
     this.muzzleMesh.instanceMatrix.needsUpdate = true;
     this.particleMesh.count = 0;
     this.particleMesh.instanceMatrix.needsUpdate = true;
+    if (this.particleMesh.instanceColor) {
+      this.particleMesh.instanceColor.needsUpdate = true;
+    }
     this.ringMesh.count = 0;
     this.ringMesh.instanceMatrix.needsUpdate = true;
+    if (this.ringMesh.instanceColor) {
+      this.ringMesh.instanceColor.needsUpdate = true;
+    }
   }
 
   dispose(): void {
