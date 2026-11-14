@@ -3,7 +3,7 @@ import type { SimInput } from '../core/types';
 import type { ZombieAgent } from '../core/types';
 import { BALANCE } from '../config/balance';
 import { createZombie } from '../entities/Zombie';
-import { scheduleRecruitPulse } from './HordeSystem';
+import { followerCap, scheduleRecruitPulse } from './HordeSystem';
 import { addMomentum } from './MomentumSystem';
 import { addBiomass } from './ProgressionSystem';
 
@@ -31,7 +31,7 @@ export function updateConversion(ctx: SimContext, dt: number, _input: SimInput):
   let write = 0;
   for (const pending of s.pendingConversions) {
     if (s.time < pending.resolveAt) { s.pendingConversions[write++] = pending; continue; }
-    if (!pending.willConvert || s.followerCount + rising >= BALANCE.horde.maxFollowers) continue;
+    if (!pending.willConvert || s.followerCount + rising >= followerCap(ctx)) continue;
     const z = createZombie(ctx.newId(), pending.pos, {
       state: 'rising', variant: Math.floor(ctx.rng.next() * 6), spawnZone: -1, isConverted: true, rng: ctx.rng,
     });

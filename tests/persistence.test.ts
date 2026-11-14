@@ -216,7 +216,7 @@ describe('T006 Persistence — createSave / SaveStore / applySave round-trip', (
     expect(s2.districts.police).toEqual(s1.districts.police);
     expect(s2.districts.police.discovered).toBe(true);
     expect(s2.districts.police.status).toBe('human');
-    expect(s2.districts.shopping).toEqual(s1.districts.shopping);
+    expect(s2.districts.shopping).toEqual({ ...s1.districts.shopping, status: 'human' }); // 'contested' is transient: normalised on load
 
     // Strongholds restored
     const restoredSuburb = s2.strongholds.find(sh => sh.id === 'suburb_checkpoint')!;

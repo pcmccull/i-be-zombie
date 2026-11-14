@@ -8,6 +8,7 @@ import type {
 import { createGuard } from '../entities/HumanGuard';
 import { createZombie } from '../entities/Zombie';
 import { getDistrictAt } from '../world/worldQueries';
+import { followerCap } from './HordeSystem';
 import { addBiomass, unlockAbility } from './ProgressionSystem';
 import { findStructure, takeStructureHits } from './StructureSystem';
 
@@ -44,7 +45,7 @@ function runtime(ctx: SimContext): Runtime {
   for (const [id, m] of metrics) m.killed = ctx.state.districts[id].infection * m.initialHumans;
   r = {
     revealTimer: 0, metricsTimer: 0, replenishTimer: 0, replenishNest: null,
-    autoNest: ctx.layout.nests.find(n => n.strongholdId === null)?.id ?? '', nestChosen: false,
+    autoNest: ctx.state.activeNestId || (ctx.layout.nests.find(n => n.strongholdId === null)?.id ?? ''), nestChosen: false,
     // A first-frame hit differs from a gate restored destroyed from a save.
     gateHp: ctx.state.gate.hitFlash > 0 ? ctx.state.gate.maxHp : ctx.state.gate.hp,
     structureHp: new Map(ctx.state.structures.map(s => [s.id, s.hp])),
@@ -165,6 +166,8 @@ function capture(ctx: SimContext, def: StrongholdDef, sh: StrongholdState, r: Ru
     g.role = 'civilian'; g.post = 'street'; g.state = 'RETREAT'; g.stateTime = 0;
     g.target = null; g.shelter = 0; g.path.length = 0; g.pathIndex = 0;
     g.attackCooldown = 0; g.staggerTime = 0;
+    // Tower occupants climb down: a street civilian must not float on the platform.
+    g.tower = null; g.towerColliderId = null; g.elevation = 0;
     // Keep strongholdId so PopulationSystem can exclude these from respawns.
   }
   sh.defenderStrength = 0;
@@ -252,7 +255,7 @@ function reinforce(ctx: SimContext, def: StrongholdDef, sh: StrongholdState): vo
 /** Free followers use the normal factory, without recruitment rewards or pulses. */
 export function spawnNestFollowers(ctx: SimContext, point: Vec2, requested: number): number {
   const s = ctx.state;
-  const cap = ctx.layout.strongholds.length > 0 ? BALANCE.openWorld.maxFollowers : BALANCE.horde.maxFollowers;
+  const cap = followerCap(ctx);
   let occupied = s.followerCount;
   for (const z of s.zombies) if (z.state === 'rising') occupied++;
   const count = Math.max(0, Math.min(requested, cap - occupied));

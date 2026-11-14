@@ -38,6 +38,7 @@ function livingBrutes(state: GameState): number {
 export function canActivate(state: GameState, id: AbilityId): AbilityDenyReason | null {
   const def = abilityDef(id);
   if (!def) return 'empty';
+  if (!state.leader.alive || state.leader.hp <= 0 || state.phase !== 'playing') return 'locked';
   if (!isUnlocked(state, id) || !isEquipped(state, id)) return 'locked';
   // Pounce is registry data only in this milestone; never spend for an absent effect.
   if (!def.activatable || (id !== 'horde_frenzy' && id !== 'brute_evolution')) return 'locked';
@@ -99,6 +100,10 @@ export function equipAbility(ctx: SimContext, slot: number, id: AbilityId | null
     return false;
   }
   const leader = ctx.state.leader;
+  if (ctx.state.phase !== 'playing') {
+    ctx.emit({ type: 'abilityDenied', abilityId: id, reason: 'locked' });
+    return false;
+  }
   const atNest = leader.alive && leader.hp > 0 && ctx.layout.nests.some(n =>
     (leader.pos.x - n.pos.x) ** 2 + (leader.pos.z - n.pos.z) ** 2 <= BALANCE.nest.equipRadius ** 2 &&
     isNestActive(ctx, n.id));

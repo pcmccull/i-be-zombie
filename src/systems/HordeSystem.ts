@@ -48,7 +48,7 @@ export function countFollowers(state: GameState): number {
   return count;
 }
 
-function followerCap(ctx: SimContext): number {
+export function followerCap(ctx: SimContext): number {
   return ctx.layout.strongholds.length > 0 ? BALANCE.openWorld.maxFollowers : BALANCE.horde.maxFollowers;
 }
 

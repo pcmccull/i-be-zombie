@@ -426,7 +426,8 @@ export function applySave(ctx: SimContext, save: WorldSave): void {
       if (!isRecord(sd)) continue;
       state.districts[id] = {
         id,
-        status: isTerritoryStatus(sd.status) ? sd.status : state.districts[id].status,
+        // 'contested' is transient (StrongholdState.contested is not saved); a loaded one could never revert.
+        status: isTerritoryStatus(sd.status) ? (sd.status === 'contested' ? 'human' : sd.status) : state.districts[id].status,
         discovered: typeof sd.discovered === 'boolean' ? sd.discovered : state.districts[id].discovered,
         infection: clamp01(typeof sd.infection === 'number' ? sd.infection : state.districts[id].infection),
         humanStrength: clamp01(

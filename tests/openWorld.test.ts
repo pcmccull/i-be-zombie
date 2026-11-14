@@ -99,6 +99,7 @@ async function capture(sim: Simulation, mon: Monitor, id: StrongholdId, maxSecon
   const nest = layout.nests.find(n => n.strongholdId === id)!;
   const door = def.objectives.find(o => o.kind === 'destroyStructure')?.structureId;
   const hold = def.objectives.find(o => o.kind === 'holdPoint');
+  const gateObjective = def.objectives.some(o => o.kind === 'destroyGate');
   place(sim, nest.pos);
   let lastKey = '';
   for (let i = 0; i < maxSeconds * 60 && !st.captured; i++) {
@@ -106,11 +107,13 @@ async function capture(sim: Simulation, mon: Monitor, id: StrongholdId, maxSecon
     if (l.alive) l.hp = l.maxHp;
     if (i % 90 === 0) addFollowers(sim, 40, l.pos);
     if (i % 30 === 0) {
-      const breached = door === undefined || sim.state.structures.find(s => s.id === door)?.destroyed === true;
+      const breached = gateObjective ? sim.state.gate.destroyed
+        : door === undefined || sim.state.structures.find(s => s.id === door)?.destroyed === true;
       const defenders = livingDefenders(sim, id);
       let key: string, cmd: SimInput['hordeCommand'];
       if (!breached) {
-        key = 'door'; cmd = { type: 'attack', target: { kind: 'structure', id: door! }, additive: false };
+        key = 'door';
+        cmd = { type: 'attack', target: gateObjective ? { kind: 'gate' } : { kind: 'structure', id: door! }, additive: false };
       } else if (defenders.length > 0 && !st.objectivesDone.includes(hold?.id ?? '')) {
         defenders.sort((a, b) => dist(a.pos, l.pos) - dist(b.pos, l.pos));
         key = 'g' + defenders[0].id; cmd = { type: 'attack', target: { kind: 'guard', id: defenders[0].id }, additive: false };
@@ -347,6 +350,31 @@ describe('open-world integration (spec §10)', () => {
     expect(mon.captured).toEqual(['mall_security']); expect(mon.unlocked).toEqual(['horde_frenzy']);
     expect(s.activeNestId.length).toBeGreaterThan(0);
     expect(mon.minBiomass).toBeGreaterThanOrEqual(0);
+  }, 300_000);
+
+  it('industrial yard: breaking the gate and holding the office captures it once (brute_evolution + biomass once)', async () => {
+    const sim = new Simulation(layout, SEED), mon = new Monitor(sim, true);
+    const biomass0 = sim.state.progression.biomass;
+    expect(sim.state.progression.unlocked).not.toContain('brute_evolution');
+    const seconds = await capture(sim, mon, 'industrial_yard');
+    expect(seconds, 'yard captured within the time budget (no softlock)').toBeGreaterThan(0);
+    const st = sim.state.strongholds.find(x => x.id === 'industrial_yard')!;
+    expect(st.captured).toBe(true);
+    expect(sim.state.gate.destroyed).toBe(true);
+    expect(st.objectivesDone).toEqual(expect.arrayContaining(['break_gate', 'take_control']));
+    expect(sim.state.districts.industrial.status).toBe('infected');
+    const bio = sim.state.progression.biomass;
+    runSteps(sim, mon, 600);
+    expect(mon.captured.filter(x => x === 'industrial_yard')).toHaveLength(1);
+    expect(mon.unlocked.filter(x => x === 'brute_evolution')).toHaveLength(1);
+    expect(sim.state.progression.unlocked.filter(x => x === 'brute_evolution')).toHaveLength(1);
+    const rewards = mon.events.filter(e => e.type === 'biomassGain' && e.reason === 'capture');
+    expect(rewards).toHaveLength(1);
+    expect(sim.state.progression.biomass).toBeGreaterThanOrEqual(Math.min(bio, biomass0 + 40));
+    // Tower guards that stood down no longer float on the platforms.
+    for (const g of sim.state.guards.filter(x => x.strongholdId === 'industrial_yard' && x.role === 'civilian')) {
+      expect(g.tower).toBeNull(); expect(g.elevation).toBe(0);
+    }
   }, 300_000);
 
   it('item 9: save -> JSON -> parse -> new Simulation restores discovery, captures, mutations, biomass and nest', async () => {

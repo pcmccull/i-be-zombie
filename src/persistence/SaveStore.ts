@@ -2,7 +2,7 @@
 import { BALANCE } from '../config/balance';
 import type { StorageLike } from '../core/contracts';
 import type { WorldSave } from '../core/types';
-import { parseSave } from './saveSchema';
+import { parseSave, SAVE_VERSION } from './saveSchema';
 
 export class SaveStore {
   constructor(
@@ -27,9 +27,23 @@ export class SaveStore {
     try {
       const validated = parseSave(s);
       if (!validated) return false;
+      if (this.hasNewerSave()) return false;
       const serialized = JSON.stringify(validated);
       this.storage.setItem(this.key, serialized);
       return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** True when storage holds a save written by a newer build; never overwrite it. */
+  private hasNewerSave(): boolean {
+    try {
+      const raw = this.storage?.getItem(this.key);
+      if (typeof raw !== 'string' || raw.length === 0) return false;
+      const parsed: unknown = JSON.parse(raw);
+      const v = (parsed as { version?: unknown } | null)?.version;
+      return typeof v === 'number' && v > SAVE_VERSION;
     } catch {
       return false;
     }

@@ -49,6 +49,8 @@ export class EntityRenderer {
 
   private readonly guardsMap = new Map<EntityId, GuardVisualEntry>();
   private readonly convertedGuardIds = new Set<EntityId>();
+  /** Reused each frame by updateGuards (no per-frame Set allocation). */
+  private readonly activeGuardIds = new Set<EntityId>();
   private lastStateTime = -1;
   // Render-radius culling (setView) and leader death/respawn animation timers
   private hasFocus = false;
@@ -409,7 +411,8 @@ export class EntityRenderer {
   }
 
   private updateGuards(state: GameState, alpha: number, time: number): void {
-    const activeIds = new Set<EntityId>();
+    const activeIds = this.activeGuardIds;
+    activeIds.clear();
 
     for (let i = 0; i < state.guards.length; i++) {
       const g = state.guards[i];
@@ -547,9 +550,8 @@ export class EntityRenderer {
     const role = g.role ?? 'soldier';
     const post = g.post ?? 'checkpoint';
     const rig = createGuardRig(index, role, post);
-    for (const m of rig.materials) {
-      this.disposableMaterials.push(m);
-    }
+    // Guard rig materials are owned by the entry (disposeGuardEntry), not by disposableMaterials,
+    // so respawning civilians cannot grow that list.
     this.rootGroup.add(rig.root);
 
     // Subtle ground marker disc under human (orange for soldiers, neutral cream for civilians)

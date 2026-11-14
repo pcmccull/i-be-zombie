@@ -40,6 +40,9 @@ function refresh(ctx: SimContext, m: PopulationMemory, origin: Vec2): void {
   let write = 0;
   for (const g of ctx.state.guards) {
     if (g.state === 'DEAD' && g.deathTime !== null && ctx.state.time - g.deathTime > 30 && !m.pending.has(g.id)) continue;
+    // Captured/infected districts stand their patrols down once the patrol is out of the active radius.
+    if (g.post === 'patrol' && g.dormant && g.hp > 0 && g.state !== 'DEAD' && !m.pending.has(g.id) &&
+      ctx.state.districts[getDistrictAt(ctx.layout, g.pos)].status === 'infected') continue;
     ctx.state.guards[write++] = g;
   }
   ctx.state.guards.length = write;
