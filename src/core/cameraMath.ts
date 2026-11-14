@@ -1,4 +1,4 @@
-import type { GamePhase, Vec3 } from './types';
+import type { GamePhase, HordeCommand, TargetRef, Vec2, Vec3 } from './types';
 
 export interface ScreenTarget<Id> { x: number; y: number; id: Id }
 
@@ -25,6 +25,8 @@ export interface PointerLockDecisionState {
   helpVisible: boolean;
   button?: number;
   supported?: boolean;
+  /** Pause menu or world map open: never capture the mouse. */
+  modalOpen?: boolean;
 }
 
 /** Coordinates and radius are CSS pixels. Equal distances retain input order. */
@@ -125,14 +127,16 @@ export function applyOrbitDelta(
 export function shouldRequestLock(state: PointerLockDecisionState): boolean {
   if (state.supported === false) return false;
   if (state.button !== undefined && state.button !== 0) return false;
-  return !state.isLocked && state.phase === 'playing' && !state.helpVisible;
+  return !state.isLocked && (state.phase === 'playing' || state.phase === 'respawning')
+    && !state.helpVisible && !state.modalOpen;
 }
 
 /** True when active pointer lock must be released programmatically (help open or game over). */
 export function shouldReleaseLock(
-  state: Pick<PointerLockDecisionState, 'isLocked' | 'phase' | 'helpVisible'>,
+  state: Pick<PointerLockDecisionState, 'isLocked' | 'phase' | 'helpVisible' | 'modalOpen'>,
 ): boolean {
-  return state.isLocked && (state.phase !== 'playing' || state.helpVisible);
+  return state.isLocked
+    && (state.phase === 'victory' || state.phase === 'defeat' || state.helpVisible || state.modalOpen === true);
 }
 
 /** Filters the initial large movement spike some browsers (Chrome) emit on the first mousemove after lock. */
@@ -144,4 +148,79 @@ export function isInitialLockJump(
 ): boolean {
   if (!isFirstMoveAfterLock) return false;
   return Math.abs(movementX) > thresholdPx || Math.abs(movementY) > thresholdPx;
+}
+
+// ---------------------------------------------------------------------------
+// Camera zoom (open world: wide enough to frame a 40-zombie horde)
+// ---------------------------------------------------------------------------
+
+export const ZOOM_MIN = 8;
+export const ZOOM_MAX = 64;
+export const ZOOM_DEFAULT = 17;
+
+/** Multiplicative wheel zoom (about 10% per 100 px notch), clamped to [ZOOM_MIN, ZOOM_MAX]. */
+export function zoomTarget(current: number, wheelDeltaY: number): number {
+  if (!Number.isFinite(wheelDeltaY)) return current;
+  return Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, current * Math.exp(wheelDeltaY * 0.001)));
+}
+
+// ---------------------------------------------------------------------------
+// Input model mapping (ARCHITECTURE.md section 4). Pure so it is testable without a DOM.
+// ---------------------------------------------------------------------------
+
+export type KeyAction = 'recenter' | 'help' | 'debug' | 'mute' | 'map' | 'pause' | 'regroup' | 'follow';
+
+/** Keys that always work, even while the pause menu or world map is open. */
+const SYSTEM_KEYS: ReadonlySet<string> = new Set(['Escape', 'KeyM', 'KeyN', 'F3', 'Tab']);
+
+export function isSystemKey(code: string): boolean { return SYSTEM_KEYS.has(code); }
+
+/** Q E R F -> ability slot 0..3, anything else null. */
+export function abilitySlotForKey(code: string): number | null {
+  switch (code) {
+    case 'KeyQ': return 0;
+    case 'KeyE': return 1;
+    case 'KeyR': return 2;
+    case 'KeyF': return 3;
+    default: return null;
+  }
+}
+
+/** One-shot key actions (not held movement keys, not ability keys). */
+export function keyActionFor(code: string): KeyAction | null {
+  switch (code) {
+    case 'KeyC': return 'recenter';
+    case 'Tab': return 'help';
+    case 'F3': return 'debug';
+    case 'KeyN': return 'mute';
+    case 'KeyM': return 'map';
+    case 'Escape': return 'pause';
+    case 'Space': return 'regroup';
+    case 'KeyG': return 'follow';
+    default: return null;
+  }
+}
+
+/** Whether a key press may act while a modal (pause / map) is open. */
+export function keyAllowedWhileModal(code: string, modalOpen: boolean): boolean {
+  return !modalOpen || isSystemKey(code);
+}
+
+export interface RightClickInfo {
+  target: TargetRef | null;
+  /** Ground point under the pointer, or null when the ray misses / is blocked by a building. */
+  ground: Vec2 | null;
+  shift: boolean;
+  ctrl: boolean;
+}
+
+/**
+ * RMB: Shift = regroup; target (human/gate/structure) = attack order (Ctrl = additive split target);
+ * ground = move order; nothing = no command.
+ */
+export function hordeCommandForRightClick(info: RightClickInfo): HordeCommand | null {
+  if (info.shift) return { type: 'regroup' };
+  if (info.target) return { type: 'attack', target: info.target, additive: info.ctrl };
+  if (info.ground) return { type: 'move', point: { x: info.ground.x, z: info.ground.z } };
+  return null;
 }

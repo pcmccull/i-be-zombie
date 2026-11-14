@@ -1,7 +1,12 @@
 import * as THREE from 'three';
-import type { SimInput, TargetRef, Vec3 } from './types';
+import type { HordeCommand, SimInput, TargetRef, Vec2 } from './types';
 import {
+  abilitySlotForKey,
+  hordeCommandForRightClick,
   isClick,
+  keyActionFor,
+  keyAllowedWhileModal,
+  type KeyAction,
   isInitialLockJump,
   pickNearestScreenTarget,
   type ScreenTarget,
@@ -13,10 +18,16 @@ interface InputDependencies {
   occluders: THREE.Object3D[];
   onOrbit(dx: number, dy: number): void;
   onZoom(deltaY: number): void;
-  onGroundPing(p: Vec3): void;
-  onKey(action: 'recenter' | 'help' | 'debug' | 'mute' | 'restart'): void;
+  /** One-shot key actions (recenter, help, debug, mute, map, pause). Regroup/follow become horde commands here. */
+  onKey(action: Exclude<KeyAction, 'regroup' | 'follow'>): void;
   onFirstGesture(): void;
   canLock?: () => boolean;
+  /** Pause menu / world map open: game keys and canvas orders are ignored. */
+  isModal?: () => boolean;
+  /** Offered every key press first; return true when a UI panel (nest panel) consumed it. */
+  onUiKey?: (key: string) => boolean;
+  /** Pointer lock was lost without the game asking for it (browser Esc, alt-tab). */
+  onLockLost?: () => void;
 }
 
 function isEditing(target: EventTarget | null): boolean {
@@ -29,10 +40,12 @@ function isEditing(target: EventTarget | null): boolean {
 export class InputController {
   private readonly listeners = new AbortController();
   private readonly keys = new Set<string>();
-  private rally = false;
-  private rush = false;
-  private recall = false;
-  private attackTarget: TargetRef | null = null;
+  private attackEdge = false;
+  private aimPoint: Vec2 | null = null;
+  private command: HordeCommand | null = null;
+  private abilitySlot: number | null = null;
+  private expectedUnlock = false;
+  private lockLostAt = -1e9;
   private hover: TargetRef | null = null;
   private pointerId: number | null = null;
   private pointerButton = -1;
@@ -101,21 +114,27 @@ export class InputController {
   /** Hold V to swing the camera around and look behind the leader at the horde. */
   get lookBack(): boolean { return this.keys.has('KeyV'); }
 
+  /** Builds one step's input. Edge fields (attack, command, ability) are consumed; legacy fields stay false/null. */
   buildSimInput(cameraYaw: number): SimInput {
-    const held = (a: string, b: string): number => Number(this.keys.has(a) || this.keys.has(b));
+    const modal = this.modal();
+    const held = (a: string, b: string): number => modal ? 0 : Number(this.keys.has(a) || this.keys.has(b));
     const input: SimInput = {
       moveForward: held('KeyW', 'ArrowUp') - held('KeyS', 'ArrowDown'),
       moveRight: held('KeyD', 'ArrowRight') - held('KeyA', 'ArrowLeft'),
       cameraYaw,
-      sprint: this.keys.has('ShiftLeft') || this.keys.has('ShiftRight'),
-      rally: this.rally, rush: this.rush, recall: this.recall, attackTarget: this.attackTarget,
-      // Open-world input model is wired in T014.
-      attack: false, aimPoint: null, hordeCommand: null, abilitySlot: null, equip: null,
+      sprint: !modal && (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')),
+      rally: false, rush: false, recall: false, attackTarget: null,
+      attack: this.attackEdge, aimPoint: this.attackEdge ? this.aimPoint : null,
+      hordeCommand: this.command, abilitySlot: this.abilitySlot, equip: null,
     };
-    this.rally = this.rush = this.recall = false;
-    this.attackTarget = null;
+    this.attackEdge = false;
+    this.aimPoint = null;
+    this.command = null;
+    this.abilitySlot = null;
     return input;
   }
+
+  private modal(): boolean { return this.deps.isModal?.() === true; }
 
   updateHover(): void {
     if (this.isLocked) {
@@ -134,6 +153,7 @@ export class InputController {
   exitPointerLock(): void {
     this.firstMoveAfterLock = false;
     if (this.isLocked && typeof document.exitPointerLock === 'function') {
+      this.expectedUnlock = true;
       try {
         document.exitPointerLock();
       } catch {
@@ -144,8 +164,11 @@ export class InputController {
 
   clear(): void {
     this.keys.clear();
-    this.rally = this.rush = this.recall = false;
-    this.attackTarget = this.hover = null;
+    this.attackEdge = false;
+    this.aimPoint = null;
+    this.command = null;
+    this.abilitySlot = null;
+    this.hover = null;
     this.pointerKnown = false;
     this.firstMoveAfterLock = false;
     this.releasePointer();
@@ -192,18 +215,20 @@ export class InputController {
     this.deps.onFirstGesture();
     if (isEditing(event.target)) return;
     if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab', 'F3'].includes(event.code)) event.preventDefault();
+    if (!event.repeat && this.deps.onUiKey?.(event.key)) return;
+    if (!keyAllowedWhileModal(event.code, this.modal())) return;
     const alreadyHeld = this.keys.has(event.code);
     this.keys.add(event.code);
     if (event.repeat || alreadyHeld) return;
-    switch (event.code) {
-      case 'Space': this.rush = true; break;
-      case 'KeyE': this.rally = true; break;
-      case 'KeyC': this.deps.onKey('recenter'); break;
-      case 'Tab': this.deps.onKey('help'); break;
-      case 'F3': this.deps.onKey('debug'); break;
-      case 'KeyM': this.deps.onKey('mute'); break;
-      case 'KeyR': this.deps.onKey('restart'); break;
-    }
+    const slot = abilitySlotForKey(event.code);
+    if (slot !== null) { this.abilitySlot = slot; return; }
+    const action = keyActionFor(event.code);
+    if (action === 'regroup') this.command = { type: 'regroup' };
+    else if (action === 'follow') this.command = { type: 'follow' };
+    else if (action === 'pause') {
+      // Browsers swallow the Esc that leaves pointer lock; if both arrive, do not toggle twice.
+      if (performance.now() - this.lockLostAt > 250) this.deps.onKey('pause');
+    } else if (action) this.deps.onKey(action);
   };
   private readonly onKeyUp = (event: KeyboardEvent): void => {
     // Always release a previously held key even if focus moved into an editor.
@@ -230,6 +255,12 @@ export class InputController {
       this.pointerKnown = false;
       this.hover = null;
       this.releasePointer();
+      const asked = this.expectedUnlock;
+      this.expectedUnlock = false;
+      if (!asked) {
+        this.lockLostAt = performance.now();
+        this.deps.onLockLost?.();
+      }
     }
   };
   private readonly onPointerLockError = (): void => {
@@ -240,6 +271,13 @@ export class InputController {
     if (this.pointerId !== null || (event.button !== 0 && event.button !== 2)) return;
     event.preventDefault();
     this.canvas.focus({ preventScroll: true });
+    if (this.modal()) return;
+    if (this.isLocked) {
+      // Captured mouse: act immediately on the crosshair (no drag possible).
+      const rect = this.canvas.getBoundingClientRect();
+      this.handleClick(event.button, rect.left + rect.width * 0.5, rect.top + rect.height * 0.5, event.shiftKey, event.ctrlKey);
+      return;
+    }
     this.pointerId = event.pointerId;
     this.pointerButton = event.button;
     this.downX = this.lastX = event.clientX;
@@ -277,47 +315,40 @@ export class InputController {
   };
   private readonly onPointerUp = (event: PointerEvent): void => {
     if (event.pointerId !== this.pointerId || event.button !== this.pointerButton) return;
-    if (this.isLocked) {
-      if (this.pointerButton === 2) {
-        this.recall = true;
-        this.attackTarget = null;
-      } else if (this.pointerButton === 0) {
-        const rect = this.canvas.getBoundingClientRect();
-        const cx = rect.left + rect.width * 0.5;
-        const cy = rect.top + rect.height * 0.5;
-        const target = this.pick(cx, cy);
-        if (target) {
-          this.attackTarget = target;
-          this.recall = false;
-        } else if (this.setPointerRay(cx, cy) && this.raycaster.ray.intersectPlane(this.ground, this.groundPoint)) {
-          this.deps.onGroundPing(this.groundPoint);
-        }
-      }
-      this.releasePointer();
-      return;
-    }
     this.lastX = event.clientX;
     this.lastY = event.clientY;
-    if (!this.dragged && isClick(this.downX, this.downY, event.clientX, event.clientY)) {
-      if (this.pointerButton === 2) {
-        this.recall = true;
-        this.attackTarget = null;
-      } else if (this.pointerButton === 0) {
-        // A click while unlocked captures the mouse; if capture isn't possible right now (help open, game over,
-        // unsupported, or refused) it falls back to a normal target click so ordering never goes dead.
-        if (!(this.isPointerLockSupported() && this.tryRequestPointerLock())) {
-          const target = this.pick(event.clientX, event.clientY);
-          if (target) {
-            this.attackTarget = target;
-            this.recall = false;
-          } else if (this.setPointerRay(event.clientX, event.clientY) && this.raycaster.ray.intersectPlane(this.ground, this.groundPoint)) {
-            this.deps.onGroundPing(this.groundPoint);
-          }
-        }
-      }
+    if (!this.dragged && isClick(this.downX, this.downY, event.clientX, event.clientY) && !this.modal()) {
+      // Free cursor: a click acts on whatever is under the pointer (point-and-click horde orders).
+      this.handleClick(this.pointerButton, event.clientX, event.clientY, event.shiftKey, event.ctrlKey);
     }
     this.releasePointer();
   };
+
+  /** LMB = Alpha attack (aimed at the ground point under the pointer/crosshair); RMB = horde command. */
+  private handleClick(button: number, x: number, y: number, shift: boolean, ctrl: boolean): void {
+    if (button === 0) {
+      this.attackEdge = true;
+      this.aimPoint = this.groundAt(x, y);
+      return;
+    }
+    if (button !== 2) return;
+    const target = shift ? null : this.pick(x, y);
+    let ground: Vec2 | null = null;
+    if (!shift && !target) {
+      // pick() leaves the nearest solid hit in this.intersections; a building in front of the ground point blocks the order.
+      const blockedAt = this.intersections[0]?.distance ?? Infinity;
+      ground = this.groundAt(x, y);
+      if (ground && blockedAt < this.raycaster.ray.origin.distanceTo(this.groundPoint) - 0.75) ground = null;
+    }
+    const command = hordeCommandForRightClick({ target, ground, shift, ctrl });
+    if (command) this.command = command;
+  }
+
+  private groundAt(x: number, y: number): Vec2 | null {
+    if (!this.setPointerRay(x, y) || !this.raycaster.ray.intersectPlane(this.ground, this.groundPoint)) return null;
+    return { x: this.groundPoint.x, z: this.groundPoint.z };
+  }
+
   private readonly onPointerCancel = (event: PointerEvent): void => {
     if (event.pointerId === this.pointerId) this.releasePointer();
   };

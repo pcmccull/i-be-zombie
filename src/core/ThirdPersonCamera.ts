@@ -1,26 +1,30 @@
 import * as THREE from 'three';
 import { BALANCE } from '../config/balance';
-import type { Vec3 } from './types';
+import type { AABB, Vec3 } from './types';
 import {
   applyOrbitDelta,
   approachAngle,
   approachCameraDistance,
   cameraOffset,
   MOUSE_LOOK_SENSITIVITY,
+  ZOOM_DEFAULT,
+  ZOOM_MAX,
+  ZOOM_MIN,
+  zoomTarget,
   type CameraAngles,
 } from './cameraMath';
 
 const DEFAULT_PITCH = Math.atan(11 / 14);
-const MAX_ZOOM = 48;
 /** Keyboard orbit speed (rad/s) for Z/X. */
 const KEY_ORBIT_SPEED = 2.4;
 
 export class ThirdPersonCamera {
   yaw = 0;
   pitch = DEFAULT_PITCH;
-  zoom = 14;
+  zoom = ZOOM_DEFAULT;
 
-  private targetZoom = 14;
+  private targetZoom = ZOOM_DEFAULT;
+  private bounds: AABB = { minX: BALANCE.world.minX, maxX: BALANCE.world.maxX, minZ: BALANCE.world.minZ, maxZ: BALANCE.world.maxZ };
   private sinceOrbit = 0;
   private recentering = false;
   /** Set once the player orbits manually; disables auto-follow until recenter (C). */
@@ -68,8 +72,11 @@ export class ThirdPersonCamera {
     this.lookBackHeld = lookBack;
   }
 
+  /** World rectangle the camera is kept near (open-world layout bounds). */
+  setBounds(bounds: AABB): void { this.bounds = { minX: bounds.minX, maxX: bounds.maxX, minZ: bounds.minZ, maxZ: bounds.maxZ }; }
+
   addZoom(wheelDeltaY: number): void {
-    this.targetZoom = THREE.MathUtils.clamp(this.targetZoom + wheelDeltaY * 0.018, 8, MAX_ZOOM);
+    this.targetZoom = THREE.MathUtils.clamp(zoomTarget(this.targetZoom, wheelDeltaY), ZOOM_MIN, ZOOM_MAX);
   }
 
   recenter(): void { this.recentering = true; this.manualYaw = false; }
@@ -77,7 +84,7 @@ export class ThirdPersonCamera {
   reset(leaderFacing: number, focus: Vec3): void {
     this.yaw = leaderFacing;
     this.pitch = DEFAULT_PITCH;
-    this.zoom = this.targetZoom = 14;
+    this.zoom = this.targetZoom = ZOOM_DEFAULT;
     this.sinceOrbit = 0;
     this.recentering = false;
     this.manualYaw = false;
@@ -86,7 +93,7 @@ export class ThirdPersonCamera {
     this.lookBack = 0;
     this.viewYaw = leaderFacing;
     this.focus.copy(focus);
-    this.boomLength = Math.hypot(14, 11);
+    this.boomLength = Math.hypot(ZOOM_DEFAULT, ZOOM_DEFAULT * Math.tan(DEFAULT_PITCH));
     this.faded.clear();
     this.initialized = true;
     this.update(0, focus, leaderFacing, false, 0);
@@ -140,8 +147,8 @@ export class ThirdPersonCamera {
       this.camera.position.y += (Math.random() * 2 - 1) * strength;
       this.camera.position.z += (Math.random() * 2 - 1) * strength;
     }
-    this.camera.position.x = THREE.MathUtils.clamp(this.camera.position.x, BALANCE.world.minX - 45, BALANCE.world.maxX + 45);
-    this.camera.position.z = THREE.MathUtils.clamp(this.camera.position.z, BALANCE.world.minZ - 45, BALANCE.world.maxZ + 45);
+    this.camera.position.x = THREE.MathUtils.clamp(this.camera.position.x, this.bounds.minX - 45, this.bounds.maxX + 45);
+    this.camera.position.z = THREE.MathUtils.clamp(this.camera.position.z, this.bounds.minZ - 45, this.bounds.maxZ + 45);
     this.camera.position.y = THREE.MathUtils.clamp(this.camera.position.y, 1.5, 100);
     this.direction.subVectors(this.camera.position, this.focus);
     // Shake must not violate the minimum boom distance either.

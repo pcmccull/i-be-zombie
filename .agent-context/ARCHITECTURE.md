@@ -97,7 +97,7 @@ objective takes damage or completes, `contested → infected` only on capture. C
 | Input | Action | SimInput |
 |---|---|---|
 | WASD / Shift | camera-relative move / sprint | `moveForward, moveRight, cameraYaw, sprint` |
-| Mouse move (pointer lock) or RMB-drag | orbit camera (existing) | — |
+| LMB/RMB-drag, Z / X (free cursor, no pointer lock) | orbit camera | — |
 | **LMB** | Alpha attack (bite; 3-hit combo when `alpha_claws` equipped). Forgiving auto-aim: nearest enemy/structure in a 100° cone within reach, else swing forward | `attack: boolean` (edge) |
 | **RMB** on human / gate / structure | horde attack order; **Ctrl+RMB** adds/removes a split target (existing squads) | `hordeCommand: {type:'attack', target, additive}` |
 | **RMB** on ground | horde move order (marker, expires `horde.moveOrderTime` → follow) | `hordeCommand: {type:'move', point}` |
@@ -137,7 +137,7 @@ The world keeps simulating while `phase==='respawning'`.
 New events (added to `GameEvent`): `attackSwing{combo}`, `districtDiscovered`, `districtStatus`, `strongholdContested`,
 `objectiveComplete`, `strongholdCaptured`, `abilityUnlocked`, `abilityEquipped`, `abilityUsed`, `abilityDenied{reason}`, `biomassGain`,
 `frenzyStart/End`, `bruteEvolved`, `reinforcements`, `nestActivated`, `leaderRespawned`, `moveOrder`, `autosave{reason}`.
-Removed at T014 cleanup: `victory`, `defeat`, `rushStart/End`.
+Legacy-only (kept as the legacy-district test fixture, never reached in the open world): `victory`, `defeat`, `rushStart/End`, SimInput `rally/rush/recall/attackTarget`, posts `checkpoint/barricade`.
 
 ## 6. Module ownership (this milestone)
 
