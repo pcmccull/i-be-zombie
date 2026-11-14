@@ -3,6 +3,8 @@ import type { SimContext } from '../core/contracts';
 import type { DistrictLayout, LeaderState, SimInput, Vec2 } from '../core/types';
 import { wrapAngle } from '../utils/math';
 import { speedMultiplier } from '../systems/MomentumSystem';
+import { aimLeaderAttack, resolveLeaderAttack } from '../systems/CombatSystem';
+import { isEquipped } from '../systems/ProgressionSystem';
 
 export function createLeader(id: number, layout: DistrictLayout): LeaderState {
   return {
@@ -37,16 +39,56 @@ export function updateStamina(leader: LeaderState, wantSprint: boolean, moving: 
 }
 
 const move: Vec2 = { x: 0, z: 0 };
+
+function advanceAttack(ctx: SimContext, dt: number): void {
+  const l = ctx.state.leader;
+  let remaining = dt;
+  while (l.attackPhase !== 'ready') {
+    const elapsed = Math.min(remaining, l.attackTimer);
+    l.attackTimer = Math.max(0, l.attackTimer - elapsed); remaining -= elapsed;
+    if (l.attackTimer > 1e-9) return;
+    if (l.attackPhase === 'windup') resolveLeaderAttack(ctx);
+    else {
+      l.attackPhase = 'ready'; l.attackTimer = 0;
+      l.comboWindow = l.comboStep > 0 ? BALANCE.alpha.comboWindow : 0;
+    }
+    if (remaining <= 1e-9) return;
+  }
+  l.comboWindow = Math.max(0, l.comboWindow - remaining);
+}
+
 export function updateLeader(ctx: SimContext, dt: number, input: SimInput): void {
   const l = ctx.state.leader;
-  if (!l.alive) {
+  if (!l.alive || l.hp <= 0) {
     l.vel.x = l.vel.z = 0; l.sprinting = false;
     if (l.anim !== 'dead') { l.anim = 'dead'; l.animTime = 0; }
     return;
   }
+  if (ctx.state.phase !== 'playing') return;
+  if (l.hitStun > 1e-9) {
+    l.hitStun = Math.max(0, l.hitStun - dt);
+    l.vel.x = l.vel.z = 0; l.sprinting = false;
+    return;
+  }
+  l.hitStun = 0;
+  if (input.attack && l.attackPhase === 'ready') {
+    l.comboStep = isEquipped(ctx.state, 'alpha_claws') ?
+      (l.comboWindow > 1e-9 && l.comboStep > 0 && l.comboStep < 3 ? l.comboStep + 1 : 1) : 0;
+    l.comboWindow = 0;
+    l.attackPhase = 'windup';
+    l.attackTimer = l.comboStep > 0 ? BALANCE.alpha.clawWindup : BALANCE.alpha.biteWindup;
+    l.anim = 'attack'; l.animTime = 0;
+    aimLeaderAttack(ctx, input.aimPoint);
+  }
+  const windingUp = l.attackPhase === 'windup';
   computeMoveVector(input.moveForward, input.moveRight, input.cameraYaw, move);
   const sprinting = updateStamina(l, input.sprint, Math.hypot(move.x, move.z) > 0, dt);
-  const speed = (sprinting ? BALANCE.leader.sprintSpeed : BALANCE.leader.walkSpeed) * speedMultiplier(ctx.state);
+  const speed = (sprinting ? BALANCE.leader.sprintSpeed : BALANCE.leader.walkSpeed) * speedMultiplier(ctx.state) *
+    (windingUp ? 0.4 : 1);
+  if (windingUp) {
+    const currentSpeed = Math.hypot(l.vel.x, l.vel.z);
+    if (currentSpeed > speed) { l.vel.x *= speed / currentSpeed; l.vel.z *= speed / currentSpeed; }
+  }
   const dx = move.x * speed - l.vel.x, dz = move.z * speed - l.vel.z;
   const change = Math.hypot(dx, dz), factor = change > 0 ? Math.min(1, BALANCE.leader.accel * dt / change) : 0;
   l.vel.x += dx * factor; l.vel.z += dz * factor;
@@ -55,12 +97,13 @@ export function updateLeader(ctx: SimContext, dt: number, input: SimInput): void
   l.vel.x = dt > 0 ? (l.pos.x - x) / dt : 0;
   l.vel.z = dt > 0 ? (l.pos.z - z) / dt : 0;
   const moving = Math.hypot(l.vel.x, l.vel.z) > 0.05;
-  if (moving) {
+  if (moving && l.attackPhase === 'ready') {
     const turn = wrapAngle(Math.atan2(l.vel.x, l.vel.z) - l.facing);
     l.facing = wrapAngle(l.facing + Math.max(-BALANCE.leader.turnRate * dt, Math.min(BALANCE.leader.turnRate * dt, turn)));
   }
   const anim = moving ? (sprinting ? 'run' : 'walk') : 'idle';
-  if (!((l.anim === 'attack' || l.anim === 'hit') && l.animTime < 0.35) && l.anim !== anim) {
+  if (l.attackPhase === 'ready' && !((l.anim === 'attack' || l.anim === 'hit') && l.animTime < 0.35) && l.anim !== anim) {
     l.anim = anim; l.animTime = 0;
   }
+  advanceAttack(ctx, dt);
 }

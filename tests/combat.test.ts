@@ -3,6 +3,7 @@ import { BALANCE } from '../src/config/balance';
 import { emptyInput } from '../src/core/types';
 import type { TargetRef, Vec2 } from '../src/core/types';
 import { createZombie } from '../src/entities/Zombie';
+import { updateLeader } from '../src/entities/ZombieLeader';
 import { Simulation } from '../src/sim/Simulation';
 import { canMelee, damageGate, damageGuard, damageLeader, damageZombie, updateCombat } from '../src/systems/CombatSystem';
 import { countFollowers, recruitZombie } from '../src/systems/HordeSystem';
@@ -66,17 +67,20 @@ describe('combat: design §15.7–8', () => {
     updateCombat(sim.ctx, dt, input); expect(sim.state.gate.hp).toBe(BALANCE.gate.maxHp);
   });
 
-  it('leader prefers ordered targets, falls back to nearest guard, and cannot melee while sprinting', () => {
+  it('leader attacks only on LMB, independently of horde orders', () => {
     const { sim, g } = fixture(); const l = sim.state.leader;
-    l.pos = { x: -79, z: 60 }; l.sprinting = true;
+    l.pos = { x: -79, z: 60 }; l.facing = -Math.PI / 2;
     updateCombat(sim.ctx, dt, input); expect(g.hp).toBe(50);
-    l.sprinting = false; updateCombat(sim.ctx, dt, input);
-    expect(g.hp).toBe(40); expect(l.attackCooldown).toBe(1.1);
-    for (let i = 0; i < 65; i++) updateCombat(sim.ctx, dt, input);
-    expect(g.hp).toBe(40); updateCombat(sim.ctx, dt, input); expect(g.hp).toBe(30);
-    l.pos = { x: 83, z: -50.5 }; l.attackCooldown = 0;
+    updateLeader(sim.ctx, 0, { ...input, attack: true });
+    updateLeader(sim.ctx, BALANCE.alpha.biteWindup, input);
+    expect(g.hp).toBe(50 - BALANCE.alpha.biteDamage);
+    updateLeader(sim.ctx, BALANCE.alpha.biteRecovery, input);
+    updateCombat(sim.ctx, 5, input); expect(g.hp).toBe(50 - BALANCE.alpha.biteDamage);
+    l.pos = { x: 83, z: -50.5 }; l.facing = 0;
     g.pos = { x: 83, z: -49.5 }; sim.state.order = { type: 'attack', target: { kind: 'gate' } };
-    updateCombat(sim.ctx, dt, input); expect(sim.state.gate.hp).toBe(BALANCE.gate.maxHp - 10); expect(g.hp).toBe(30);
+    updateLeader(sim.ctx, 0, { ...input, attack: true });
+    updateLeader(sim.ctx, BALANCE.alpha.biteWindup, input);
+    expect(sim.state.gate.hp).toBe(BALANCE.gate.maxHp); expect(g.hp).toBe(50 - 2 * BALANCE.alpha.biteDamage);
   });
 
   it('rejects melee across walls, vehicles and buildings, including at a tower through the perimeter', () => {

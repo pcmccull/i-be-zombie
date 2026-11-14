@@ -52,8 +52,41 @@ describe('conversion: design §15.10–11', () => {
       { type: 'converted', guardId: g.id, zombieId: z.id, pos },
       { type: 'momentumGain', amount: BALANCE.momentum.gainConvert,
         value: BALANCE.momentum.gainArmedKill + BALANCE.momentum.gainConvert, reason: 'convert' },
+      { type: 'biomassGain', amount: BALANCE.progression.biomassConvert,
+        total: BALANCE.progression.biomassKill + BALANCE.progression.biomassConvert, reason: 'convert' },
     ]);
     updateConversion(sim.ctx, 5, input); expect(sim.state.stats.conversions).toBe(1);
+  });
+
+  it('keeps guaranteed Alpha conversions subject to the cap, without a rise reward when rejected', () => {
+    const sim = fixture(0.99), g = sim.state.guards[5];
+    for (let i = 0; i < BALANCE.horde.maxFollowers; i++) {
+      sim.state.zombies.push(createZombie(sim.ctx.newId(), sim.state.leader.pos,
+        { state: 'follower', variant: 0, spawnZone: -1, isConverted: false, rng: sim.ctx.rng }));
+    }
+    sim.state.followerCount = BALANCE.horde.maxFollowers;
+    damageGuard(sim.ctx, g, g.hp, 'zombie', true);
+    expect(sim.state.pendingConversions[0].willConvert).toBe(true);
+    sim.state.time = BALANCE.conversion.delay; updateConversion(sim.ctx, 0, input);
+    expect(sim.state.pendingConversions).toHaveLength(0);
+    expect(sim.state.zombies).toHaveLength(BALANCE.horde.maxFollowers);
+    expect(sim.state.progression.biomass).toBe(BALANCE.progression.biomassKill);
+  });
+
+  it('continues conversions while respawning, skips dormant rises, and awards biomass only on joining', () => {
+    const sim = fixture(); const g = sim.state.guards[5];
+    damageGuard(sim.ctx, g, g.hp, 'zombie');
+    sim.state.phase = 'respawning'; sim.state.leader.alive = false;
+    sim.state.time = BALANCE.conversion.delay; updateConversion(sim.ctx, 0, input);
+    const z = sim.state.zombies[0]; z.dormant = true;
+    updateConversion(sim.ctx, BALANCE.conversion.riseDuration, input);
+    expect(z.stateTime).toBe(0); expect(z.state).toBe('rising');
+    expect(sim.state.progression.biomass).toBe(BALANCE.progression.biomassKill);
+    z.dormant = false; updateConversion(sim.ctx, BALANCE.conversion.riseDuration, input);
+    expect(z.state).toBe('follower'); expect(sim.state.followerCount).toBe(1);
+    expect(sim.state.progression.biomass).toBe(BALANCE.progression.biomassKill + BALANCE.progression.biomassConvert);
+    updateConversion(sim.ctx, 5, input);
+    expect(sim.drainEvents().filter(e => e.type === 'biomassGain' && e.reason === 'convert')).toHaveLength(1);
   });
 
   it('caps followers plus rising zombies, reserving the last slot across simultaneous pending deaths', () => {

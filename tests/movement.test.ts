@@ -60,6 +60,16 @@ describe('leader movement', () => {
     expect(l.pos.z).toBeGreaterThanOrEqual(17 + l.radius - 1e-8);
   });
 
+  it('slows an already sprinting leader to 40 percent speed during windup', () => {
+    const sim = new Simulation(), l = sim.state.leader;
+    l.vel.z = BALANCE.leader.sprintSpeed;
+    const z = l.pos.z, interval = BALANCE.alpha.biteWindup / 2;
+    updateLeader(sim.ctx, interval, { ...emptyInput(), moveForward: 1, sprint: true, attack: true });
+    expect(l.attackPhase).toBe('windup');
+    expect(l.pos.z - z).toBeCloseTo(BALANCE.leader.sprintSpeed * 0.4 * interval);
+    expect(Math.hypot(l.vel.x, l.vel.z)).toBeCloseTo(BALANCE.leader.sprintSpeed * 0.4);
+  });
+
   it('preserves short attack/hit clips, resets clips only on change, and stops a dead leader', () => {
     const sim = new Simulation(), l = sim.state.leader;
     l.anim = 'attack'; l.animTime = 0.2;

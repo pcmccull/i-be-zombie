@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import { BALANCE } from '../src/config/balance';
 import { emptyInput } from '../src/core/types';
+import { updateLeader } from '../src/entities/ZombieLeader';
 import { Simulation } from '../src/sim/Simulation';
 import { canMelee, updateCombat } from '../src/systems/CombatSystem';
 import { applyHordeCommands, recruitZombie, updateHorde } from '../src/systems/HordeSystem';
@@ -74,18 +76,20 @@ describe('landmark structures', () => {
     applyHordeCommands(lone.ctx, dt, emptyInput()); expect(lone.state.order.type).toBe('follow');
   });
 
-  it('allows facing leader auto-melee and follower melee at the nearest face, with cover still blocking access', () => {
+  it('allows explicit leader attacks and follower melee at the nearest face, with cover still blocking access', () => {
     const sim = new Simulation(); sim.state.zombies = []; sim.state.followerCount = 0;
     const bus = findStructure(sim.state, 1)!; const target = { kind: 'structure' as const, id: 1 };
     sim.state.leader.pos = { x: -65.75, z: 34.2 }; sim.state.leader.facing = Math.PI;
     expect(canMelee(sim.ctx, sim.state.leader.pos, 1.5, target)).toBe(true);
-    updateCombat(sim.ctx, dt, emptyInput()); expect(bus.hp).toBe(bus.maxHp - 10);
+    updateLeader(sim.ctx, 0, { ...emptyInput(), attack: true });
+    updateLeader(sim.ctx, BALANCE.alpha.biteWindup, emptyInput());
+    expect(bus.hp).toBe(bus.maxHp - BALANCE.alpha.biteDamage);
     expect(canMelee(sim.ctx, { x: -70, z: 34 }, 10, target)).toBe(false);
     const follower = zombie(sim, -65.75, 34.2, { state: 'follower' });
     sim.state.leader.pos = { x: -85, z: 62 };
     applyHordeCommands(sim.ctx, dt, { ...emptyInput(), attackTarget: target });
     updateNavigation(sim.ctx, dt, emptyInput()); updateHorde(sim.ctx, 0, emptyInput());
     expect(follower.engageTarget).toEqual(target);
-    updateCombat(sim.ctx, dt, emptyInput()); expect(bus.hp).toBe(bus.maxHp - 10 - 8);
+    updateCombat(sim.ctx, dt, emptyInput()); expect(bus.hp).toBe(bus.maxHp - BALANCE.alpha.biteDamage - 8);
   });
 });
