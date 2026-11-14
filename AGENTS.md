@@ -143,7 +143,7 @@ Agents only create/edit files listed in their task brief. **Never edit `src/core
 - [x] **P1 Scaffold** (agy): package.json, tsconfig, vite.config, index.html, main.ts stub, README stub, `districtLayout.ts` + `tests/layout.test.ts`.
 - [x] **P2A Collision & Nav** (codex): utils/*, CollisionWorld, NavigationGrid + FlowField, tests/collision + tests/navigation.
 - [ ] **P1B Visual layer** (agy): CityDistrict, Checkpoint, LowPolyCharacters, HordeRenderer, Effects, HUD, AudioSystem (render-only, driven by state).
-- [ ] **P2B Leader & Horde** (codex): entities/*, createInitialState, Simulation, ZombieLeader, HordeSystem, NavigationSystem, tests.
+- [x] **P2B Leader & Horde** (codex): entities/*, createInitialState, Simulation, ZombieLeader, HordeSystem, NavigationSystem, tests.
 - [ ] **P2C Combat, AI, Conversion, Victory** (codex): CombatSystem, HumanAISystem, ConversionSystem, VictorySystem, tests.
 - [ ] **P3 Integration** : Game, InputController, ThirdPersonCamera, EntityRenderer, wiring events→Effects/Audio/HUD.
 - [ ] **P4 Review, playtest & tuning**: adversarial review (codex read-only), spec audit (agy), browser playthrough, README.
