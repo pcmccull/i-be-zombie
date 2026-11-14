@@ -15,6 +15,7 @@ export interface HudExtras {
   drawCalls: number;
   showDebug: boolean;
   hoverLabel: string | null;
+  pointerLocked?: boolean;
 }
 
 const TIER_RANK: Record<MomentumTier, number> = {
@@ -93,8 +94,10 @@ export class HUD {
   private readonly momFillEl: HTMLDivElement;
   private readonly guardsCountEl: HTMLDivElement;
 
-  // Center hover label
+  // Center hover label & crosshair
   private readonly hoverLabelEl: HTMLDivElement;
+  private readonly crosshairEl: HTMLDivElement;
+  private readonly captureHintEl: HTMLDivElement;
 
   // Bottom-left order pill
   private readonly orderPillEl: HTMLDivElement;
@@ -107,6 +110,9 @@ export class HUD {
   private readonly rushCardEl: HTMLDivElement;
   private readonly rushStateEl: HTMLDivElement;
   private readonly rushFillEl: HTMLDivElement;
+
+  // Bottom-right control reminder
+  private readonly bottomRightEl: HTMLDivElement;
 
   // Help & Overlays
   private readonly helpPanelEl: HTMLDivElement;
@@ -122,6 +128,7 @@ export class HUD {
   private helpVisible = false;
   private toastTimeoutId: number | null = null;
   private readonly restartCallbacks: (() => void)[] = [];
+  private readonly introDismissCallbacks: (() => void)[] = [];
 
   // Cached values to avoid redundant DOM writes
   private prevSimTime = -1;
@@ -153,6 +160,10 @@ export class HUD {
   private prevMomTierUpActive = false;
   private prevGuardsText = '';
   private prevHoverLabel: string | null = null;
+  private prevCrosshairVisible = false;
+  private prevCrosshairTarget = false;
+  private prevCaptureHintVisible = false;
+  private prevPointerLocked: boolean | null = null;
   private prevOrderText = '';
   private prevOrderAttack = false;
   /** Last state seen by update(); consume() runs before update() each frame. */
@@ -169,6 +180,8 @@ export class HUD {
 
   private readonly onIntroClick = (): void => {
     this.hideIntro();
+    // This pointerdown is a real user gesture, so listeners may capture the mouse here ("click to begin").
+    for (const cb of this.introDismissCallbacks) cb();
   };
 
   private readonly onRestartClick = (): void => {
@@ -244,6 +257,8 @@ export class HUD {
       </div>
 
       <div class="ibz-hover-label" data-ref="hoverLabel"></div>
+      <div class="ibz-crosshair" data-ref="crosshair"></div>
+      <div class="ibz-capture-hint" data-ref="captureHint">Click to capture mouse</div>
 
       <div class="ibz-bottom-left">
         <div class="ibz-panel ibz-order-pill" data-ref="orderPill">
@@ -272,8 +287,8 @@ export class HUD {
         </div>
       </div>
 
-      <div class="ibz-panel ibz-bottom-right">
-        WASD move &middot; Shift sprint &middot; LMB select/unselect targets &middot; RMB follow &middot; Drag/Z/X look &middot; V look back &middot; Tab help
+      <div class="ibz-panel ibz-bottom-right" data-ref="bottomRight">
+        Click to capture mouse &middot; WASD move &middot; Shift sprint &middot; LMB select/unselect targets &middot; RMB follow &middot; Drag/Z/X look &middot; V look back &middot; Tab help
       </div>
 
       <div class="ibz-help-panel" data-ref="helpPanel">
@@ -282,12 +297,15 @@ export class HUD {
           <tbody>
             <tr><td>W A S D / Arrows</td><td>Move leader relative to camera</td></tr>
             <tr><td>Shift</td><td>Sprint while stamina allows</td></tr>
-            <tr><td>Left-Click Target</td><td>Select / unselect a guard, civilian, gate, or landmark door &mdash; the horde splits across selected targets</td></tr>
+            <tr><td>Left-Click (Unlocked)</td><td>Capture mouse for camera look</td></tr>
+            <tr><td>Mouse Move (Captured)</td><td>Orbit &amp; tilt camera (stays where you leave it until C)</td></tr>
+            <tr><td>Left-Click Target</td><td>Select / unselect target at centre crosshair (or cursor when unlocked) &mdash; horde splits across selected targets</td></tr>
             <tr><td>Landmarks</td><td>Break the bus door / alley gate / store door / pen gate to free or reach whoever is inside</td></tr>
             <tr><td>Outbreak Momentum</td><td>Recruit, convert, kill soldiers &amp; break barriers to boost recruit radius (+50%) and horde speed (+20%)</td></tr>
-            <tr><td>Left-Click Ground</td><td>World ping</td></tr>
+            <tr><td>Left-Click Ground</td><td>World ping at centre crosshair (or cursor when unlocked)</td></tr>
             <tr><td>Right-Click</td><td>Recall horde to Follow leader</td></tr>
-            <tr><td>Left / Right-Drag</td><td>Orbit &amp; tilt camera (stays where you leave it)</td></tr>
+            <tr><td>Esc</td><td>Release captured mouse</td></tr>
+            <tr><td>Left / Right-Drag</td><td>Orbit &amp; tilt camera when mouse is not captured</td></tr>
             <tr><td>Z / X</td><td>Rotate camera left / right</td></tr>
             <tr><td>Hold V</td><td>Look back at your horde</td></tr>
             <tr><td>Mouse Wheel</td><td>Zoom camera (close / tactical view)</td></tr>
@@ -312,8 +330,8 @@ export class HUD {
           </p>
           <div class="ibz-intro-keys">
             <div><strong>WASD + Shift</strong> Move &amp; Sprint</div>
-            <div><strong>Drag / Wheel / V</strong> Look Around, Zoom, Look Back</div>
-            <div><strong>Left-Click</strong> Select Targets / Doors</div>
+            <div><strong>Mouse / Wheel / V</strong> Look Around, Zoom, Look Back</div>
+            <div><strong>Left-Click</strong> Capture Mouse &amp; Target</div>
             <div><strong>Right-Click</strong> Recall to Follow</div>
             <div><strong>E</strong> Rally Nearby Walkers</div>
             <div><strong>Space</strong> Trigger Horde Rush</div>
@@ -368,6 +386,8 @@ export class HUD {
     this.momFillEl = q('momFill');
     this.guardsCountEl = q('guardsCount');
     this.hoverLabelEl = q('hoverLabel');
+    this.crosshairEl = q('crosshair');
+    this.captureHintEl = q('captureHint');
     this.orderPillEl = q('orderPill');
     this.orderTextEl = q('orderText');
     this.rallyCardEl = q('rallyCard');
@@ -376,6 +396,7 @@ export class HUD {
     this.rushCardEl = q('rushCard');
     this.rushStateEl = q('rushState');
     this.rushFillEl = q('rushFill');
+    this.bottomRightEl = q('bottomRight');
     this.helpPanelEl = q('helpPanel');
     this.introOverlayEl = q('introOverlay');
     this.victoryOverlayEl = q('victoryOverlay');
@@ -392,6 +413,10 @@ export class HUD {
 
   get introVisible(): boolean {
     return this._introVisible;
+  }
+
+  get isHelpVisible(): boolean {
+    return this.helpVisible;
   }
 
   showIntro(): void {
@@ -411,6 +436,11 @@ export class HUD {
   toggleHelp(): void {
     this.helpVisible = !this.helpVisible;
     this.helpPanelEl.classList.toggle('is-visible', this.helpVisible);
+  }
+
+  /** Called when the player clicks the intro overlay to begin (inside the click gesture). */
+  onIntroDismissed(cb: () => void): void {
+    this.introDismissCallbacks.push(cb);
   }
 
   onRestart(cb: () => void): void {
@@ -433,6 +463,8 @@ export class HUD {
     this.prevMomGainActive = false;
     this.prevMomTierUpActive = false;
     this.toastEl.classList.remove('is-visible');
+    this.helpVisible = false;
+    this.helpPanelEl.classList.remove('is-visible');
   }
 
   consume(events: readonly GameEvent[]): void {
@@ -631,7 +663,7 @@ export class HUD {
       this.guardsCountEl.textContent = guardsText;
     }
 
-    // 4. Hover Label
+    // 4. Hover Label, Centre Crosshair & Pointer Lock Hints
     if (extras.hoverLabel !== this.prevHoverLabel) {
       this.prevHoverLabel = extras.hoverLabel;
       if (extras.hoverLabel) {
@@ -640,6 +672,32 @@ export class HUD {
       } else {
         this.hoverLabelEl.classList.remove('is-visible');
       }
+    }
+
+    const locked = Boolean(extras.pointerLocked);
+    const activePlay = state.phase === 'playing' && !this._introVisible && !this.helpVisible;
+    const showCrosshair = locked && activePlay;
+    if (showCrosshair !== this.prevCrosshairVisible) {
+      this.prevCrosshairVisible = showCrosshair;
+      this.crosshairEl.classList.toggle('is-visible', showCrosshair);
+    }
+    const crosshairTarget = Boolean(extras.hoverLabel);
+    if (crosshairTarget !== this.prevCrosshairTarget) {
+      this.prevCrosshairTarget = crosshairTarget;
+      this.crosshairEl.classList.toggle('is-target', crosshairTarget);
+    }
+
+    const showCaptureHint = !locked && activePlay;
+    if (showCaptureHint !== this.prevCaptureHintVisible) {
+      this.prevCaptureHintVisible = showCaptureHint;
+      this.captureHintEl.classList.toggle('is-visible', showCaptureHint);
+    }
+
+    if (locked !== this.prevPointerLocked) {
+      this.prevPointerLocked = locked;
+      this.bottomRightEl.innerHTML = locked
+        ? 'WASD move &middot; Shift sprint &middot; Mouse look &middot; LMB select/unselect targets &middot; RMB follow &middot; V look back &middot; Esc to release mouse &middot; Tab help'
+        : 'Click to capture mouse &middot; WASD move &middot; Shift sprint &middot; LMB select/unselect targets &middot; RMB follow &middot; Drag/Z/X look &middot; V look back &middot; Tab help';
     }
 
     // 5. Bottom-Left Order Pill
@@ -761,6 +819,7 @@ export class HUD {
     this.victoryBtn.removeEventListener('click', this.onRestartClick);
     this.defeatBtn.removeEventListener('click', this.onRestartClick);
     this.restartCallbacks.length = 0;
+    this.introDismissCallbacks.length = 0;
     this.root.innerHTML = '';
   }
 

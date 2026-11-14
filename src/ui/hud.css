@@ -369,6 +369,72 @@
   display: block;
 }
 
+/* Center Crosshair (Pointer Lock) */
+.ibz-crosshair {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 14px;
+  height: 14px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  color: rgba(155, 227, 90, 0.88);
+  display: none;
+}
+
+.ibz-crosshair.is-visible {
+  display: block;
+}
+
+.ibz-crosshair.is-target {
+  color: #ffb347;
+}
+
+.ibz-crosshair::before,
+.ibz-crosshair::after {
+  content: '';
+  position: absolute;
+  background: currentColor;
+  box-shadow: 0 0 3px rgba(0, 0, 0, 0.85);
+}
+
+.ibz-crosshair::before {
+  top: 6px;
+  left: 0;
+  width: 14px;
+  height: 2px;
+}
+
+.ibz-crosshair::after {
+  top: 0;
+  left: 6px;
+  width: 2px;
+  height: 14px;
+}
+
+/* Subtle HUD Hint When Unlocked During Play */
+.ibz-capture-hint {
+  position: absolute;
+  bottom: 72px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 12px;
+  background: rgba(18, 22, 27, 0.78);
+  border: 1px solid rgba(155, 227, 90, 0.35);
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #c2cbc0;
+  pointer-events: none;
+  display: none;
+}
+
+.ibz-capture-hint.is-visible {
+  display: block;
+}
+
 /* Bottom-Left: Order Status Pill */
 .ibz-bottom-left {
   position: absolute;

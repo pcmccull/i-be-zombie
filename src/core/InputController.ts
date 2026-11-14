@@ -1,6 +1,11 @@
 import * as THREE from 'three';
 import type { SimInput, TargetRef, Vec3 } from './types';
-import { isClick, pickNearestScreenTarget, type ScreenTarget } from './cameraMath';
+import {
+  isClick,
+  isInitialLockJump,
+  pickNearestScreenTarget,
+  type ScreenTarget,
+} from './cameraMath';
 
 interface InputDependencies {
   camera: THREE.Camera;
@@ -11,6 +16,7 @@ interface InputDependencies {
   onGroundPing(p: Vec3): void;
   onKey(action: 'recenter' | 'help' | 'debug' | 'mute' | 'restart'): void;
   onFirstGesture(): void;
+  canLock?: () => boolean;
 }
 
 function isEditing(target: EventTarget | null): boolean {
@@ -36,6 +42,7 @@ export class InputController {
   private lastY = 0;
   private pointerKnown = false;
   private dragged = false;
+  private firstMoveAfterLock = false;
   private readonly raycaster = new THREE.Raycaster();
   private readonly ndc = new THREE.Vector2();
   private readonly ground = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
@@ -74,11 +81,21 @@ export class InputController {
     canvas.addEventListener('pointerleave', this.onPointerLeave, { signal });
     canvas.addEventListener('contextmenu', this.onContextMenu, { signal });
     canvas.addEventListener('wheel', this.onWheel, { passive: false, signal });
+    document.addEventListener('mousemove', this.onMouseMove, { signal });
+    document.addEventListener('pointerlockchange', this.onPointerLockChange, { signal });
+    document.addEventListener('pointerlockerror', this.onPointerLockError, { signal });
     window.addEventListener('blur', this.onBlur, { signal });
     document.addEventListener('visibilitychange', this.onVisibility, { signal });
   }
 
   get hovered(): TargetRef | null { return this.hover; }
+  get isLocked(): boolean {
+    return (
+      typeof document !== 'undefined' &&
+      'pointerLockElement' in document &&
+      document.pointerLockElement === this.canvas
+    );
+  }
   /** Keyboard camera orbit axis: X = +1 (orbit right), Z = -1 (orbit left). */
   get cameraTurn(): number { return Number(this.keys.has('KeyX')) - Number(this.keys.has('KeyZ')); }
   /** Hold V to swing the camera around and look behind the leader at the horde. */
@@ -101,7 +118,28 @@ export class InputController {
   }
 
   updateHover(): void {
+    if (this.isLocked) {
+      const rect = this.canvas.getBoundingClientRect();
+      this.hover = this.pick(rect.left + rect.width * 0.5, rect.top + rect.height * 0.5);
+      return;
+    }
     this.hover = this.pointerKnown ? this.pick(this.lastX, this.lastY) : null;
+  }
+
+  /** Request mouse capture from inside a user gesture (intro / restart click). Returns false if not possible now. */
+  requestPointerLock(): boolean {
+    return this.tryRequestPointerLock();
+  }
+
+  exitPointerLock(): void {
+    this.firstMoveAfterLock = false;
+    if (this.isLocked && typeof document.exitPointerLock === 'function') {
+      try {
+        document.exitPointerLock();
+      } catch {
+        // Ignore if browser disallows exitPointerLock
+      }
+    }
   }
 
   clear(): void {
@@ -109,15 +147,44 @@ export class InputController {
     this.rally = this.rush = this.recall = false;
     this.attackTarget = this.hover = null;
     this.pointerKnown = false;
+    this.firstMoveAfterLock = false;
     this.releasePointer();
   }
 
   dispose(): void {
+    this.exitPointerLock();
     this.listeners.abort();
     this.clear();
     this.canvas.style.touchAction = this.previousTouchAction;
     if (this.previousTabIndex === null) this.canvas.removeAttribute('tabindex');
     else this.canvas.setAttribute('tabindex', this.previousTabIndex);
+  }
+
+  private isPointerLockSupported(): boolean {
+    return (
+      typeof document !== 'undefined' &&
+      'pointerLockElement' in document &&
+      typeof this.canvas.requestPointerLock === 'function'
+    );
+  }
+
+  private tryRequestPointerLock(): boolean {
+    if (!this.isPointerLockSupported()) return false;
+    const canLock = this.deps.canLock ? this.deps.canLock() : !this.isLocked;
+    if (!canLock) return false;
+    try {
+      this.firstMoveAfterLock = true;
+      const result: unknown = this.canvas.requestPointerLock();
+      if (result && typeof (result as Promise<unknown>).catch === 'function') {
+        (result as Promise<unknown>).catch(() => {
+          this.onPointerLockError();
+        });
+      }
+      return true;
+    } catch {
+      this.onPointerLockError();
+      return false;
+    }
   }
 
   private readonly onGesture = (): void => { this.deps.onFirstGesture(); };
@@ -143,6 +210,32 @@ export class InputController {
     this.keys.delete(event.code);
     if (!isEditing(event.target) && ['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab', 'F3'].includes(event.code)) event.preventDefault();
   };
+  private readonly onMouseMove = (event: MouseEvent): void => {
+    if (!this.isLocked) return;
+    const mx = event.movementX;
+    const my = event.movementY;
+    if (mx === 0 && my === 0) return;
+    const firstMove = this.firstMoveAfterLock;
+    this.firstMoveAfterLock = false;
+    if (isInitialLockJump(mx, my, firstMove)) return;
+    this.deps.onOrbit(mx, my);
+  };
+  private readonly onPointerLockChange = (): void => {
+    const locked = this.isLocked;
+    this.firstMoveAfterLock = locked;
+    if (locked) {
+      this.pointerKnown = true;
+      this.releasePointer();
+    } else {
+      this.pointerKnown = false;
+      this.hover = null;
+      this.releasePointer();
+    }
+  };
+  private readonly onPointerLockError = (): void => {
+    this.firstMoveAfterLock = false;
+    this.releasePointer();
+  };
   private readonly onPointerDown = (event: PointerEvent): void => {
     if (this.pointerId !== null || (event.button !== 0 && event.button !== 2)) return;
     event.preventDefault();
@@ -153,10 +246,17 @@ export class InputController {
     this.downY = this.lastY = event.clientY;
     this.pointerKnown = true;
     this.dragged = false;
-    // Capture clicks too so releasing outside the canvas cannot leave a stuck button.
-    this.canvas.setPointerCapture(event.pointerId);
+    if (!this.isLocked) {
+      // Capture clicks too so releasing outside the canvas cannot leave a stuck button.
+      try {
+        this.canvas.setPointerCapture(event.pointerId);
+      } catch {
+        // Ignore if pointer capture is unavailable
+      }
+    }
   };
   private readonly onPointerMove = (event: PointerEvent): void => {
+    if (this.isLocked) return;
     if (this.pointerId !== null && event.pointerId !== this.pointerId) return;
     if (this.pointerId === null && event.target !== this.canvas) {
       this.pointerKnown = false;
@@ -177,19 +277,42 @@ export class InputController {
   };
   private readonly onPointerUp = (event: PointerEvent): void => {
     if (event.pointerId !== this.pointerId || event.button !== this.pointerButton) return;
+    if (this.isLocked) {
+      if (this.pointerButton === 2) {
+        this.recall = true;
+        this.attackTarget = null;
+      } else if (this.pointerButton === 0) {
+        const rect = this.canvas.getBoundingClientRect();
+        const cx = rect.left + rect.width * 0.5;
+        const cy = rect.top + rect.height * 0.5;
+        const target = this.pick(cx, cy);
+        if (target) {
+          this.attackTarget = target;
+          this.recall = false;
+        } else if (this.setPointerRay(cx, cy) && this.raycaster.ray.intersectPlane(this.ground, this.groundPoint)) {
+          this.deps.onGroundPing(this.groundPoint);
+        }
+      }
+      this.releasePointer();
+      return;
+    }
     this.lastX = event.clientX;
     this.lastY = event.clientY;
     if (!this.dragged && isClick(this.downX, this.downY, event.clientX, event.clientY)) {
       if (this.pointerButton === 2) {
         this.recall = true;
         this.attackTarget = null;
-      } else {
-        const target = this.pick(event.clientX, event.clientY);
-        if (target) {
-          this.attackTarget = target;
-          this.recall = false;
-        } else if (this.setPointerRay(event.clientX, event.clientY) && this.raycaster.ray.intersectPlane(this.ground, this.groundPoint)) {
-          this.deps.onGroundPing(this.groundPoint);
+      } else if (this.pointerButton === 0) {
+        // A click while unlocked captures the mouse; if capture isn't possible right now (help open, game over,
+        // unsupported, or refused) it falls back to a normal target click so ordering never goes dead.
+        if (!(this.isPointerLockSupported() && this.tryRequestPointerLock())) {
+          const target = this.pick(event.clientX, event.clientY);
+          if (target) {
+            this.attackTarget = target;
+            this.recall = false;
+          } else if (this.setPointerRay(event.clientX, event.clientY) && this.raycaster.ray.intersectPlane(this.ground, this.groundPoint)) {
+            this.deps.onGroundPing(this.groundPoint);
+          }
         }
       }
     }
@@ -199,6 +322,7 @@ export class InputController {
     if (event.pointerId === this.pointerId) this.releasePointer();
   };
   private readonly onPointerLeave = (): void => {
+    if (this.isLocked) return;
     if (this.pointerId === null) { this.pointerKnown = false; this.hover = null; }
   };
   private readonly onContextMenu = (event: MouseEvent): void => { event.preventDefault(); };
@@ -216,7 +340,13 @@ export class InputController {
     this.pointerId = null;
     this.pointerButton = -1;
     this.dragged = false;
-    if (id !== null && this.canvas.hasPointerCapture(id)) this.canvas.releasePointerCapture(id);
+    if (id !== null && !this.isLocked && this.canvas.hasPointerCapture(id)) {
+      try {
+        this.canvas.releasePointerCapture(id);
+      } catch {
+        // Ignore if pointer capture is already released
+      }
+    }
   }
 
   private setPointerRay(x: number, y: number): boolean {

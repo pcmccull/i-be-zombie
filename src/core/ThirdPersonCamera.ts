@@ -1,11 +1,16 @@
 import * as THREE from 'three';
 import { BALANCE } from '../config/balance';
 import type { Vec3 } from './types';
-import { approachAngle, approachCameraDistance, cameraOffset } from './cameraMath';
+import {
+  applyOrbitDelta,
+  approachAngle,
+  approachCameraDistance,
+  cameraOffset,
+  MOUSE_LOOK_SENSITIVITY,
+  type CameraAngles,
+} from './cameraMath';
 
 const DEFAULT_PITCH = Math.atan(11 / 14);
-const MIN_PITCH = 20 * Math.PI / 180;
-const MAX_PITCH = 78 * Math.PI / 180;
 const MAX_ZOOM = 48;
 /** Keyboard orbit speed (rad/s) for Z/X. */
 const KEY_ORBIT_SPEED = 2.4;
@@ -22,7 +27,7 @@ export class ThirdPersonCamera {
   private manualYaw = false;
   private turnAxis = 0;
   private lookBackHeld = false;
-  /** 0..1 eased blend toward the 180° look-back view. */
+  /** 0..1 eased blend toward the 180Â° look-back view. */
   private lookBack = 0;
   /** Yaw actually used for rendering (base yaw + look-back). Movement keeps using `yaw`. */
   viewYaw = 0;
@@ -30,6 +35,7 @@ export class ThirdPersonCamera {
   private boomLength = 0;
   private desiredDistance = 0;
   private actualDistance = 0;
+  private readonly orbitScratch: CameraAngles = { yaw: 0, pitch: DEFAULT_PITCH };
   private readonly focus = new THREE.Vector3();
   private readonly desired = new THREE.Vector3();
   private readonly direction = new THREE.Vector3();
@@ -48,8 +54,9 @@ export class ThirdPersonCamera {
   }
 
   addOrbit(dxPx: number, dyPx: number): void {
-    this.yaw -= dxPx * 0.005;
-    this.pitch = THREE.MathUtils.clamp(this.pitch + dyPx * 0.005, MIN_PITCH, MAX_PITCH);
+    applyOrbitDelta(this.yaw, this.pitch, dxPx, dyPx, MOUSE_LOOK_SENSITIVITY, this.orbitScratch);
+    this.yaw = this.orbitScratch.yaw;
+    this.pitch = this.orbitScratch.pitch;
     this.sinceOrbit = 0;
     this.recentering = false;
     this.manualYaw = true;

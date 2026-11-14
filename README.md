@@ -60,10 +60,13 @@ All gameplay inputs implemented in [`src/core/InputController.ts`](src/core/Inpu
 |---|---|
 | `W A S D` / `Arrow Keys` | Move leader relative to camera yaw (diagonal input is normalized) |
 | `Shift` (`ShiftLeft` / `ShiftRight`) | Sprint while stamina allows (drains 25/s; requires 20% recovery after exhaustion) |
-| `Left-Click` on guard / civilian / gate / landmark door | Toggle that target in or out of the attack selection. The horde splits evenly across all selected targets. Clicking a civilian inside the intact store sends the horde to the store door first |
-| `Left-Click` on empty ground | Place a visual world ping (does not switch to click-to-move) |
+| `Left-Click` (while mouse is not captured) | Capture the mouse (Pointer Lock) and dismiss the intro without selecting or pinging a target |
+| `Mouse Move` (while captured) | Orbit camera yaw and tilt (`20°`–`78°`); the camera stays where you leave it until `C` |
+| `Left-Click` on guard / civilian / gate / landmark door | Toggle the target under the centre crosshair (or cursor when not captured) in or out of the attack selection. The horde splits evenly across all selected targets. Clicking a civilian inside the intact store sends the horde to the store door first |
+| `Left-Click` on empty ground | Place a visual world ping at the centre crosshair (or cursor when not captured) |
 | `Right-Click` (without drag) | **Recall** horde to `FOLLOWING` mode (clears active attack target) |
-| `Left-` or `Right-Drag` (past 6 px threshold) | Orbit camera yaw and tilt (up to `78°`). The camera stays where you leave it until `C` |
+| `Esc` | Release captured mouse (also released when opening `Tab` help or on Victory / Defeat) |
+| `Left-` or `Right-Drag` (past 6 px threshold, when not captured) | Orbit camera yaw and tilt (`20°`–`78°`) when mouse is not captured; stays where you leave it until `C` |
 | `Z` / `X` | Rotate camera left / right |
 | Hold `V` | Look back at the horde |
 | `Mouse Wheel` | Zoom camera between close view (`8 m`) and tactical overview (`48 m`) |

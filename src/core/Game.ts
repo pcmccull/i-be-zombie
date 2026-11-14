@@ -13,7 +13,12 @@ import { Landmarks } from '../world/Landmarks';
 import { InputController } from './InputController';
 import { ThirdPersonCamera } from './ThirdPersonCamera';
 import { emptyInput, type TargetRef } from './types';
-import { approachAngle, approachOccluderOpacity } from './cameraMath';
+import {
+  approachAngle,
+  approachOccluderOpacity,
+  shouldReleaseLock,
+  shouldRequestLock,
+} from './cameraMath';
 
 export class Game {
   public readonly sim: Simulation;
@@ -133,15 +138,26 @@ export class Game {
       onKey: action => {
         switch (action) {
           case 'recenter': this.cameraRig.recenter(); break;
-          case 'help': this.hud.toggleHelp(); break;
+          case 'help':
+            this.hud.toggleHelp();
+            if (this.hud.isHelpVisible) this.input.exitPointerLock();
+            break;
           case 'debug': this.showDebug = !this.showDebug; break;
           case 'mute': this.audio.setMuted(!this.audio.muted); break;
           case 'restart': if (this.sim.state.phase !== 'playing') this.restart(); break;
         }
       },
       onFirstGesture: () => { this.audio.unlock(); this.hud.hideIntro(); },
+      canLock: () =>
+        shouldRequestLock({
+          isLocked: this.input.isLocked,
+          phase: this.sim.state.phase,
+          helpVisible: this.hud.isHelpVisible,
+        }),
     });
-    this.hud.onRestart(() => this.restart());
+    // Restart and "click to begin" are real clicks, so capture the mouse right away instead of needing a second click.
+    this.hud.onRestart(() => { this.restart(); this.input.requestPointerLock(); });
+    this.hud.onIntroDismissed(() => this.input.requestPointerLock());
     window.addEventListener('resize', this.onResize);
     window.addEventListener('blur', this.onBlur);
     window.addEventListener('focus', this.onFocus);
@@ -251,6 +267,9 @@ export class Game {
     if (steps === BALANCE.sim.maxStepsPerFrame) this.accumulator = 0;
     const alpha = this.accumulator / BALANCE.sim.fixedDt;
     const state = this.sim.state;
+    if (shouldReleaseLock({ isLocked: this.input.isLocked, phase: state.phase, helpVisible: this.hud.isHelpVisible })) {
+      this.input.exitPointerLock();
+    }
     const events = this.sim.drainEvents();
     this.effects.consume(events, state);
     this.audio.consume(events, state);
@@ -360,6 +379,7 @@ export class Game {
     this.hud.update(this.sim.state, {
       fps: this.smoothFps, drawCalls: this.renderer.info.render.calls, showDebug: this.showDebug,
       hoverLabel,
+      pointerLocked: this.input.isLocked,
     });
   }
 
