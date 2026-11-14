@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { SimInput, TargetRef, Vec3 } from './types';
-import { isClick } from './cameraMath';
+import { isClick, pickNearestScreenTarget, type ScreenTarget } from './cameraMath';
 
 interface InputDependencies {
   camera: THREE.Camera;
@@ -42,6 +42,17 @@ export class InputController {
   private readonly groundPoint = new THREE.Vector3();
   private readonly candidates: THREE.Object3D[] = [];
   private readonly intersections: THREE.Intersection[] = [];
+  private readonly sightRaycaster = new THREE.Raycaster();
+  private readonly sightHits: THREE.Intersection[] = [];
+  private readonly cameraPosition = new THREE.Vector3();
+  private readonly worldCenter = new THREE.Vector3();
+  private readonly projected = new THREE.Vector3();
+  private readonly sightDirection = new THREE.Vector3();
+  private readonly localCameraPosition = new THREE.Vector3();
+  private readonly inverseWorld = new THREE.Matrix4();
+  private readonly targets: THREE.Object3D[] = [];
+  private readonly screenPoints: ScreenTarget<number>[] = [];
+  private readonly screenPointPool: ScreenTarget<number>[] = [];
   private readonly previousTouchAction: string;
   private readonly previousTabIndex: string | null;
 
@@ -213,8 +224,12 @@ export class InputController {
   private pick(x: number, y: number): TargetRef | null {
     if (!this.setPointerRay(x, y)) return null;
     this.candidates.length = 0;
+    this.targets.length = 0;
     for (const object of this.deps.pickables()) {
-      if (object.userData.target) this.candidates.push(object);
+      if (object.userData.target) {
+        this.targets.push(object);
+        this.candidates.push(object);
+      }
     }
     for (const object of this.deps.occluders) {
       if (!this.candidates.includes(object)) this.candidates.push(object);
@@ -222,6 +237,58 @@ export class InputController {
     for (const object of this.candidates) object.updateWorldMatrix(true, false);
     this.intersections.length = 0;
     this.raycaster.intersectObjects(this.candidates, false, this.intersections);
-    return (this.intersections[0]?.object.userData.target as TargetRef | undefined) ?? null;
+    const direct = this.intersections[0]?.object.userData.target as TargetRef | undefined;
+    if (direct) return direct;
+
+    // Missed a small/moving proxy: use the same visible-center tolerance for clicks and hover.
+    const rect = this.canvas.getBoundingClientRect();
+    this.deps.camera.getWorldPosition(this.cameraPosition);
+    this.screenPoints.length = 0;
+    for (let i = 0; i < this.targets.length; i++) {
+      const object = this.targets[i];
+      if (object instanceof THREE.Mesh) {
+        if (!object.geometry.boundingBox) object.geometry.computeBoundingBox();
+        object.geometry.boundingBox!.getCenter(this.worldCenter).applyMatrix4(object.matrixWorld);
+      } else object.getWorldPosition(this.worldCenter);
+      this.projected.copy(this.worldCenter).project(this.deps.camera);
+      // Exclude centers behind the camera or outside its near/far clip planes.
+      if (this.projected.z < -1 || this.projected.z > 1) continue;
+      const sx = rect.left + (this.projected.x + 1) * rect.width * 0.5;
+      const sy = rect.top + (1 - this.projected.y) * rect.height * 0.5;
+      if ((sx - x) ** 2 + (sy - y) ** 2 > 28 * 28) continue;
+      this.sightDirection.subVectors(this.worldCenter, this.cameraPosition);
+      const distance = this.sightDirection.length();
+      if (distance <= 0) continue;
+      this.sightDirection.divideScalar(distance);
+      this.sightRaycaster.set(this.cameraPosition, this.sightDirection);
+      this.sightRaycaster.far = distance;
+      this.sightHits.length = 0;
+      this.sightRaycaster.intersectObjects(this.deps.occluders, false, this.sightHits);
+      // The gate's own solid volume is part of the target, not cover in front of it.
+      let blocked = false;
+      for (const hit of this.sightHits) {
+        if (hit.object !== object && hit.object.userData.pickTarget !== object) { blocked = true; break; }
+      }
+      // A segment wholly inside a building proxy has no surface intersection.
+      // Do not allow tolerance picking through that volume either.
+      if (!blocked) {
+        for (const occluder of this.deps.occluders) {
+          if (!(occluder instanceof THREE.Mesh) || !occluder.userData.occlusionVolume) continue;
+          if (!occluder.geometry.boundingBox) occluder.geometry.computeBoundingBox();
+          this.inverseWorld.copy(occluder.matrixWorld).invert();
+          this.localCameraPosition.copy(this.cameraPosition).applyMatrix4(this.inverseWorld);
+          if (occluder.geometry.boundingBox!.containsPoint(this.localCameraPosition)) { blocked = true; break; }
+        }
+      }
+      if (blocked) continue;
+      const slot = this.screenPoints.length;
+      const point = this.screenPointPool[slot] ?? (this.screenPointPool[slot] = { x: 0, y: 0, id: 0 });
+      point.x = sx;
+      point.y = sy;
+      point.id = i;
+      this.screenPoints.push(point);
+    }
+    const nearest = pickNearestScreenTarget(this.screenPoints, x, y, 28);
+    return nearest === null ? null : this.targets[nearest].userData.target as TargetRef;
   }
 }
