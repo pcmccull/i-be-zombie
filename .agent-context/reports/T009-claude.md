@@ -1,0 +1,8 @@
+# T009 Report (failover resume)
+**Task ID & Agent:** T009 / claude-worker (resumed from codex checkpoint)
+**Status:** COMPLETED
+**Completed Work:** Audited ConquestSystem.ts, RespawnSystem.ts, StructureSystem.ts and tests/{conquest,discovery,respawn}.test.ts against brief items 1-9. No source edits were needed. Item 7 is met by the `takeStructureHits` hook in StructureSystem, which ConquestSystem reads to mark a struck objective stronghold contested, with alert increments and `biomassStructure` on destroy. Capture uses `unlockAbility`/`addBiomass` only. No other module writes strongholds, district status or discovery. The item 9 cases are all covered by the 34 tests across the three files: discovery vs conquest, each objective kind, capture/unlock/biomass once over 120 extra steps, mall before police, bounded waves, no waves in a captured district, nest replenish keeping followerCount, respawn keeping unlocks/biomass/territory, and respawn at a newly captured nest.
+**Remaining Work:** None for T009. T012 must wire updateConquest/updateRespawn into the Simulation step order.
+**Public Interfaces/Exports Added:** ConquestSystem: ObjectiveStatus, isNestActive, revealAround, objectiveStatus, spawnNestFollowers, updateConquest. RespawnSystem: updateRespawn. StructureSystem: takeStructureHits (plus existing exports).
+**Verification Run:** `npx tsc --noEmit` clean. `npm test`: 366/367 passed. The one failure was the tests/opening.test.ts perf assertion (3300 ms vs the 3000 ms limit) under full-suite load; it passes when run alone, and it is unrelated to T009 because the legacy sim doesn't call these systems.
+**Memory Notes:** Appended to MEMORY.md ([T009 Conquest]).

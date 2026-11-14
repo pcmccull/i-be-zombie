@@ -2,9 +2,19 @@ import { BALANCE } from '../config/balance';
 import type { SimContext } from '../core/contracts';
 import type { GameState, StructureState, Vec2, ZombieAgent } from '../core/types';
 import { addMomentum } from './MomentumSystem';
+import { addBiomass } from './ProgressionSystem';
 
 interface Release { at: number; path: Vec2[]; index: number }
 const releases = new WeakMap<ZombieAgent, Release>();
+// Conquest owns territory/alert; retain every hit until its next update (including
+// multiple hits in one combat step), without consuming the visual event queue.
+const conquestHits = new WeakMap<GameState, Map<number, number>>();
+
+export function takeStructureHits(state: GameState): ReadonlyMap<number, number> | undefined {
+  const hits = conquestHits.get(state);
+  conquestHits.delete(state);
+  return hits;
+}
 
 export function findStructure(state: GameState, id: number): StructureState | undefined {
   for (const s of state.structures) if (s.id === id) return s;
@@ -18,7 +28,10 @@ export function isReleaseBurst(ctx: SimContext, z: ZombieAgent): boolean {
 }
 
 export function damageStructure(ctx: SimContext, s: StructureState, amount: number): void {
-  if (s.destroyed) return;
+  if (s.destroyed || !(amount > 0) || !Number.isFinite(amount)) return;
+  let hits = conquestHits.get(ctx.state);
+  if (!hits) { hits = new Map(); conquestHits.set(ctx.state, hits); }
+  hits.set(s.id, (hits.get(s.id) ?? 0) + 1);
   s.hp = Math.max(0, s.hp - amount); s.hitFlash = 0.15;
   ctx.emit({ type: 'damage', target: { kind: 'structure', id: s.id }, amount, pos: { ...s.center } });
   ctx.emit({ type: 'structureDamaged', id: s.id, kind: s.kind, hp: s.hp, maxHp: s.maxHp, pos: { ...s.center } });
@@ -50,6 +63,7 @@ export function damageStructure(ctx: SimContext, s: StructureState, amount: numb
     count++;
   }
   ctx.state.stats.structuresDestroyed++;
+  addBiomass(ctx, BALANCE.progression.biomassStructure, 'structure');
   ctx.emit({ type: 'structureDestroyed', id: s.id, kind: s.kind, landmark: s.landmark, pos: { ...s.center } });
   if (count > 0) ctx.emit({ type: 'released', structureId: s.id, count, pos: { ...s.center } });
   if (def.defensive) addMomentum(ctx, 'structure');
