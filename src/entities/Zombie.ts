@@ -1,6 +1,15 @@
 import { BALANCE } from '../config/balance';
 import type { Rng, Vec2, ZombieAgent } from '../core/types';
 
+/** Permanent mutation; repeated calls must neither heal nor compound the speed penalty. */
+export function evolveToBrute(z: ZombieAgent): void {
+  if (z.brute) return;
+  z.brute = true;
+  z.hp = z.maxHp = BALANCE.brute.maxHp;
+  z.radius = BALANCE.brute.radius;
+  z.speedScale *= BALANCE.brute.speedMultiplier;
+}
+
 export function createZombie(id: number, pos: Vec2, opts: {
   state: 'ambient' | 'rising' | 'follower'; variant: number; spawnZone: number; isConverted: boolean; rng: Rng;
   heldBy?: number;

@@ -81,6 +81,7 @@ export const BALANCE = {
     crawlNeighborRadius: 2.6,
     crawlSpeedMultiplier: 0.6, // speed while on top of an obstacle
     crawlNavMinFollowers: 6, // horde paths through crawlable obstacles at this size
+    moveOrderTime: 20, // seconds before a ground move order reverts to follow (open world)
   },
   guard: {
     count: 8,
