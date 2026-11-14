@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { approachOccluderOpacity } from '../core/cameraMath';
 import type {
   AABB,
   BuildingDef,
@@ -203,27 +204,20 @@ export class CityDistrict {
     this.buildProps(layout);
   }
 
-  setOccluderFade(hits: Set<THREE.Object3D>): void {
-    const step = 0.14;
+  setOccluderFade(hits: Set<THREE.Object3D>, dt = 1 / 60): void {
     for (let i = 0; i < this.buildingEntries.length; i++) {
       const entry = this.buildingEntries[i];
       const isHit =
         hits.has(entry.occluder) ||
         (entry.visualMesh !== null && hits.has(entry.visualMesh));
-      const target = isHit ? 0.35 : 1.0;
-      if (Math.abs(entry.currentOpacity - target) > 0.002) {
-        entry.currentOpacity += (target - entry.currentOpacity) * step;
-        if (Math.abs(entry.currentOpacity - target) <= 0.01) {
-          entry.currentOpacity = target;
-        }
-        const transparent = entry.currentOpacity < 0.995;
-        if (entry.material.transparent !== transparent) {
-          entry.material.transparent = transparent;
-          entry.material.depthWrite = !transparent;
-          entry.material.needsUpdate = true;
-        }
-        entry.material.opacity = entry.currentOpacity;
+      entry.currentOpacity = approachOccluderOpacity(entry.currentOpacity, isHit, dt);
+      const transparent = entry.currentOpacity < 1;
+      if (entry.material.transparent !== transparent) {
+        entry.material.transparent = transparent;
+        entry.material.needsUpdate = true;
       }
+      entry.material.depthWrite = !transparent;
+      entry.material.opacity = entry.currentOpacity;
     }
   }
 
@@ -407,6 +401,7 @@ export class CityDistrict {
         opacity: 0,
         depthWrite: false,
         colorWrite: false,
+        side: THREE.DoubleSide,
       }),
     );
 
@@ -421,11 +416,13 @@ export class CityDistrict {
       const cz = 0.5 * (fp.minZ + fp.maxZ);
       const h = b.height;
 
-      // Invisible raycastable occluder box per building
+      // Render-free volume, expanded below to include every rendered architectural detail.
       const occGeom = this.trackGeometry(new THREE.BoxGeometry(w, h, d));
       const occluder = new THREE.Mesh(occGeom, occluderMat);
       occluder.position.set(cx, h * 0.5, cz);
       occluder.name = `Occluder_${i}`;
+      occluder.visible = false; // Raycaster still tests invisible proxies.
+      occluder.userData.occlusionVolume = true;
       this.group.add(occluder);
       this.occluders.push(occluder);
 
@@ -437,6 +434,14 @@ export class CityDistrict {
         cz < cpBounds.maxZ &&
         h <= 3.2;
 
+      if (insideCheckpoint) {
+        // These buildings render in CheckpointStatic, including a slightly wider
+        // roof and a ridge extending 0.3m above the authored collider.
+        occluder.userData.checkpointBuilding = true;
+        occluder.position.y = (h + 0.3) * 0.5;
+        occluder.scale.set((w + 0.3) / w, (h + 0.3) / h, (d + 0.3) / d);
+      }
+
       const bldgMat = this.trackMaterial(
         new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true }),
       );
@@ -444,6 +449,15 @@ export class CityDistrict {
       let visualMesh: THREE.Mesh | null = null;
       if (!insideCheckpoint) {
         const bldgGeom = this.trackGeometry(this.createBuildingGeometry(b));
+        bldgGeom.computeBoundingBox();
+        const bounds = bldgGeom.boundingBox!;
+        // Geometry is authored in world coordinates. Keep the proxy local and axis aligned.
+        bounds.getCenter(occluder.position);
+        occluder.scale.set(
+          (bounds.max.x - bounds.min.x) / w,
+          (bounds.max.y - bounds.min.y) / h,
+          (bounds.max.z - bounds.min.z) / d,
+        );
         visualMesh = new THREE.Mesh(bldgGeom, bldgMat);
         visualMesh.castShadow = true;
         visualMesh.receiveShadow = true;

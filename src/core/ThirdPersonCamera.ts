@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { BALANCE } from '../config/balance';
 import type { Vec3 } from './types';
-import { approachAngle, cameraOffset } from './cameraMath';
+import { approachAngle, approachCameraDistance, cameraOffset } from './cameraMath';
 
 const DEFAULT_PITCH = Math.atan(11 / 14);
 const MIN_PITCH = 20 * Math.PI / 180;
@@ -17,14 +17,19 @@ export class ThirdPersonCamera {
   private recentering = false;
   private initialized = false;
   private boomLength = 0;
-  private lift = 0;
+  private desiredDistance = 0;
+  private actualDistance = 0;
   private readonly focus = new THREE.Vector3();
   private readonly desired = new THREE.Vector3();
   private readonly direction = new THREE.Vector3();
   private readonly lookAt = new THREE.Vector3();
+  private readonly visibilityTarget = new THREE.Vector3();
+  private readonly localOrigin = new THREE.Vector3();
+  private readonly inverseWorld = new THREE.Matrix4();
   private readonly raycaster = new THREE.Raycaster();
   private readonly intersections: THREE.Intersection[] = [];
   private readonly faded = new Set<THREE.Object3D>();
+  private readonly insideHits = new Map<THREE.Object3D, THREE.Intersection>();
 
   constructor(private readonly camera: THREE.PerspectiveCamera, private readonly occluders: THREE.Object3D[]) {
     camera.fov = 55;
@@ -52,7 +57,7 @@ export class ThirdPersonCamera {
     this.recentering = false;
     this.focus.copy(focus);
     this.boomLength = Math.hypot(14, 11);
-    this.lift = 0;
+    this.faded.clear();
     this.initialized = true;
     this.update(0, focus, leaderFacing, false, 0);
   }
@@ -70,21 +75,24 @@ export class ThirdPersonCamera {
     }
     this.zoom += (this.targetZoom - this.zoom) * (1 - Math.exp(-10 * dt));
     this.focus.lerp(focus, 1 - Math.exp(-22 * dt));
+    // Raycasts also run before the first render and after scene transforms change.
+    for (const occluder of this.occluders) occluder.updateWorldMatrix(true, false);
     cameraOffset(this.yaw, this.zoom, this.zoom * Math.tan(this.pitch), this.desired);
     this.desired.add(this.focus);
     this.direction.subVectors(this.desired, this.focus);
     const desiredLength = this.direction.length();
+    this.desiredDistance = desiredLength;
     this.direction.divideScalar(desiredLength);
     this.cast(this.focus, this.direction, desiredLength);
-    const hit = this.intersections[0];
-    const allowedLength = hit ? Math.min(desiredLength, Math.max(4, hit.distance - 0.65)) : desiredLength;
+    let hitDistance: number | null = this.intersections[0]?.distance ?? null;
+    this.visibilityTarget.set(focus.x, focus.y + 0.4, focus.z);
+    hitDistance = this.nearestBoomObstruction(this.visibilityTarget, hitDistance);
+    this.visibilityTarget.y = focus.y - 0.5;
+    hitDistance = this.nearestBoomObstruction(this.visibilityTarget, hitDistance);
     // Move inward immediately to avoid crossing a wall; release the obstruction smoothly.
-    this.boomLength = allowedLength < this.boomLength
-      ? allowedLength
-      : this.boomLength + (allowedLength - this.boomLength) * (1 - Math.exp(-5 * dt));
-    this.lift += ((hit ? 0.7 : 0) - this.lift) * (1 - Math.exp(-12 * dt));
+    this.boomLength = approachCameraDistance(this.boomLength, desiredLength, hitDistance, dt);
+    this.direction.subVectors(this.desired, this.focus).normalize();
     this.camera.position.copy(this.focus).addScaledVector(this.direction, this.boomLength);
-    this.camera.position.y += this.lift;
     const strength = Math.max(0, shake) * 0.3;
     if (strength > 0) {
       this.camera.position.x += (Math.random() * 2 - 1) * strength;
@@ -94,6 +102,10 @@ export class ThirdPersonCamera {
     this.camera.position.x = THREE.MathUtils.clamp(this.camera.position.x, BALANCE.world.minX - 45, BALANCE.world.maxX + 45);
     this.camera.position.z = THREE.MathUtils.clamp(this.camera.position.z, BALANCE.world.minZ - 45, BALANCE.world.maxZ + 45);
     this.camera.position.y = THREE.MathUtils.clamp(this.camera.position.y, 1.5, 100);
+    this.direction.subVectors(this.camera.position, this.focus);
+    // Shake must not violate the minimum boom distance either.
+    if (this.direction.lengthSq() < 16) this.camera.position.copy(this.focus).addScaledVector(this.direction.normalize(), 4);
+    this.actualDistance = this.camera.position.distanceTo(this.focus);
     this.lookAt.copy(this.focus);
     this.lookAt.x += Math.sin(this.yaw) * 2.5;
     this.lookAt.z += Math.cos(this.yaw) * 2.5;
@@ -101,13 +113,44 @@ export class ThirdPersonCamera {
     this.camera.lookAt(this.lookAt);
     this.camera.updateMatrixWorld(true);
 
-    this.direction.subVectors(this.camera.position, this.focus);
-    const actualLength = this.direction.length();
-    this.direction.divideScalar(actualLength);
-    this.cast(this.focus, this.direction, actualLength);
     this.faded.clear();
-    for (const intersection of this.intersections) this.faded.add(intersection.object);
+    // Test the rendered leader, not just the lagging follow focus. At the 4m limit
+    // a wall can still lie between camera and leader, so fading is independent of pull-in.
+    this.collectOccluders(this.focus);
+    this.visibilityTarget.set(focus.x, focus.y + 0.4, focus.z); // head (~1.8m)
+    this.collectOccluders(this.visibilityTarget);
+    this.visibilityTarget.y = focus.y - 0.5; // torso (~0.9m)
+    this.collectOccluders(this.visibilityTarget);
     return this.faded;
+  }
+
+  debugCamera(): { occluderHits: string[]; cameraPos: Vec3; desiredDistance: number; actualDistance: number } {
+    return {
+      occluderHits: Array.from(this.faded, object => object.name || object.uuid),
+      cameraPos: { x: this.camera.position.x, y: this.camera.position.y, z: this.camera.position.z },
+      desiredDistance: this.desiredDistance,
+      actualDistance: this.actualDistance,
+    };
+  }
+
+  private collectOccluders(target: THREE.Vector3): void {
+    this.direction.subVectors(target, this.camera.position);
+    const distance = this.direction.length();
+    if (distance === 0) return;
+    this.direction.divideScalar(distance);
+    this.cast(this.camera.position, this.direction, distance);
+    for (const intersection of this.intersections) this.faded.add(intersection.object);
+  }
+
+  private nearestBoomObstruction(origin: THREE.Vector3, nearest: number | null): number | null {
+    this.direction.subVectors(this.desired, origin);
+    const length = this.direction.length();
+    if (length === 0) return nearest;
+    this.direction.divideScalar(length);
+    this.cast(origin, this.direction, length);
+    const hit = this.intersections[0];
+    // Express the head/torso ray's hit as a fraction of the central camera boom.
+    return hit ? Math.min(nearest ?? Infinity, hit.distance / length * this.desiredDistance) : nearest;
   }
 
   private cast(origin: THREE.Vector3, direction: THREE.Vector3, distance: number): void {
@@ -116,5 +159,21 @@ export class ThirdPersonCamera {
     this.raycaster.far = distance;
     this.intersections.length = 0;
     this.raycaster.intersectObjects(this.occluders, false, this.intersections);
+    // Even DoubleSide misses a segment wholly inside a volume. Expanded building
+    // bounds and smoothed follow movement can put either end inside one.
+    for (const object of this.occluders) {
+      if (!(object instanceof THREE.Mesh) || !object.userData.occlusionVolume) continue;
+      if (!object.geometry.boundingBox) object.geometry.computeBoundingBox();
+      this.inverseWorld.copy(object.matrixWorld).invert();
+      this.localOrigin.copy(origin).applyMatrix4(this.inverseWorld);
+      if (!object.geometry.boundingBox!.containsPoint(this.localOrigin)) continue;
+      let inside = this.insideHits.get(object);
+      if (!inside) {
+        inside = { object, distance: 0, point: new THREE.Vector3() };
+        this.insideHits.set(object, inside);
+      }
+      inside.point.copy(origin);
+      this.intersections.unshift(inside);
+    }
   }
 }

@@ -11,7 +11,7 @@ import { CityDistrict } from '../world/CityDistrict';
 import { InputController } from './InputController';
 import { ThirdPersonCamera } from './ThirdPersonCamera';
 import { emptyInput, type TargetRef } from './types';
-import { approachAngle } from './cameraMath';
+import { approachAngle, approachOccluderOpacity } from './cameraMath';
 
 export class Game {
   public readonly sim: Simulation;
@@ -31,6 +31,7 @@ export class Game {
   private readonly extraOccluders = new THREE.Group();
   private readonly occluders: THREE.Object3D[];
   private readonly gateOccluder: THREE.Mesh;
+  private checkpointOccluder: THREE.Mesh | null = null;
   private readonly focus = new THREE.Vector3();
   private readonly marker = new THREE.Vector3();
   private readonly continuousInput = emptyInput();
@@ -82,7 +83,10 @@ export class Game {
     for (const overlay of hudRoot.querySelectorAll<HTMLElement>('.ibz-overlay')) overlay.style.pointerEvents = 'none';
     this.occluders = [...this.city.occluders];
     this.checkpoint.group.traverse(object => {
-      if (object instanceof THREE.Mesh && object.name === 'CheckpointStatic') this.occluders.push(object);
+      if (object instanceof THREE.Mesh && object.name === 'CheckpointStatic') {
+        this.checkpointOccluder = object;
+        this.occluders.push(object);
+      }
     });
     // City exposes building proxies only. Add render-free authored prop volumes.
     const proxyGeometry = new THREE.BoxGeometry(1, 1, 1);
@@ -101,6 +105,7 @@ export class Game {
     this.gateOccluder.position.set(gate.center.x, 1.5, gate.center.z);
     this.gateOccluder.scale.set(gate.rect.maxX - gate.rect.minX, 3, gate.rect.maxZ - gate.rect.minZ);
     this.gateOccluder.visible = false;
+    this.gateOccluder.userData.pickTarget = this.checkpoint.gatePickMesh;
     this.extraOccluders.add(this.gateOccluder);
     this.occluders.push(this.gateOccluder);
     this.cameraRig = new ThirdPersonCamera(this.camera, this.occluders);
@@ -141,6 +146,8 @@ export class Game {
     this.lastTime = null;
     this.frameId = requestAnimationFrame(this.frame);
   }
+
+  debugCamera = () => this.cameraRig.debugCamera();
 
   restart(): void {
     if (this.disposed) return;
@@ -238,7 +245,8 @@ export class Game {
     const facingDelta = approachAngle(leader.prevFacing, leader.facing, Math.PI) - leader.prevFacing;
     const hits = this.cameraRig.update(dt, this.focus, leader.prevFacing + facingDelta * alpha,
       state.phase === 'playing' && Math.hypot(leader.vel.x, leader.vel.z) > 0.15, this.effects.takeShake());
-    this.city.setOccluderFade(hits);
+    this.city.setOccluderFade(hits, dt);
+    this.fadeCheckpoint(hits, dt);
     this.input.updateHover();
     const hovered = this.input.hovered;
     const targeted = state.order.type === 'attack' ? state.order.target : null;
@@ -294,6 +302,22 @@ export class Game {
     if (this.sim.state.gate.destroyed) {
       if (index !== -1) this.occluders.splice(index, 1);
     } else if (index === -1) this.occluders.push(this.gateOccluder);
+  }
+
+  private fadeCheckpoint(hits: Set<THREE.Object3D>, dt: number): void {
+    if (!this.checkpointOccluder) return;
+    let blocked = hits.has(this.checkpointOccluder);
+    for (const hit of hits) if (hit.userData.checkpointBuilding) blocked = true;
+    // Tents, walls and towers share this rendered material. Fade the merged mesh
+    // together so a tent proxy never fades an unused CityDistrict material.
+    const material = this.checkpointOccluder.material as THREE.MeshLambertMaterial;
+    material.opacity = approachOccluderOpacity(material.opacity, blocked, dt);
+    const transparent = material.opacity < 1;
+    if (material.transparent !== transparent) {
+      material.transparent = transparent;
+      material.needsUpdate = true;
+    }
+    material.depthWrite = !transparent;
   }
 
   private resetClock(): void { this.input.clear(); this.lastTime = null; this.accumulator = 0; }
