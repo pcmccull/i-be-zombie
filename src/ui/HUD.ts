@@ -145,7 +145,7 @@ export class HUD {
         <div class="ibz-panel ibz-gate-bar" data-ref="gateBar">
           <div class="ibz-bar-header">
             <span class="ibz-bar-label">Checkpoint Gate</span>
-            <span class="ibz-bar-value" data-ref="gateVal">250 / 250</span>
+            <span class="ibz-bar-value" data-ref="gateVal">${BALANCE.gate.maxHp} / ${BALANCE.gate.maxHp}</span>
           </div>
           <div class="ibz-bar-track">
             <div class="ibz-bar-fill ibz-gate-fill" data-ref="gateFill"></div>
@@ -210,7 +210,7 @@ export class HUD {
             <tr><td>Tab</td><td>Toggle this controls panel</td></tr>
             <tr><td>F3</td><td>Toggle performance debug stats</td></tr>
             <tr><td>M</td><td>Mute / unmute audio</td></tr>
-            <tr><td>R</td><td>Restart game</td></tr>
+            <tr><td>R</td><td>Restart game (on win/loss screen)</td></tr>
           </tbody>
         </table>
       </div>

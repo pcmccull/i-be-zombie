@@ -18,7 +18,7 @@ A stylized low-poly 3D third-person urban horde-action prototype built with Thre
 
 ### Objective
 Capture the fortified human checkpoint in the northeast block (`CAPTURE THE CHECKPOINT`):
-- **Victory (`CHECKPOINT OVERRUN`):** Destroy the checkpoint front gate (250 HP) **and** defeat all 8 human guards (6 ground patrol guards + 2 elevated watchtower guards).
+- **Victory (`CHECKPOINT OVERRUN`):** Destroy the checkpoint front gate (400 HP) **and** defeat all 8 human guards (6 ground patrol guards + 2 elevated watchtower guards).
 - **Defeat (`THE LEADER HAS FALLEN`):** The zombie leader's HP reaches 0. Losing all followers does not end the run as long as the leader survives and can recruit more walkers or fight on.
 
 ### Suggested Strategy
@@ -108,10 +108,25 @@ All gameplay numbers are centralized in [`src/config/balance.ts`](src/config/bal
 | **Walker & Horde** | `initialAmbient`: `60`, `maxFollowers`: `100`, `maxHp`: `40`, `speed`: `3.7 m/s` (`ambientSpeed`: `0.9 m/s`, `catchUpMultiplier`: `1.35×` beyond `14 m`), `attackDamage`: `8`, `attackRange`: `1.5 m`, `attackCooldown`: `1.2 s`, `autoEngageRadius`: `6 m`, `corpseFadeTime`: `6 s` |
 | **Abilities** | **Rally (`E`):** `radius`: `15 m`, `cooldown`: `8 s` · **Rush (`Space`):** `duration`: `4 s`, `cooldown`: `15 s`, `speedMultiplier`: `1.45×`, `attackRateMultiplier`: `1.25×` |
 | **Human Guard** | `count`: `8` (`towerCount`: `2`), `maxHp`: `50`, `speed`: `3 m/s`, `damage`: `10`, `range`: `22 m` (`towerRange`: `30 m`), `fireCooldown`: `0.8 s`, `hitChance`: `0.75`, `eyeHeight`: `1.5 m` (`towerEyeHeight`: `5.2 m`), `detectionFovDeg`: `140°`, `towerMeleeReachBonus`: `2.2 m` |
-| **Checkpoint Gate** | `maxHp`: `250` |
+| **Checkpoint Gate** | `maxHp`: `400` |
 | **Conversion** | `chance`: `0.7` (70%), `delay`: `3 s`, `riseDuration`: `1.2 s` |
 
-Tuning changes vs spec: (to be filled in)
+**Tuning changes vs spec (§7) and why:**
+
+- `gate.maxHp` **250 → 400**. In browser playtests, 60 walkers broke a 250 HP gate in about 6 s, so the breach stopped being a decision point. At 400 the 60-walker breach takes about 10 s under tower fire. Scripted assault outcomes are unchanged: 12 walkers wipe out, while 40 and 60 win.
+- The spec leaves these values open; they are documented here as chosen values:
+  - Tower guards use a 30 m range and a 5.2 m eye height, so they see over the 2.4 m compound walls but not over buildings.
+  - Guards hit 75% of the time.
+  - Zombies at a tower base can reach the occupant with an extra 2.2 m (the "attack proxy").
+- **Order succession (behaviour, not a number):** when an attack target dies, the horde re-targets the nearest *reachable* living guard within 25 m. It reverts to Follow only if none exists. While on any order, followers also swing at a guard that is adjacent to them. Without this, the horde ran back to the leader after every kill, and a 60-walker assault was lost in playtesting.
+
+**Measured balance (scripted "player-like" assault: leader parked at the staging lot, one click per target, Rush on cooldown):**
+
+| Horde | Outcome |
+|---|---|
+| 20 | Wiped out: gate breached, only 2 of 8 guards killed |
+| 40 | Victory in about 43 s; 24 lost, 4 converted |
+| 60 | Victory in about 42 s; 24 lost, 5 converted |
 
 ## Testing
 
@@ -133,11 +148,24 @@ Automated tests in [`tests/`](tests/) run in Vitest without WebGL and cover all 
 
 ## Performance
 
-Performance (measured): (to be filled in)
+Measured in Chrome 156 (8 logical cores) inside the Claude desktop app's embedded browser pane, at a 1024×768 viewport with DPR 1. The scenario was 94 live followers attacking the checkpoint gate, with 8 guards firing:
+
+| Metric | Average | p95 |
+|---|---|---|
+| Simulation step (fixed 1/60 s) | 0.58 ms | 0.90 ms |
+| `renderer.render` submit | 1.65 ms | 2.5 ms |
+| Draw calls (whole scene) | 139 | — |
+| Triangles | ~60k | — |
+
+The embedded pane caps `requestAnimationFrame` at about 50 Hz even when idle, so 60 FPS **could not be confirmed** in this environment. Observed frame intervals averaged 23 ms. The CPU work above uses well under a 16.7 ms frame. Press **F3** in-game to see FPS and draw calls on your own machine. Headless (Node), 100 followers run 600 steps in about 0.3–0.4 s, and a flow-field rebuild takes 4–11 ms.
 
 ## Known Limitations
 
-- (to be filled in)
+- **60 FPS not verified on a standalone browser** (see Performance). The production bundle is about 650 kB (about 170 kB gzipped), and Vite warns about chunk size.
+- **Order succession is automatic.** After one attack order the horde chains to nearby reachable guards by itself; right-click recall always overrides it.
+- **No horde splitting:** all followers share one order.
+- **Tower occupants never descend.** Zombies at the tower base claw the occupant through the attack proxy; they do not climb.
+- **Camera:** buildings between the camera and the leader fade out and the camera pulls in (4 m minimum). Very tight gaps can still produce close, steep views.
 - **Desktop browsers only:** Designed for keyboard + mouse input at `1280×720` or larger; no mobile or touch controls are implemented.
 - **Single-district vertical slice:** Features one handcrafted city district and one fortified checkpoint objective with no save/load persistence, audio volume slider (beyond `M` mute toggle), or multi-level interior navigation.
 - **Web Audio gesture unlock:** Browser autoplay policies require an initial pointer click or key press before synthesized audio begins playing.
