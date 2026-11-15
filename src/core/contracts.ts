@@ -180,7 +180,15 @@ export type SystemUpdate =(ctx: SimContext, dt: number, input: SimInput) => void
  *   activateAbility(ctx, id): boolean                 // atomic check+spend+cooldown; emits abilityUsed / abilityDenied
  *   unlockAbility(ctx, id): boolean                   // idempotent (false if already unlocked); auto-equips first empty slot; emits abilityUnlocked once
  *   equipAbility(ctx, slot, id | null): boolean       // requires unlocked + 'slot' behaviour + leader within nest.equipRadius of an active nest; no duplicates
- *   updateProgression(ctx, dt, input): void           // cooldown ticking, input.abilitySlot / input.equip, frenzy timer (frenzyEnd)
+ *   updateProgression(ctx, dt, input): void           // cooldown ticking, input.abilitySlot / input.equip / input.buySlot, frenzy timer (frenzyEnd)
+ *   --- ability slots (todos #9, TD milestone) ---
+ *   ownedSlotCount(state): number                     // clamp(progression.slotsOwned, 0, progression.slots)
+ *   nextSlotCost(state): number | null                // slotCosts[slotsOwned]; null when slotsOwned === 0 (first slot is granted) or all owned
+ *   buySlot(ctx): boolean                             // slotsOwned >= 1 && < slots, leader alive at an active nest, biomass >= cost: spend atomically,
+ *                                                     // slotsOwned++, emit slotPurchased + autosave{reason:'equip'}; else abilityDenied{abilityId:null,
+ *                                                     // reason: 'locked' (0 owned / not playing) | 'maxSlots' | 'notAtNest' | 'biomass'}
+ *   unlockAbility: the first 'slot' unlock with slotsOwned === 0 sets slotsOwned = 1; auto-equip only into an empty slot < slotsOwned
+ *   equipAbility: slot >= slotsOwned => denied 'locked'.  updateProgression: input.abilitySlot >= slotsOwned => denied 'empty'
  *   isFrenzyActive(state): boolean
  *   hordeSpeedMultiplier(state): number               // frenzy.speedMultiplier while active, else 1
  *   hordeAttackRateMultiplier(state): number          // frenzy.attackRateMultiplier while active, else 1
@@ -208,7 +216,7 @@ export type SystemUpdate =(ctx: SimContext, dt: number, input: SimInput) => void
  * src/persistence/SaveStore.ts (T006)
  *   class SaveStore { constructor(storage: StorageLike | null, key?: string); load(): WorldSave | null; save(s: WorldSave): boolean; clear(): void }  // never throws
  */
-export type AbilityDenyReason = 'locked' | 'cooldown' | 'biomass' | 'noTarget' | 'notAtNest' | 'empty';
+export type AbilityDenyReason = 'locked' | 'cooldown' | 'biomass' | 'noTarget' | 'notAtNest' | 'empty' | 'maxSlots';
 
 /** Minimal Web Storage subset (window.localStorage satisfies it; tests use an in-memory map). */
 export interface StorageLike {

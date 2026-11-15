@@ -1,5 +1,63 @@
 # Master Implementation Progress
 
+Spec: `docs/todos.md` items 7–9. Contracts: `.agent-context/ARCHITECTURE.md` §TD-0…TD-4. Conventions: `AGENTS.md`.
+Branch `open-world` (HEAD 572d264). Previous milestone OW: complete (archived below).
+
+## Active Milestone: TD — Todos 7–9 (mobile controls, capacity notice, purchasable slots). **COMPLETE** (all tasks VERIFIED; final verdict PASS — reports/FINAL-VERIFICATION.md). Not committed.
+
+Wave A (16:50): tsc 0, 443/444 (only navScale perf flake under load; passes alone). Baseline (2026-11-14 15:50): tsc 0 errors, `npm test` 40 files / 415 tests passing (before and after TD-T001 contract code).
+
+## Provider Availability (checked 2026-11-14 15:43)
+
+| Agent | Status | Notes |
+| :--- | :--- | :--- |
+| `@codex-worker` | **UNAVAILABLE until ~16:29** | Usage limit hit 11:55 ("retry 4:29 PM"). Re-probe once before T002/T003; if still exhausted → `@claude-worker`. |
+| `@agy-worker` / `@agy-architect` | **UNAVAILABLE (QUOTA_EXHAUSTED)** | 429 individual quota ~12:10, resets in ~154 h. T004/T005/V1 → `@claude-worker`. |
+| `@claude-worker` | Available (hit 5-hour limit ~16:05, reset 16:20; T003/T004 resumed via SendMessage 16:36 with partial edits kept) | Fallback for everything. |
+| `@meta-worker` | **Not installed** | No `.claude/agents/meta-worker.md` exists; overflow goes to `@claude-worker`. |
+
+## Task Queue & File Locks
+
+Waves run in order; tasks inside a wave have disjoint locks and may run concurrently (≤ 3 writers at once).
+Every task ends with `npx tsc --noEmit` + `npm test` green and a report at `.agent-context/reports/<TASK_ID>-<agent>.md`.
+Task ids are prefixed `TD-` in reports (`reports/TD-T002-codex.md`) so they don't collide with the OW reports.
+
+| Task | Wave | Discipline | Description | Assigned Worker (fallback) | Locked Files | Depends | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| TD-T001 | 0 | Architecture / contracts | Contract code exactly as ARCHITECTURE §TD-2: types (`slotsOwned`, `atCapacity`, `buySlot`, `slotPurchased`, WorldSave `slotsOwned`), contracts (`maxSlots`, doc block), balance (`slotCosts`, `capNoticeRearm`, `touch.*`, save v2), createInitialState defaults; must compile with no behaviour change | orchestrator | `src/core/{types,contracts}.ts`, `src/config/balance.ts`, `src/sim/createInitialState.ts` (defaults only), `src/persistence/saveSchema.ts` (compile shim only: write `slotsOwned`, accept v1+v2) | — | VERIFIED (tsc 0, 415/415; shims: saveSchema MIGRATIONS[1] version bump + slotsOwned passthrough, InputController `buySlot:false`) |
+| TD-T002 | A | Logic / simulation | #8 sim side: `atCapacity` latch + `capNoticeRearm`, single `capReached` per entry, `capReachedFlash` on transition only, skip passive/rally recruit scans at cap, pulses consumed at cap; invariants TD-4 #1–3 | `@codex-worker` (→ `@claude-worker`) | `src/systems/HordeSystem.ts`, `tests/{capacity,cascade,hordeCommands,recruitment}.test.ts` | T001 | VERIFIED (claude; diff reviewed; capacity 3 tests + 49/49 horde-area; full suite re-run after wave A) |
+| TD-T003 | A | Logic / simulation + schema | #9 sim side: `ownedSlotCount`, `nextSlotCost`, `buySlot`, unlock grants first slot, equip/activate respect `slotsOwned`, `input.buySlot`; save v1→v2 migration; fix tests that assumed 4 free slots; invariants TD-4 #4–8 | `@codex-worker` (→ `@claude-worker`) | `src/systems/ProgressionSystem.ts`, `src/persistence/saveSchema.ts`, `tests/{progression,slots,persistence,rush,openWorld,followup,alphaCombat,respawn}.test.ts` | T001 | VERIFIED (claude; diff reviewed; slots 10 tests; 443/444 under load, capacity flake to re-check; V2 note: malformed v2 save with slotsOwned 0 drops equipped before reconcile) |
+| TD-T004 | A | Coding (UI/HUD) | #8 HUD side: toast dedupe (same visible text ⇒ restart its timer, no new node). #9 HUD side: slot strip shows only owned slots (hidden at 0), `abilitySlotView` + `visibleSlotCount`, nest panel shows owned slots + "Buy slot — N BIO" button (`onBuySlot`), `slotPurchased` toast, `maxSlots` deny text | `@agy-worker` (→ `@claude-worker`) | `src/ui/{HUD,NestPanel,uiHelpers}.ts`, `src/ui/hudOpenWorld.css`, `tests/uiHelpers.test.ts` | T001 | VERIFIED (claude; uiHelpers 12/12, build OK; decision: no 0-slot nest hint, tracker already points at the checkpoint) |
+| TD-T005 | A | Coding (UI) + math | #7 touch overlay: `src/core/touchMath.ts` pure helpers, `TouchControls` DOM (left stick, ATTACK, RALLY, FOLLOW, owned ability buttons, MAP, PAUSE, RECENTER), `touch.css` (safe areas, ≥ 48 px targets), tests | `@agy-worker` (→ `@claude-worker`) | `src/core/touchMath.ts` (new), `src/ui/TouchControls.ts` (new), `src/ui/touch.css` (new), `tests/touchMath.test.ts` (new) | T001 | VERIFIED (orchestrator; touchMath 10/10; DOM verified in T007) |
+| TD-T006 | B | Integration / glue | Wire everything: InputController touch pointers (tap ⇒ horde order, 1-finger orbit, pinch zoom, ignore touches on controls, `setTouchSource`/`queue*`), Game creates TouchControls on coarse pointer or first touch, feeds `setSlots`, wires `onBuySlot` → `SimInput.buySlot`, DPR 1.0 on touch; index.html viewport (`viewport-fit=cover`, no user zoom); README controls; input tests | `@claude-worker` | `src/core/{InputController,Game,cameraMath}.ts`, `index.html`, `README.md`, `tests/input.test.ts` | T002–T005 | VERIFIED (claude; diff reviewed; 446/446 + build; gestures untested until T007) |
+| TD-T007 | C | Playtest / tuning | Browser pass in the built-in browser: desktop (cap toast appears once, slots hidden→1→buy at nest) and mobile emulation 375×812 (stick, tap orders, pinch, buttons, layout overlap); small fixes by file owner; tick docs/todos.md 7–9 | orchestrator | `docs/todos.md`, `src/config/balance.ts` (tuning) + owner-file fixes | T006 | VERIFIED (desktop + 375x812 emulation; phone-layout fix in touch.css; todos 7-9 ticked) |
+| TD-V1 | D | Spec audit (read-only) | Audit against docs/todos.md 7–9 + ARCHITECTURE §TD (missing requirements, broken UI bindings) | `@agy-architect` (→ `@claude-worker` read-only) | none | T007 | VERIFIED (1 P1: world map uncloseable on touch; 4 P2; 1 P3 → F1) |
+| TD-V2 | D | Adversarial review (read-only) | Bugs/edge cases: latch flapping, slot migration, multi-touch pointer bookkeeping, listener leaks on dispose | `@codex-worker` read-only (→ `@claude-worker`) | none | T007 | VERIFIED (codex available again; no P1; 3 P2 + 8 P3 → F1) |
+| TD-F1 | D | Fixes | V1/V2 findings, routed to the owning files' worker | `@claude-worker` | per finding | V1, V2 | VERIFIED (F1a claude 11 items, 449/449 + build; F1b orchestrator save fixes 22/22; browser: map × closes on touch, taps near Alpha now order, drag-back no tap, stick resets on blur) |
+| TD-V3 | E | Final verification | Full `npx tsc --noEmit`, `npm test` ×2, `npm run build`, write `reports/FINAL-VERIFICATION.md` | `@claude-worker` | `.agent-context/reports/FINAL-VERIFICATION.md` | F1 | VERIFIED (PASS: tsc 0, 449/449 x2, build OK — reports/FINAL-VERIFICATION.md) |
+
+### Dependency & lock review (Phase 1 step 3)
+
+- **Contract first:** T001 is the only task touching `types/contracts/balance`; every Wave A task reads them and none edits them.
+  Contract gaps found by a worker are reported back, not patched (AGENTS.md).
+- **Wave A locks are disjoint.** Checked overlaps: `saveSchema.ts` belongs to T003 only (T001 only adds a compile shim before
+  Wave A starts). `tests/hordeCommands.test.ts` uses both capReached and `unlockAbility`, so it is locked to T002; it unlocks a
+  single ability, which still lands in slot 0 under T003's rules, so T003 should not need it (if it does, T003 reports and T002/claude fixes it).
+  `uiHelpers.ts` (T004) and `touchMath.ts` (T005) are separate files; T005 builds `setSlots` input from a plain view array so
+  it does not import T004's new helper.
+- **Game.ts / InputController.ts / index.html are only touched in T006**, after T004 (`onBuySlot`) and T005 (`TouchControls`) exist,
+  so no UI worker edits glue.
+- **Cross-discipline dependencies:** HUD slot visibility (T004) and touch ability buttons (T005/T006) both read `slotsOwned`
+  from the T001 contract, not from T003's code, so they can run alongside T003. Real behaviour is only end-to-end after T006,
+  which is why the browser pass (T007) comes before the audits.
+- **Writers at once:** realistically all of Wave A falls back to `@claude-worker` today (codex until ~16:29, agy for days).
+  Run at most 3 at once: T002 + T003 + T004 first, then T005 (or T005 instead of T002 if codex comes back for T002/T003).
+- **Commit points:** orchestrator `git add -A` after each verified wave (baseline trick in MEMORY); commits only with the user's OK.
+
+---
+
+# Archive: Open World milestone (OW) board
+
 Spec: `docs/3_open_world.md`. Architecture/contracts: `.agent-context/ARCHITECTURE.md`. Conventions: `AGENTS.md`.
 Previous milestone (recruitment overhaul R0–R4): complete, committed (1eee817, fec178f, 1f274d1).
 

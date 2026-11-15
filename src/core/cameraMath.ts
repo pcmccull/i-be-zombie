@@ -224,3 +224,31 @@ export function hordeCommandForRightClick(info: RightClickInfo): HordeCommand | 
   if (info.ground) return { type: 'move', point: { x: info.ground.x, z: info.ground.z } };
   return null;
 }
+
+// ---------------------------------------------------------------------------
+// Touch gestures (todos #7). Pure decisions; InputController owns the pointer bookkeeping.
+// ---------------------------------------------------------------------------
+
+export type TouchGestureMode = 'none' | 'orbit' | 'pinch';
+
+/** Number of active canvas fingers -> gesture: 1 orbits, 2+ pinch-zooms, 0 idle. */
+export function touchGestureMode(activeFingers: number): TouchGestureMode {
+  if (activeFingers >= 2) return 'pinch';
+  return activeFingers === 1 ? 'orbit' : 'none';
+}
+
+/**
+ * A lifted finger issues a horde order only when it was the sole finger for the whole gesture (multiTouched false),
+ * barely moved and was quick.
+ */
+export function touchTapAllowed(
+  multiTouched: boolean, dxPx: number, dyPx: number, ms: number, maxMovePx: number, maxMs: number,
+  moved = false,
+): boolean {
+  return !multiTouched && !moved && Math.hypot(dxPx, dyPx) <= maxMovePx && ms >= 0 && ms <= maxMs;
+}
+
+/** True when a solid hit at `blockedDist` sits in front of the ground point at `groundDist` (by more than `margin` m). */
+export function tapGroundBlocked(blockedDist: number, groundDist: number, margin = 0.75): boolean {
+  return blockedDist < groundDist - margin;
+}

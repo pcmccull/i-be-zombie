@@ -23,7 +23,26 @@ export function isUnlocked(state: GameState, id: AbilityId): boolean {
   const def = abilityDef(id);
   return def !== undefined && (def.slotBehavior === 'innate' || state.progression.unlocked.includes(id));
 }
-export function isEquipped(state: GameState, id: AbilityId): boolean { return state.progression.equipped.includes(id); }
+export function ownedSlotCount(state: GameState): number {
+  const n = state.progression.slotsOwned;
+  return Number.isFinite(n) ? Math.max(0, Math.min(BALANCE.progression.slots, Math.floor(n))) : 0;
+}
+export function nextSlotCost(state: GameState): number | null {
+  const owned = ownedSlotCount(state);
+  if (owned === 0 || owned >= BALANCE.progression.slots) return null;
+  return BALANCE.progression.slotCosts[owned] ?? null;
+}
+/** Equipped only counts in owned slots (a stray entry in an unowned slot is ignored). */
+export function isEquipped(state: GameState, id: AbilityId): boolean {
+  return state.progression.equipped.indexOf(id) >= 0 && state.progression.equipped.indexOf(id) < ownedSlotCount(state);
+}
+
+function leaderAtActiveNest(ctx: SimContext): boolean {
+  const leader = ctx.state.leader;
+  return leader.alive && leader.hp > 0 && ctx.layout.nests.some(n =>
+    (leader.pos.x - n.pos.x) ** 2 + (leader.pos.z - n.pos.z) ** 2 <= BALANCE.nest.equipRadius ** 2 &&
+    isNestActive(ctx, n.id));
+}
 
 function eligibleForBrute(z: ZombieAgent): boolean {
   return z.state === 'follower' && z.hp > 0 && !z.dormant && !z.brute;
@@ -93,8 +112,9 @@ export function unlockAbility(ctx: SimContext, id: AbilityId): boolean {
   if (!def || isUnlocked(ctx.state, id)) return false;
   const p = ctx.state.progression;
   p.unlocked.push(id);
+  if (def.slotBehavior === 'slot' && p.slotsOwned === 0) p.slotsOwned = 1;
   const emptySlot = p.equipped.indexOf(null);
-  const slot = def.slotBehavior === 'slot' && emptySlot >= 0 ? emptySlot : null;
+  const slot = def.slotBehavior === 'slot' && emptySlot >= 0 && emptySlot < ownedSlotCount(ctx.state) ? emptySlot : null;
   if (slot !== null) p.equipped[slot] = id;
   ctx.emit({ type: 'abilityUnlocked', abilityId: id, slot });
   return true;
@@ -102,20 +122,16 @@ export function unlockAbility(ctx: SimContext, id: AbilityId): boolean {
 
 export function equipAbility(ctx: SimContext, slot: number, id: AbilityId | null): boolean {
   const def = id === null ? undefined : abilityDef(id);
-  if (!Number.isInteger(slot) || slot < 0 || slot >= BALANCE.progression.slots ||
+  if (!Number.isInteger(slot) || slot < 0 || slot >= ownedSlotCount(ctx.state) ||
     (id !== null && (!def || def.slotBehavior !== 'slot' || !isUnlocked(ctx.state, id)))) {
     ctx.emit({ type: 'abilityDenied', abilityId: id, reason: 'locked' });
     return false;
   }
-  const leader = ctx.state.leader;
   if (ctx.state.phase !== 'playing') {
     ctx.emit({ type: 'abilityDenied', abilityId: id, reason: 'locked' });
     return false;
   }
-  const atNest = leader.alive && leader.hp > 0 && ctx.layout.nests.some(n =>
-    (leader.pos.x - n.pos.x) ** 2 + (leader.pos.z - n.pos.z) ** 2 <= BALANCE.nest.equipRadius ** 2 &&
-    isNestActive(ctx, n.id));
-  if (!atNest) {
+  if (!leaderAtActiveNest(ctx)) {
     ctx.emit({ type: 'abilityDenied', abilityId: id, reason: 'notAtNest' });
     return false;
   }
@@ -125,6 +141,27 @@ export function equipAbility(ctx: SimContext, slot: number, id: AbilityId | null
   }
   equipped[slot] = id;
   ctx.emit({ type: 'abilityEquipped', abilityId: id, slot });
+  return true;
+}
+
+export function buySlot(ctx: SimContext): boolean {
+  const { state } = ctx, p = state.progression;
+  const deny = (reason: AbilityDenyReason): false => {
+    ctx.emit({ type: 'abilityDenied', abilityId: null, reason });
+    return false;
+  };
+  if (state.phase !== 'playing' || !state.leader.alive || state.leader.hp <= 0) return deny('locked');
+  const owned = ownedSlotCount(state);
+  if (owned < 1) return deny('locked');
+  if (owned >= BALANCE.progression.slots) return deny('maxSlots');
+  if (!leaderAtActiveNest(ctx)) return deny('notAtNest');
+  const cost = nextSlotCost(state);
+  if (cost === null) return deny('maxSlots');
+  if (p.biomass < cost) return deny('biomass');
+  p.biomass = Math.max(0, p.biomass - cost);
+  p.slotsOwned = owned + 1;
+  ctx.emit({ type: 'slotPurchased', slot: owned, cost });
+  ctx.emit({ type: 'autosave', reason: 'equip' });
   return true;
 }
 
@@ -140,11 +177,12 @@ export function updateProgression(ctx: SimContext, dt: number, input: SimInput):
   }
   if (input.abilitySlot !== null) {
     const slot = input.abilitySlot;
-    const id = Number.isInteger(slot) && slot >= 0 && slot < BALANCE.progression.slots ? p.equipped[slot] : null;
+    const id = Number.isInteger(slot) && slot >= 0 && slot < ownedSlotCount(ctx.state) ? p.equipped[slot] : null;
     if (!id) ctx.emit({ type: 'abilityDenied', abilityId: null, reason: 'empty' });
     else if (abilityDef(id)?.activatable !== false) activateAbility(ctx, id);
   }
   if (input.equip) equipAbility(ctx, input.equip.slot, input.equip.ability);
+  if (input.buySlot) buySlot(ctx);
 }
 export function isFrenzyActive(state: GameState): boolean { return state.progression.frenzyTimeLeft > 0; }
 export function hordeSpeedMultiplier(state: GameState): number { return isFrenzyActive(state) ? BALANCE.frenzy.speedMultiplier : 1; }

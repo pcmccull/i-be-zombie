@@ -333,6 +333,7 @@ describe('T006 Persistence — createSave / SaveStore / applySave round-trip', (
     save.player.biomass = -50;
     save.player.unlockedAbilities = ['alpha_claws']; // missing innate in raw array
     save.player.equippedAbilities = ['bite', 'alpha_claws', 'alpha_claws', 'brute_evolution'];
+    save.player.slotsOwned = 4;
     save.player.selectedNestId = 'non_existent_nest';
     save.strongholds.suburb_checkpoint.objectivesDone = ['break_pen', 'bogus_objective', 'break_pen'];
     (save.strongholds as Record<string, unknown>)['unknown_stronghold'] = {
@@ -413,6 +414,7 @@ describe('T006 Persistence — parseSave validation, migrations, and SaveStore r
         ...valid.player,
         unlockedAbilities: ['bite', 'infect', 'alpha_claws'],
         equippedAbilities: ['bite', 'alpha_claws', 'alpha_claws', 'horde_frenzy'],
+        slotsOwned: 4,
       },
       districts: {
         ...valid.districts,

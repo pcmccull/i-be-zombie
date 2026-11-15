@@ -532,6 +532,11 @@ export interface ProgressionState {
   cooldowns: Partial<Record<AbilityId, number>>;
   /** > 0 while Horde Frenzy is active. */
   frenzyTimeLeft: number;
+  /**
+   * Ability slots the player owns, 0..BALANCE.progression.slots (todos #9). 0 until the first 'slot' ability unlock grants
+   * slot 0; the rest are bought with biomass at a nest (progression.slotCosts). Slots >= slotsOwned are hidden and unusable.
+   */
+  slotsOwned: number;
 }
 
 /** Fog of war. Revealed cells are independent of territory status. */
@@ -564,6 +569,11 @@ export interface GameState {
   /** Live follower count; must always equal zombies.filter(z => z.state === 'follower').length. */
   followerCount: number;
   capReachedFlash: number; // seconds remaining of "HORDE FULL" HUD feedback
+  /**
+   * todos #8: true from the step a recruit was refused at capacity until the horde has stayed below cap for
+   * BALANCE.horde.capNoticeRearm seconds. capReached is emitted only on false -> true. Only HordeSystem writes it.
+   */
+  atCapacity: boolean;
   // --- open world ---
   districts: Record<DistrictId, DistrictState>;
   /** Same order as layout.strongholds. */
@@ -602,6 +612,8 @@ export interface SimInput {
   abilitySlot: number | null;
   /** Nest panel: put `ability` (null = clear) into `slot`. Only applied within nest.equipRadius of an active nest. */
   equip: { slot: number; ability: AbilityId | null } | null;
+  /** Nest panel edge: buy the next ability slot (cost progression.slotCosts[slotsOwned]). Only within nest.equipRadius of an active nest. */
+  buySlot: boolean;
 }
 
 export function emptyInput(): SimInput {
@@ -619,6 +631,7 @@ export function emptyInput(): SimInput {
     hordeCommand: null,
     abilitySlot: null,
     equip: null,
+    buySlot: false,
   };
 }
 
@@ -662,7 +675,8 @@ export type GameEvent =
   | { type: 'abilityUnlocked'; abilityId: AbilityId; slot: number | null }
   | { type: 'abilityEquipped'; abilityId: AbilityId | null; slot: number }
   | { type: 'abilityUsed'; abilityId: AbilityId; pos: Vec2 }
-  | { type: 'abilityDenied'; abilityId: AbilityId | null; reason: 'locked' | 'cooldown' | 'biomass' | 'noTarget' | 'notAtNest' | 'empty' }
+  | { type: 'abilityDenied'; abilityId: AbilityId | null; reason: 'locked' | 'cooldown' | 'biomass' | 'noTarget' | 'notAtNest' | 'empty' | 'maxSlots' }
+  | { type: 'slotPurchased'; slot: number; cost: number }
   | { type: 'biomassGain'; amount: number; total: number; reason: 'infect' | 'kill' | 'convert' | 'structure' | 'capture' }
   | { type: 'frenzyStart'; pos: Vec2; radius: number }
   | { type: 'frenzyEnd' }
@@ -681,6 +695,8 @@ export interface PlayerSave {
   unlockedAbilities: AbilityId[];
   equippedAbilities: (AbilityId | null)[]; // length BALANCE.progression.slots
   selectedNestId: string;
+  /** ProgressionState.slotsOwned (save v2). v1 saves are migrated: derived from the loadout (ARCHITECTURE §TD-0). */
+  slotsOwned: number;
 }
 
 export interface WorldSave {

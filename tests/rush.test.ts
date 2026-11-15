@@ -77,6 +77,7 @@ describe('Rush (first unlock)', () => {
   it('a save that captured the suburb checkpoint before Rush existed gets Rush on load (first empty slot)', () => {
     const src = new Simulation(layout, 7);
     src.state.strongholds.find(s => s.id === 'suburb_checkpoint')!.captured = true;
+    src.state.progression.slotsOwned = 4;
     src.state.progression.unlocked.push('horde_frenzy');
     src.state.progression.equipped = ['horde_frenzy', null, null, null];
     const old = JSON.parse(JSON.stringify(createSave(src.state, 7)));

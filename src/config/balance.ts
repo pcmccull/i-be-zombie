@@ -72,6 +72,8 @@ export const BALANCE = {
     // Sum of layout.spawnZones counts (free + held). Recruitment design §4 distribution.
     initialAmbient: 85,
     startFollowers: 5, // already following at t=0 (inside layout.startFollowerArea)
+    /** todos #8: seconds the horde must stay below cap before capReached can fire again. */
+    capNoticeRearm: 4,
     recruitBoostTime: 2, // seconds a newly recruited zombie gets the catch-up boost + highlight
     recruitBoostMultiplier: 1.35, // speed multiplier during recruitBoostTime
     regroupDistance: 22, // followers farther than this from the leader ignore spacing and use the follow field at catch-up speed
@@ -240,6 +242,8 @@ export const BALANCE = {
   },
   progression: {
     slots: 4, // Q E R F
+    /** todos #9: biomass price of slot i (slot 0 is granted free by the first unlock). */
+    slotCosts: [0, 40, 70, 110],
     startBiomass: 0,
     biomassInfect: 3, // civilian killed by the Alpha
     biomassKill: 4, // armed human killed by the horde/Alpha
@@ -292,7 +296,18 @@ export const BALANCE = {
   },
   save: {
     storageKey: 'ibz.openworld.save',
-    version: 1,
+    version: 2, // v2: player.slotsOwned (todos #9)
+  },
+  /** todos #7 touch controls (px / ms / multipliers). */
+  touch: {
+    stickRadius: 56,
+    deadZone: 0.12,
+    sprintThreshold: 0.85,
+    tapMaxMove: 12,
+    tapMaxMs: 280,
+    orbitSensitivity: 1.0,
+    pinchZoomScale: 2.5,
+    lowDpr: 1.0,
   },
 } as const;
 

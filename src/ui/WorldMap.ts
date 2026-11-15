@@ -28,6 +28,8 @@ export class WorldMap {
   private readonly staticG: CanvasRenderingContext2D | null;
   private readonly listEl: HTMLDivElement;
   private readonly clearBtn: HTMLButtonElement;
+  private readonly closeBtn: HTMLButtonElement;
+  private readonly closeCallbacks: (() => void)[] = [];
   private layout: DistrictLayout;
   private proj: MapProjection | null = null;
   private staticKey = '';
@@ -62,6 +64,7 @@ export class WorldMap {
   };
 
   private readonly onClear = (): void => this.emit(null);
+  private readonly onCloseClick = (): void => { for (const cb of this.closeCallbacks) cb(); };
 
   constructor(parent: HTMLElement, layout: DistrictLayout) {
     this.layout = layout;
@@ -75,6 +78,7 @@ export class WorldMap {
           <span class="ibz-worldmap-title">WORLD MAP</span>
           <span class="ibz-worldmap-sub">Click to set a waypoint &middot; click it again to clear &middot; M to close</span>
           <button type="button" class="ibz-btn ibz-btn-small" data-ref="clear">Clear waypoint</button>
+          <button type="button" class="ibz-btn ibz-worldmap-close" data-ref="close" aria-label="Close map">&times;</button>
         </div>
         <div class="ibz-worldmap-body">
           <canvas class="ibz-worldmap-canvas" data-ref="canvas"></canvas>
@@ -99,6 +103,7 @@ export class WorldMap {
     this.canvas.height = this.h;
     this.listEl = this.element.querySelector('[data-ref="list"]') as HTMLDivElement;
     this.clearBtn = this.element.querySelector('[data-ref="clear"]') as HTMLButtonElement;
+    this.closeBtn = this.element.querySelector('[data-ref="close"]') as HTMLButtonElement;
     this.g = this.canvas.getContext('2d');
     this.staticCanvas = document.createElement('canvas');
     this.staticCanvas.width = this.w;
@@ -106,6 +111,7 @@ export class WorldMap {
     this.staticG = this.staticCanvas.getContext('2d');
     this.canvas.addEventListener('click', this.onCanvasClick);
     this.clearBtn.addEventListener('click', this.onClear);
+    this.closeBtn.addEventListener('click', this.onCloseClick);
   }
 
   get visible(): boolean {
@@ -114,6 +120,11 @@ export class WorldMap {
 
   onWaypoint(cb: (p: Vec2 | null) => void): void {
     this.callbacks.push(cb);
+  }
+
+  /** Close (x) button; HUD routes this to its hideMap path. */
+  onClose(cb: () => void): void {
+    this.closeCallbacks.push(cb);
   }
 
   setLayout(layout: DistrictLayout): void {
@@ -184,6 +195,8 @@ export class WorldMap {
   dispose(): void {
     this.canvas.removeEventListener('click', this.onCanvasClick);
     this.clearBtn.removeEventListener('click', this.onClear);
+    this.closeBtn.removeEventListener('click', this.onCloseClick);
+    this.closeCallbacks.length = 0;
     this.callbacks.length = 0;
     this.element.remove();
   }

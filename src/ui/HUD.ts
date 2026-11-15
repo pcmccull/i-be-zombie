@@ -22,12 +22,14 @@ import { PauseMenu, type PauseCallbacks } from './PauseMenu';
 import { WorldMap } from './WorldMap';
 import {
   abilitySlotView,
+  visibleSlotCount,
   bruteCount,
   districtName,
   followerCap,
   nearbyEquipNest,
   selectObjectiveStronghold,
   strongholdName,
+  toastDedupe,
   toastForEvent,
   type ToastSpec,
 } from './uiHelpers';
@@ -210,6 +212,9 @@ export class HUD {
   private worldMap: WorldMap | null = null;
   private pauseMenu: PauseMenu | null = null;
   private nestPanel: NestPanel | null = null;
+  private readonly toastByEl = new Map<HTMLElement, number>();
+  private readonly buySlotCallbacks: (() => void)[] = [];
+  private prevSlotStripCount = -1;
   private readonly waypointCallbacks: ((p: Vec2 | null) => void)[] = [];
   private readonly equipCallbacks: ((slot: number, ability: AbilityId | null) => void)[] = [];
   private pendingPauseCallbacks: PauseCallbacks = {};
@@ -565,12 +570,16 @@ export class HUD {
     if (!this.minimap) {
       this.minimap = new Minimap(this.container, layout);
       this.worldMap = new WorldMap(this.container, layout);
+      this.worldMap.onClose(() => this.hideMap());
       this.worldMap.onWaypoint((p) => {
         for (const cb of this.waypointCallbacks) cb(p);
       });
       this.nestPanel = new NestPanel(this.container);
       this.nestPanel.onEquip((slot, ability) => {
         for (const cb of this.equipCallbacks) cb(slot, ability);
+      });
+      this.nestPanel.onBuySlot(() => {
+        for (const cb of this.buySlotCallbacks) cb();
       });
       this.pauseMenu = new PauseMenu(this.container);
       this.pauseMenu.setCallbacks(this.pendingPauseCallbacks);
@@ -598,6 +607,11 @@ export class HUD {
   /** Nest panel loadout change request. Game forwards it as SimInput.equip = { slot, ability } on the next step. */
   onEquip(cb: (slot: number, ability: AbilityId | null) => void): void {
     this.equipCallbacks.push(cb);
+  }
+
+  /** Nest panel "Buy slot" request. Game forwards it as SimInput.buySlot = true for exactly one step. */
+  onBuySlot(cb: () => void): void {
+    this.buySlotCallbacks.push(cb);
   }
 
   /** Pause menu button callbacks (Continue / Save / Reset Save [confirmed] / mute toggle). Safe to call before setWorld. */
@@ -800,7 +814,7 @@ export class HUD {
         const t = toastForEvent(ev);
         if (t) this.pushToast(t);
       } else if (this.layout && ev.type !== 'momentumGain' && ev.type !== 'momentumTier') {
-        const t = toastForEvent(ev);
+        const t = toastForEvent(ev, this.lastState);
         if (t) this.pushToast(t);
       } else if (ev.type === 'momentumGain') {
         this.momGainFlashUntilMs = nowMs + 420;
@@ -1188,8 +1202,14 @@ export class HUD {
       this.bruteEl.textContent = bruteText;
     }
 
-    // Ability slots Q E R F
-    for (let i = 0; i < this.slotEls.length; i++) {
+    // Ability slots Q E R F (open world: only owned slots are shown; strip hidden at 0)
+    const owned = this.layout ? visibleSlotCount(state) : this.slotEls.length;
+    if (owned !== this.prevSlotStripCount) {
+      this.prevSlotStripCount = owned;
+      this.slotsEl.classList.toggle('is-hidden-slots', owned === 0);
+      for (let i = 0; i < this.slotEls.length; i++) this.slotEls[i].root.classList.toggle('is-unowned', i >= owned);
+    }
+    for (let i = 0; i < owned; i++) {
       const v = abilitySlotView(state, i);
       const denied = nowMs < this.deniedUntilMs[i];
       const deg = Math.round(v.remainingFrac * 360);
@@ -1370,21 +1390,59 @@ export class HUD {
   }
 
   private pushToast(spec: ToastSpec): void {
+    const life = this.layout ? 3600 : 1800;
+    // Dedupe: never show the same text twice at once; restart the visible toast's timer instead.
+    const kids = this.toastStackEl.children;
+    const texts: (string | null)[] = [];
+    for (let i = 0; i < kids.length; i++) texts.push(kids[i].textContent);
+    const dup = toastDedupe(texts, spec.text);
+    if (dup !== 'add') {
+      const node = kids[dup] as HTMLElement;
+      const old = this.toastByEl.get(node);
+      if (old !== undefined) {
+        window.clearTimeout(old);
+        this.toastTimers.delete(old);
+      }
+      node.classList.remove('is-pulse');
+      void node.offsetWidth; // restart the pulse animation
+      node.classList.add('is-pulse');
+      const rid = window.setTimeout(() => {
+        this.toastTimers.delete(rid);
+        this.toastByEl.delete(node);
+        node.remove();
+      }, life);
+      this.toastTimers.add(rid);
+      this.toastByEl.set(node, rid);
+      return;
+    }
     const el = document.createElement('div');
     el.className = `ibz-toast is-visible${spec.kind === 'good' ? ' is-good' : spec.kind === 'warn' ? ' is-warn' : ''}`;
     el.textContent = spec.text;
     this.toastStackEl.appendChild(el);
-    while (this.toastStackEl.childElementCount > 4) this.toastStackEl.firstElementChild?.remove();
+    while (this.toastStackEl.childElementCount > 4) {
+      const old = this.toastStackEl.firstElementChild as HTMLElement | null;
+      if (!old) break;
+      const tid = this.toastByEl.get(old);
+      if (tid !== undefined) {
+        window.clearTimeout(tid);
+        this.toastTimers.delete(tid);
+        this.toastByEl.delete(old);
+      }
+      old.remove();
+    }
     const id = window.setTimeout(() => {
       this.toastTimers.delete(id);
+      this.toastByEl.delete(el);
       el.remove();
-    }, this.layout ? 3600 : 1800);
+    }, life);
     this.toastTimers.add(id);
+    this.toastByEl.set(el, id);
   }
 
   private clearToasts(): void {
     for (const id of this.toastTimers) window.clearTimeout(id);
     this.toastTimers.clear();
+    this.toastByEl.clear();
     this.toastStackEl.innerHTML = '';
   }
 

@@ -99,6 +99,29 @@ Implemented in [`src/core/InputController.ts`](src/core/InputController.ts) and 
 | At a nest | Loadout panel: click a slot then an ability, or use keys `1`–`4` and `[` `]` |
 | `Tab` / `F3` | Controls help / debug overlay (FPS, draw calls, chunks, active and dormant actors, district states) |
 
+### Ability slots
+
+You start with no slots. The first slot opens with your first unlock (capturing the Suburb Police Checkpoint gives Rush). The other
+slots cost **40 / 70 / 110 biomass** and are bought at a nest: press `B` or use the buy button in the nest panel.
+
+### Touch controls
+
+Shown automatically on touch devices (`pointer: coarse`) and on the first touch anywhere else
+([`src/ui/TouchControls.ts`](src/ui/TouchControls.ts), math in [`src/core/touchMath.ts`](src/core/touchMath.ts)).
+
+| Gesture / button | Action |
+|---|---|
+| Left virtual stick | Move relative to the camera; push to the rim to sprint |
+| **ATTACK** | Alpha swing forward (auto-aims) |
+| **FOLLOW** / **RALLY** | Recall the horde / rally and recruit nearby walkers |
+| Slot buttons (owned slots only) | Activate that mutation, with a cooldown sweep |
+| **MAP** / **II** / **CAM** | World map, pause menu, recenter camera |
+| One-finger drag on the world | Orbit and tilt the camera |
+| Tap on the world | Horde order under the finger: attack the human / gate / structure, else move there |
+| Two-finger pinch | Zoom (no tap or orbit while two fingers are down) |
+
+The renderer pixel ratio is capped at 1.0 on touch devices.
+
 ## Architecture Overview
 
 The codebase enforces a strict separation between pure gameplay simulation and Three.js presentation:
@@ -260,7 +283,7 @@ The embedded pane caps `requestAnimationFrame` at about 50 Hz even when idle, so
 - **No recapture.** Humans never take back a captured district (a data hook exists for later).
 - **Pounce** exists only as data; nothing unlocks it in this build.
 - **Pointer lock** may be unavailable in embedded browsers. Every click then attacks toward the cursor, and drag orbits the camera.
-- **Desktop only**, keyboard and mouse, 1280×720 or larger. There is no mobile or touch control.
+- **Best on desktop** (keyboard and mouse, 1280x720 or larger). Touch controls exist (see Touch controls) but were only tested in an emulated phone viewport, not on real devices.
 - **Web Audio** starts after the first click or key press, because of browser autoplay rules.
 - **Legacy district.** The recruitment-milestone district is kept as a test fixture (`buildLegacyDistrictLayout()`, the default for
   `new Simulation()`). Its checkpoint victory, Rush and click-to-select rules apply only there.

@@ -63,14 +63,32 @@ function countRising(state: GameState): number {
   return rising;
 }
 
+const belowCapFor = new WeakMap<GameState, number>();
+
+/** Latch: notice (flash + event) only on the false -> true transition; re-armed by updateCapacityLatch. */
+function noteCapacityRefusal(ctx: SimContext): void {
+  const s = ctx.state;
+  belowCapFor.set(s, 0);
+  if (s.atCapacity) return;
+  s.atCapacity = true; s.capReachedFlash = 1.5;
+  ctx.emit({ type: 'capReached' });
+}
+
+/** Once per step: clear the latch after the horde stayed below cap for capNoticeRearm seconds. */
+function updateCapacityLatch(ctx: SimContext, rising: number, dt: number): void {
+  const s = ctx.state;
+  if (!s.atCapacity) return;
+  if (s.followerCount + rising >= followerCap(ctx)) { belowCapFor.set(s, 0); return; }
+  const t = (belowCapFor.get(s) ?? 0) + dt;
+  belowCapFor.set(s, t);
+  if (t >= BALANCE.horde.capNoticeRearm) { s.atCapacity = false; belowCapFor.set(s, 0); }
+}
+
 /** Reservation count is stable during a recruitment pass; followerCount advances per recruit. */
 function recruitWithReservation(ctx: SimContext, z: ZombieAgent, viaRally: boolean, rising: number, gen = 0): boolean {
   if (z.state !== 'ambient' || z.hp <= 0 || z.heldBy !== 0 || z.dormant) return false;
   if (ctx.state.followerCount + rising >= followerCap(ctx)) {
-    if (ctx.state.capReachedFlash <= 0) {
-      ctx.state.capReachedFlash = 1.5;
-      ctx.emit({ type: 'capReached' });
-    }
+    noteCapacityRefusal(ctx);
     return false;
   }
   z.state = 'follower'; z.stateTime = 0; z.wanderTarget = null; z.engageTarget = null;
@@ -283,9 +301,12 @@ export function applyHordeCommands(ctx: SimContext, dt: number, input: SimInput)
   if ((input.rally || command?.type === 'regroup') && a.rallyCooldown <= 1e-9 && s.leader.alive) {
     const rising = countRising(s);
     const radius = BALANCE.rally.radius * recruitRadiusMultiplier(s);
-    for (const z of s.zombies) if (z.state === 'ambient' && !z.dormant && z.heldBy === 0 &&
-        distSq(z.pos, s.leader.pos) <= radius ** 2 && !ctx.collision.segmentBlocked(s.leader.pos, z.pos, moveAccess))
-      recruitWithReservation(ctx, z, true, rising);
+    const cap = followerCap(ctx);
+    for (const z of s.zombies) {
+      if (z.state !== 'ambient' || z.dormant || z.heldBy !== 0 || distSq(z.pos, s.leader.pos) > radius ** 2) continue;
+      if (s.followerCount + rising >= cap) { noteCapacityRefusal(ctx); break; } // at cap: no LOS scan
+      if (!ctx.collision.segmentBlocked(s.leader.pos, z.pos, moveAccess)) recruitWithReservation(ctx, z, true, rising);
+    }
     ctx.emit({ type: 'rally', pos: { ...s.leader.pos }, radius });
     a.rallyCooldown = BALANCE.rally.cooldown;
   }
@@ -578,14 +599,17 @@ export function updateHorde(ctx: SimContext, dt: number, _input: SimInput): void
     }
   }
   const rising = countRising(state);
+  updateCapacityLatch(ctx, rising, dt);
+  const cap = followerCap(ctx);
   if (leader.alive) {
     const radius = BALANCE.leader.recruitRadius * recruitRadiusMultiplier(state);
     s.neighbors.length = 0;
     ctx.zombieHash.query(leader.pos.x, leader.pos.z, radius, s.neighbors);
     for (const id of s.neighbors) {
       const z = s.byId.get(id)!;
-      if (z.state === 'ambient' && z.heldBy === 0 && distSq(z.pos, leader.pos) <= radius ** 2 &&
-          !ctx.collision.segmentBlocked(leader.pos, z.pos, moveAccess)) recruitWithReservation(ctx, z, false, rising);
+      if (z.state !== 'ambient' || z.heldBy !== 0 || distSq(z.pos, leader.pos) > radius ** 2) continue;
+      if (state.followerCount + rising >= cap) { noteCapacityRefusal(ctx); break; } // at cap: no LOS scan
+      if (!ctx.collision.segmentBlocked(leader.pos, z.pos, moveAccess)) recruitWithReservation(ctx, z, false, rising);
     }
   }
   for (const pulser of state.zombies) {
@@ -599,7 +623,8 @@ export function updateHorde(ctx: SimContext, dt: number, _input: SimInput): void
     // maxRecruitsPerPulse selection scans over that short list pick closest-first (ties: lower id). No allocation.
     const cand = s.candidates, dist = s.candidateDist, r2 = radius * radius;
     cand.length = 0; dist.length = 0;
-    for (const id of s.neighbors) {
+    // At cap a pulse is consumed but recruits nothing (no neighbor scan, no LOS checks).
+    if (state.followerCount + rising < cap) for (const id of s.neighbors) {
       const z = s.byId.get(id)!;
       if (z.state !== 'ambient' || z.hp <= 0 || z.heldBy !== 0) continue;
       const d = distSq(z.pos, pulser.pos);

@@ -3,7 +3,7 @@
 // [ / ] cycle the selected slot through the available abilities. Never mutates state; emits onEquip only.
 import { ABILITIES, SLOT_KEYS } from '../content/abilities';
 import type { AbilityId, GameState } from '../core/types';
-import { equippableAbilities } from './uiHelpers';
+import { equippableAbilities, nextSlotPrice, visibleSlotCount } from './uiHelpers';
 
 export class NestPanel {
   readonly element: HTMLDivElement;
@@ -13,11 +13,19 @@ export class NestPanel {
   private renderKey = '';
   private available: AbilityId[] = [];
   private equipped: (AbilityId | null)[] = [];
+  private owned = 0;
+  private price: number | null = null;
+  private biomass = 0;
+  private readonly buyCallbacks: (() => void)[] = [];
   private readonly callbacks: ((slot: number, ability: AbilityId | null) => void)[] = [];
 
   private readonly onClick = (ev: MouseEvent): void => {
-    const target = (ev.target as HTMLElement | null)?.closest('[data-slot],[data-ability]') as HTMLElement | null;
+    const target = (ev.target as HTMLElement | null)?.closest('[data-slot],[data-ability],[data-buy]') as HTMLElement | null;
     if (!target) return;
+    if (target.dataset.buy !== undefined) {
+      this.buy();
+      return;
+    }
     if (target.dataset.slot !== undefined) {
       this.selectedSlot = Number(target.dataset.slot) || 0;
       this.renderKey = '';
@@ -45,11 +53,22 @@ export class NestPanel {
     this.callbacks.push(cb);
   }
 
+  onBuySlot(cb: () => void): void {
+    this.buyCallbacks.push(cb);
+  }
+
+  private buy(): void {
+    for (const cb of this.buyCallbacks) cb();
+  }
+
   /** `atNest` = leader is within equip range of an active nest. */
   update(state: GameState, atNest: boolean): void {
     // Playtest (T016): an empty loadout panel at the start nest covered the objective tracker and the intro card.
     // Only open it once there is something to equip.
-    atNest = atNest && equippableAbilities(state).length > 0;
+    // With a slot to buy the panel is also useful with nothing to equip.
+    this.owned = visibleSlotCount(state);
+    this.price = nextSlotPrice(state);
+    atNest = atNest && this.owned > 0 && (equippableAbilities(state).length > 0 || this.price !== null);
     if (atNest !== this._visible) {
       this._visible = atNest;
       this.element.classList.toggle('is-visible', atNest);
@@ -58,7 +77,10 @@ export class NestPanel {
     if (!atNest) return;
     this.available = equippableAbilities(state);
     this.equipped = state.progression.equipped;
-    const key = `${this.selectedSlot}|${this.equipped.join(',')}|${this.available.join(',')}`;
+    this.biomass = state.progression.biomass;
+    if (this.selectedSlot >= this.owned) this.selectedSlot = Math.max(0, this.owned - 1);
+    const affordable = this.price !== null && this.biomass >= this.price ? 1 : 0;
+    const key = `${this.owned}|${this.price}|${affordable}|${this.selectedSlot}|${this.equipped.join(',')}|${this.available.join(',')}`;
     if (key === this.renderKey) return;
     this.renderKey = key;
     this.render();
@@ -67,7 +89,13 @@ export class NestPanel {
   /** Returns true when the key was consumed (only while visible). */
   handleKey(key: string): boolean {
     if (!this._visible) return false;
+    if (key === 'b' || key === 'B') {
+      if (this.price === null) return false;
+      this.buy();
+      return true;
+    }
     if (key >= '1' && key <= '4') {
+      if (Number(key) > this.owned) return true; // unowned slot: consume, do nothing
       this.selectedSlot = Number(key) - 1;
       this.renderKey = '';
       this.render();
@@ -91,12 +119,18 @@ export class NestPanel {
 
   private render(): void {
     let html = '<div class="ibz-nest-slots">';
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < this.owned; i++) {
       const id = this.equipped[i] ?? null;
       html += `<button type="button" class="ibz-nest-slot${i === this.selectedSlot ? ' is-selected' : ''}" data-slot="${i}">
         <span class="ibz-key-badge">${SLOT_KEYS[i] ?? i + 1}</span><span>${id ? ABILITIES[id].name : 'Empty'}</span></button>`;
     }
-    html += '</div><div class="ibz-nest-list">';
+    html += '</div>';
+    if (this.price !== null) {
+      const can = this.biomass >= this.price;
+      html += `<button type="button" class="ibz-nest-buy${can ? '' : ' is-unaffordable'}" data-buy="1">
+        Buy slot <span class="ibz-key-badge">${SLOT_KEYS[this.owned] ?? this.owned + 1}</span> &mdash; ${this.price} BIO <em>(B)</em></button>`;
+    }
+    html += '<div class="ibz-nest-list">';
     html += `<button type="button" class="ibz-nest-ability" data-ability="">Empty slot</button>`;
     if (this.available.length === 0) {
       html += '<div class="ibz-nest-none">No mutations unlocked yet. Capture strongholds to unlock them.</div>';
@@ -108,7 +142,7 @@ export class NestPanel {
         <strong>${def.name}</strong>${inSlot >= 0 ? ` <em>(slot ${SLOT_KEYS[inSlot] ?? inSlot + 1})</em>` : ''}
         <span class="ibz-nest-desc">${def.description}</span></button>`;
     }
-    html += '</div><div class="ibz-nest-hint">Click a slot, then an ability &middot; keys 1-4 pick slot, [ ] cycle</div>';
+    html += `</div><div class="ibz-nest-hint">Click a slot, then an ability &middot; keys 1-${Math.max(1, this.owned)} pick slot, [ ] cycle &middot; B buy slot</div>`;
     this.bodyEl.innerHTML = html;
   }
 

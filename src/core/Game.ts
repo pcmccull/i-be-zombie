@@ -5,6 +5,8 @@ import { createSave } from '../persistence/saveSchema';
 import { SaveStore } from '../persistence/SaveStore';
 import { Simulation } from '../sim/Simulation';
 import { HUD, structureHudLabel } from '../ui/HUD';
+import { TouchControls, type TouchSlotView } from '../ui/TouchControls';
+import { abilitySlotView, visibleSlotCount } from '../ui/uiHelpers';
 import { Effects } from '../visuals/Effects';
 import { EntityRenderer } from '../visuals/EntityRenderer';
 import { HordeRenderer } from '../visuals/HordeRenderer';
@@ -70,6 +72,10 @@ export class Game {
   private readonly waypointMarker: THREE.Mesh;
   private waypoint: Vec2 | null = null;
   private pendingEquip: { slot: number; ability: AbilityId | null } | null = null;
+  private pendingBuySlot = false;
+  private touch!: TouchControls;
+  private touchActive = false;
+  private readonly touchSlotViews: TouchSlotView[] = [];
   private readonly focus = new THREE.Vector3();
   private readonly marker = new THREE.Vector3();
   private readonly extraMarkers: THREE.Vector3[] = [];
@@ -92,8 +98,9 @@ export class Game {
   private loadedChunkCount = 0;
 
   constructor(private readonly container: HTMLElement, private readonly hudRoot: HTMLElement) {
+    this.touchActive = typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    this.renderer.setPixelRatio(this.pixelRatio());
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -198,19 +205,7 @@ export class Game {
         // Browser Esc / alt-tab released the mouse: show the pause menu instead of silently dropping control.
         if (!this.hud.introVisible && !this.hud.isHelpVisible && !this.isModal()) this.openPause();
       },
-      onKey: action => {
-        switch (action) {
-          case 'recenter': this.cameraRig.recenter(); break;
-          case 'help':
-            this.hud.toggleHelp();
-            if (this.hud.isHelpVisible) this.input.exitPointerLock();
-            break;
-          case 'debug': this.showDebug = !this.showDebug; break;
-          case 'mute': this.toggleMute(); break;
-          case 'map': this.toggleMap(); break;
-          case 'pause': this.togglePause(); break;
-        }
-      },
+      onKey: action => this.handleKeyAction(action),
       onFirstGesture: () => { this.audio.unlock(); this.hud.hideIntro(); },
       canLock: () =>
         shouldRequestLock({
@@ -224,6 +219,19 @@ export class Game {
     this.hud.onRestart(() => this.restart());
     this.hud.onWaypoint(p => { this.waypoint = p; });
     this.hud.onEquip((slot, ability) => { this.pendingEquip = { slot, ability }; });
+    this.hud.onBuySlot(() => { this.pendingBuySlot = true; });
+    // Touch overlay: created once, shown on coarse-pointer devices or after the first touch.
+    this.touch = new TouchControls(hudRoot);
+    this.input.setTouchSource(this.touch);
+    this.touch.onAttack(() => this.input.queueAttack());
+    this.touch.onRegroup(() => this.input.queueCommand({ type: 'regroup' }));
+    this.touch.onFollow(() => this.input.queueCommand({ type: 'follow' }));
+    this.touch.onAbility(slot => this.input.queueAbility(slot));
+    this.touch.onMap(() => this.handleKeyAction('map'));
+    this.touch.onPause(() => this.handleKeyAction('pause'));
+    this.touch.onRecenter(() => this.handleKeyAction('recenter'));
+    if (this.touchActive) this.touch.enable();
+    window.addEventListener('pointerdown', this.onTouchProbe, { capture: true });
     this.hud.setPauseCallbacks({
       onContinue: () => this.closePause(),
       onSave: () => this.hud.notifyPause(this.saveNow() ? 'Saved' : 'Save failed'),
@@ -264,6 +272,7 @@ export class Game {
     this.hud.setMuted(this.audio.muted);
     this.input.clear();
     this.pendingEquip = null;
+    this.pendingBuySlot = false;
     this.waypoint = null;
     this.accumulator = 0;
     this.lastTime = null;
@@ -287,11 +296,13 @@ export class Game {
     this.running = false;
     if (this.frameId !== null) cancelAnimationFrame(this.frameId);
     this.frameId = null;
+    window.removeEventListener('pointerdown', this.onTouchProbe, { capture: true });
     window.removeEventListener('resize', this.onResize);
     window.removeEventListener('blur', this.onBlur);
     window.removeEventListener('focus', this.onFocus);
     document.removeEventListener('visibilitychange', this.onVisibility);
     this.input.dispose();
+    this.touch.dispose();
     this.hud.dispose();
     this.audio.dispose();
     // The provided renderers do not release character part geometries.
@@ -326,6 +337,44 @@ export class Game {
   }
 
   // --- menus / persistence -------------------------------------------------------------------
+
+  private pixelRatio(): number {
+    return Math.min(window.devicePixelRatio || 1, this.touchActive ? BALANCE.touch.lowDpr : 1.5);
+  }
+
+  private handleKeyAction(action: 'recenter' | 'help' | 'debug' | 'mute' | 'map' | 'pause'): void {
+    switch (action) {
+      case 'recenter': this.cameraRig.recenter(); break;
+      case 'help':
+        this.hud.toggleHelp();
+        if (this.hud.isHelpVisible) this.input.exitPointerLock();
+        break;
+      case 'debug': this.showDebug = !this.showDebug; break;
+      case 'mute': this.toggleMute(); break;
+      case 'map': this.toggleMap(); break;
+      case 'pause': this.togglePause(); break;
+    }
+  }
+
+  private readonly onTouchProbe = (event: PointerEvent): void => {
+    if (event.pointerType !== 'touch' || this.touchActive) return;
+    this.touchActive = true;
+    this.touch.enable();
+    this.onResize();
+  };
+
+  private updateTouchSlots(): void {
+    if (!this.touch.isEnabled()) return;
+    const state = this.sim.state;
+    const n = visibleSlotCount(state);
+    const views = this.touchSlotViews;
+    views.length = 0;
+    for (let i = 0; i < n; i++) {
+      const v = abilitySlotView(state, i);
+      views.push({ key: v.key, name: v.name, kind: v.kind, remainingFrac: v.remainingFrac });
+    }
+    this.touch.setSlots(views);
+  }
 
   private isModal(): boolean { return this.hud.isPauseVisible || this.hud.isMapVisible; }
 
@@ -397,6 +446,7 @@ export class Game {
       if (steps === 0) {
         const input = this.input.buildSimInput(this.cameraRig.yaw);
         if (this.pendingEquip) { input.equip = this.pendingEquip; this.pendingEquip = null; }
+        if (this.pendingBuySlot) { input.buySlot = true; this.pendingBuySlot = false; }
         this.continuousInput.moveForward = input.moveForward;
         this.continuousInput.moveRight = input.moveRight;
         this.continuousInput.cameraYaw = input.cameraYaw;
@@ -547,6 +597,7 @@ export class Game {
   }
 
   private updateHud(): void {
+    this.updateTouchSlots();
     const target = this.input.hovered;
     let hoverLabel: string | null = null;
     if (target?.kind === 'gate') {
@@ -600,7 +651,7 @@ export class Game {
     const height = Math.max(1, this.container.clientHeight || window.innerHeight);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    this.renderer.setPixelRatio(this.pixelRatio());
     this.renderer.setSize(width, height);
   };
 }

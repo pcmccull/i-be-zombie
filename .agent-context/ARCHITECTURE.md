@@ -1,4 +1,131 @@
-# Architecture & Interface Contracts — Open World milestone (OW)
+# Architecture & Interface Contracts — Todos milestone (TD: docs/todos.md items 7–9)
+
+Spec: `docs/todos.md` open items. Everything from the Open World milestone (below the rule) still holds unless this section
+overrides it. `AGENTS.md` stays authoritative for stack, purity and step order. **The code written to `src/core/types.ts`,
+`src/core/contracts.ts` and `src/config/balance.ts` in TD-T001 is the contract**; this section is the map and the reasons.
+
+| # | Todo | Short form |
+|---|---|---|
+| 7 | Add mobile controllers | Touch UI: virtual stick, camera drag/pinch, action buttons, tap-to-order |
+| 8 | Don't repeat notices (Horde at capacity repeats); make sure it isn't slowing the game | Emit `capReached` once per entry into capacity; HUD toast dedupe; no wasted recruit scans at cap |
+| 9 | Hide ability slots until the first unlock, then show one slot; the other 3 are purchased | `slotsOwned` 0→1 on first unlock, slots 2–4 bought with biomass at a nest |
+
+## TD-0. Decisions (where the todo text is open)
+
+| Question | Decision | Why |
+|---|---|---|
+| What counts as the "first unlock"? | The first `unlockAbility` of a `slotBehavior:'slot'` ability (in practice Rush from `suburb_checkpoint`). Innate bite/infect never count. | Rush is auto-equipped on Q today; it keeps landing in Q. |
+| What do slots cost? | Biomass, escalating: `BALANCE.progression.slotCosts = [0, 40, 70, 110]` (index = slot; slot 0 is the free one). | Stronghold rewards are 15/30/30/40 plus 2–5 per kill, so slot 2 is affordable around the second capture and slot 4 near the end. Tunable. |
+| Where are slots bought? | At an active nest, from the nest panel (same place loadout changes happen). `SimInput.buySlot: boolean` edge. | Keeps "loadout changes happen at nests" consistent; no new modal UI. |
+| Unlock with no free owned slot? | Unlocked but not equipped; existing toast "equip it at a nest". Equip into a slot `>= slotsOwned` is denied `'locked'`; activating such a slot is denied `'empty'`. | Purchase becomes the meaningful choice. |
+| Old saves | `WorldSave.player.slotsOwned` (PlayerSave) is new and optional on read. Missing ⇒ `max(highest non-null equipped index + 1, any slot ability unlocked ? 1 : 0)`, clamped 0..4. Bump `BALANCE.save.version` 1 → 2 with a v1→v2 migration (no data loss). | Players who already have 3 equipped abilities keep them. |
+| Capacity notice | Sim emits `capReached` only on the transition into capacity (`state.atCapacity` false → true). The latch clears when `followers + rising < cap`. `capReachedFlash` (the "HORDE FULL" badge) is set on that same transition only. | The event was re-emitted every 1.5 s while any ambient zombie was in range, and each one made a new toast DOM node. |
+| Flapping at the edge (one dies, one rejoins) | The latch clears only after the horde has been below cap continuously for `BALANCE.horde.capNoticeRearm` (4 s). The HUD also never shows the same toast text twice while it is visible: it restarts that toast's timer instead of adding a node. | Two independent guards: one in the sim, one in the HUD. |
+| Performance at cap | While `followers + rising >= cap`, passive leader recruitment and rally recruitment skip their spatial scans and `segmentBlocked` calls entirely. Due recruit pulses still fire and are consumed (`pulseAt = -1`) but recruit nothing, so no pulse is left pending forever. `countRising` stays at once per pass. | Every recruit attempt at cap used to run LOS checks for each candidate every step. |
+| Touch detection | Touch UI turns on at boot when `matchMedia('(pointer: coarse)').matches`, and also on the first `pointerdown` with `pointerType === 'touch'`. Mouse/keyboard keep working at the same time. | Covers phones, tablets and touch laptops. |
+| Tap on the 3D view | A tap (touch click, not a drag) issues the **horde order** under the finger: same `hordeCommandForRightClick` as desktop RMB (attack target / move to ground). Attacking with the Alpha is the ATTACK button. | Point-and-order is the main horde control and needs a free finger; the Alpha attack auto-aims anyway (100° cone). |
+| Camera on touch | One finger dragging on the 3D view (not on a control) orbits; two-finger pinch zooms. | Same as left-drag orbit and wheel zoom. |
+| Sprint on touch | Pushing the stick past `BALANCE.touch.sprintThreshold` (0.85 of its radius) sprints. | No extra button needed. |
+
+## TD-1. Directory & asset map (this milestone)
+
+No new 3D models, rigs, textures or shaders. Everything new is pure TypeScript or DOM/CSS.
+
+```text
+src/core/types.ts            [pure] + ProgressionState.slotsOwned, GameState.atCapacity, SimInput.buySlot, GameEvent slotPurchased   (orchestrator)
+src/config/balance.ts        [pure] + progression.slotCosts, horde.capNoticeRearm, touch.*, save.version 2                         (orchestrator)
+src/core/contracts.ts        [pure] + doc lines for buySlot / ownedSlotCount; AbilityDenyReason gains 'maxSlots'                    (orchestrator)
+src/sim/createInitialState.ts[pure] defaults only: slotsOwned 0, atCapacity false                                                   (orchestrator, T001)
+src/systems/HordeSystem.ts   [pure] capacity latch + scan early-out                                                                 (T002)
+src/systems/ProgressionSystem.ts [pure] slot ownership, buySlot, unlock/equip/activate respect slotsOwned                            (T003)
+src/persistence/saveSchema.ts[pure] slotsOwned in WorldSave, v1→v2 migration                                                         (T003)
+src/ui/uiHelpers.ts          [pure] visibleSlotCount, slot view models, nextSlotCost, toast text for slotPurchased                   (T004)
+src/ui/HUD.ts, NestPanel.ts, hudOpenWorld.css   owned slots only; nest "Buy slot" button + onBuySlot; toast dedupe                     (T004)
+src/core/touchMath.ts        [pure] NEW: joystick + pinch + tap math                                                                (T005)
+src/ui/TouchControls.ts, src/ui/touch.css       NEW: DOM touch overlay (stick, buttons), callbacks only                              (T005)
+src/core/InputController.ts  touch pointers: tap→order, 1-finger orbit, pinch zoom, external move/attack/ability injection           (T006)
+src/core/Game.ts, index.html, README.md         create TouchControls, wire buy-slot + touch, viewport meta                           (T006)
+```
+
+## TD-2. Locked interfaces (exact shapes for T001)
+
+```ts
+// types.ts
+interface ProgressionState { ...; /** Ability slots the player owns, 0..BALANCE.progression.slots. Slots >= slotsOwned are hidden and unusable. */ slotsOwned: number }
+interface GameState        { ...; /** true from the step a recruit was refused at capacity until the horde has been below cap for horde.capNoticeRearm s. Only HordeSystem writes it. */ atCapacity: boolean }
+interface SimInput         { ...; /** Nest panel edge: buy the next ability slot (cost slotCosts[slotsOwned]). Only within nest.equipRadius of an active nest. */ buySlot: boolean }
+GameEvent += { type: 'slotPurchased'; slot: number; cost: number }
+PlayerSave += slotsOwned: number           // WorldSave.player.slotsOwned; v1 saves migrate (MIGRATIONS[1])
+emptyInput() sets buySlot: false
+
+// contracts.ts
+type AbilityDenyReason = 'locked' | 'cooldown' | 'biomass' | 'noTarget' | 'notAtNest' | 'empty' | 'maxSlots';
+// ProgressionSystem (doc block):
+//   ownedSlotCount(state): number                 // clamp(slotsOwned, 0, slots)
+//   nextSlotCost(state): number | null            // slotCosts[slotsOwned], null when all owned or slotsOwned === 0 (first is granted, not bought)
+//   buySlot(ctx): boolean                         // needs slotsOwned >= 1, < slots, at an active nest, biomass >= cost; spends atomically,
+//                                                 // slotsOwned++, emits slotPurchased + autosave{reason:'equip'}; else abilityDenied{abilityId:null, reason}
+//   unlockAbility: first 'slot' unlock with slotsOwned === 0 sets slotsOwned = 1; auto-equip only into an empty slot < slotsOwned
+//   equipAbility: slot >= slotsOwned ⇒ denied 'locked'
+//   updateProgression: input.abilitySlot >= slotsOwned ⇒ denied 'empty'; input.buySlot ⇒ buySlot(ctx)
+
+// balance.ts
+progression.slotCosts: [0, 40, 70, 110]
+horde.capNoticeRearm: 4          // seconds below cap before capReached can fire again
+touch: { stickRadius: 56, deadZone: 0.12, sprintThreshold: 0.85, tapMaxMove: 12, tapMaxMs: 280,
+         orbitSensitivity: 1.0, pinchZoomScale: 2.5, lowDpr: 1.0 }   // px / ms / multipliers
+save.version: 2
+```
+
+### Pure helpers T005 must export from `src/core/touchMath.ts` (tested in `tests/touchMath.test.ts`)
+
+```ts
+interface StickOutput { moveForward: number; moveRight: number; sprint: boolean; mag: number } // -1..1, |v| <= 1
+stickFromOffset(dx: number, dy: number, radius: number, deadZone: number, sprintThreshold: number, out: StickOutput): StickOutput
+// screen up (dy < 0) ⇒ moveForward +1; screen right ⇒ moveRight +1; inside deadZone ⇒ zero; clamped to the unit circle
+isTap(dxPx: number, dyPx: number, ms: number, maxMovePx: number, maxMs: number): boolean
+pinchZoomDelta(prevDistPx: number, distPx: number, scale: number): number   // > 0 = zoom out (same sign as wheel deltaY)
+```
+
+### UI → Game callbacks (T004/T005 provide, T006 wires)
+
+```ts
+NestPanel / HUD:  onBuySlot(cb: () => void)                                   // Game sets pendingBuySlot → SimInput.buySlot for one step
+TouchControls:    constructor(root: HTMLElement); enable(): void; disable(): void; isEnabled(): boolean;
+                  readStick(out: StickOutput): StickOutput                     // polled by InputController.sample() each frame
+                  onAttack(cb), onRegroup(cb), onFollow(cb), onAbility(cb: (slot: number) => void),
+                  onMap(cb), onPause(cb), onRecenter(cb)
+                  setSlots(views: { key: string; name: string; kind: string; remainingFrac: number }[])  // only owned slots; [] hides the strip
+                  containsPoint(clientX, clientY): boolean                     // so InputController ignores touches that start on a control
+                  dispose(): void                                              // removes all listeners and DOM
+InputController:  setTouchSource(src: { readStick(out): StickOutput; containsPoint(x, y): boolean } | null)
+                  queueAttack(): void; queueAbility(slot: number): void; queueCommand(cmd: HordeCommand): void
+```
+
+## TD-3. Art & 3D technical contract
+
+Not applicable this milestone: no meshes, rigs, bones, textures or shaders are added or renamed. Touch UI is DOM/CSS on `#hud`,
+using the existing HUD palette (`#e0782a` orange, `#2c3e66` navy, `#7d9a6a` zombie green) and the HUD's panel classes.
+Touch controls must: sit inside `env(safe-area-inset-*)`, have hit targets ≥ 48 px, use `pointer-events:auto` only on the
+controls themselves (the overlay root stays `pointer-events:none`), and never cover the minimap/objective tracker.
+On touch devices Game caps DPR at `BALANCE.touch.lowDpr` (1.0) instead of 1.5.
+
+## TD-4. Invariants added (tests must cover)
+
+1. Holding the horde at cap with ambient zombies in range for 60 s produces exactly one `capReached`.
+2. Dropping below cap for less than `capNoticeRearm` and refilling emits no second `capReached`; staying below for longer re-arms it.
+3. At cap, a step with many ambient zombies near the leader makes zero `segmentBlocked` calls from passive/rally recruitment (spy on `ctx.collision`).
+4. Fresh state: `slotsOwned === 0`; HUD shows no slots. First slot-ability unlock ⇒ `slotsOwned === 1` and it is equipped in slot 0.
+5. Second unlock with one slot owned ⇒ unlocked, not equipped, `abilityUnlocked.slot === null`.
+6. `buySlot`: denied away from a nest (`notAtNest`), without enough biomass (`biomass`), with 0 slots (`locked`), at 4 (`maxSlots`); success spends exactly `slotCosts[n]`, never goes negative, emits `slotPurchased` once.
+7. Slots `>= slotsOwned` can't be equipped or activated.
+8. Save round-trip keeps `slotsOwned`; a v1 save with 3 equipped abilities loads with `slotsOwned === 3` and the same loadout.
+9. `stickFromOffset` is clamped, dead-zoned, sprint only past the threshold; screen-up = forward.
+
+
+---
+
+# Background: Open World milestone contracts (OW, complete; still authoritative where TD does not override)
 
 Spec: `docs/3_open_world.md` ("open-world spec"). Earlier specs (`docs/1_design.md`, `docs/2_intial_recruitment_design.md`)
 still govern the mechanics they define (cascade recruitment, structures, momentum, towers, crawling) unless overridden here.

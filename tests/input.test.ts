@@ -89,3 +89,27 @@ describe('open-world pointer lock and zoom', () => {
     expect(ZOOM_MAX).toBeGreaterThanOrEqual(56); // frames a 40-zombie horde
   });
 });
+
+import { tapGroundBlocked, touchGestureMode, touchTapAllowed } from '../src/core/cameraMath';
+
+describe('touch gestures', () => {
+  it('classifies finger counts', () => {
+    expect(touchGestureMode(0)).toBe('none');
+    expect(touchGestureMode(1)).toBe('orbit');
+    expect(touchGestureMode(2)).toBe('pinch');
+    expect(touchGestureMode(3)).toBe('pinch');
+  });
+
+  it('allows a tap only for a quick, still, single-finger gesture', () => {
+    expect(touchTapAllowed(false, 3, 4, 120, 12, 280)).toBe(true);
+    expect(touchTapAllowed(true, 0, 0, 100, 12, 280)).toBe(false); // second finger touched during the gesture
+    expect(touchTapAllowed(false, 20, 0, 100, 12, 280)).toBe(false); // dragged
+    expect(touchTapAllowed(false, 0, 0, 400, 12, 280)).toBe(false); // long press
+    expect(touchTapAllowed(false, 0, 0, -1, 12, 280)).toBe(false);
+    expect(touchTapAllowed(false, 2, 2, 100, 12, 280, true)).toBe(false); // dragged away and back
+    expect(touchTapAllowed(false, 2, 2, 100, 12, 280, false)).toBe(true);
+    expect(tapGroundBlocked(10, 20)).toBe(true);
+    expect(tapGroundBlocked(19.5, 20)).toBe(false);
+    expect(tapGroundBlocked(Infinity, 20)).toBe(false);
+  });
+});

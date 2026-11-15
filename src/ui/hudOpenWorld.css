@@ -413,6 +413,15 @@
   color: #9be35a;
 }
 
+.ibz-worldmap-close {
+  min-width: 44px;
+  min-height: 44px;
+  font-size: 26px;
+  line-height: 1;
+  padding: 0 10px;
+  cursor: pointer;
+}
+
 .ibz-worldmap-sub {
   flex: 1;
   font-size: 12px;
@@ -592,4 +601,50 @@
   bottom: 86px;
   font-size: 11px;
   opacity: 0.85;
+}
+
+/* TD-T004: slot strip hidden until the first slot is owned; unowned slots never shown */
+.ibz-slots.is-hidden-slots,
+.ibz-slot.is-unowned {
+  display: none !important;
+}
+
+.ibz-nest-buy {
+  display: block;
+  width: 100%;
+  margin: 8px 0 4px;
+  padding: 7px 10px;
+  font: inherit;
+  font-weight: 700;
+  text-align: left;
+  color: #fff;
+  background: rgba(125, 154, 106, 0.35);
+  border: 1px solid #7d9a6a;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.ibz-nest-buy em {
+  opacity: 0.7;
+  font-style: normal;
+  font-weight: 400;
+}
+
+.ibz-nest-buy:hover {
+  background: rgba(125, 154, 106, 0.5);
+}
+
+.ibz-nest-buy.is-unaffordable {
+  opacity: 0.5;
+  background: rgba(74, 82, 96, 0.4);
+  border-color: #4a5260;
+}
+
+.ibz-toast.is-pulse {
+  animation: ibz-toast-pulse 0.25s ease-out;
+}
+
+@keyframes ibz-toast-pulse {
+  0% { transform: scale(1.06); }
+  100% { transform: scale(1); }
 }

@@ -22,7 +22,27 @@ export const SAVE_VERSION = BALANCE.save.version;
  * Schema migration chain keyed by source version `v` (migrates `v` -> `v + 1`).
  * Empty at v1; adding v2 is a one-line addition `1: (old) => ({ ... })`.
  */
-export const MIGRATIONS: Record<number, (old: unknown) => unknown> = {};
+export const MIGRATIONS: Record<number, (old: unknown) => unknown> = {
+  // v1 -> v2: derive player.slotsOwned from the loadout (todos #9), keeping every equipped ability.
+  1: (old) => {
+    if (!isRecord(old)) return old;
+    if (!isRecord(old.player)) return { ...old, version: 2 };
+    const player = old.player;
+    let owned = 0;
+    if (Array.isArray(player.equippedAbilities)) {
+      // Only real slot abilities count, so a garbage entry can't mint a free slot (TD-V2 P3-1).
+      player.equippedAbilities.forEach((id, i) => {
+        if (isAbilityId(id) && ABILITIES[id].slotBehavior === 'slot') owned = Math.max(owned, i + 1);
+      });
+    }
+    const lists = [player.unlockedAbilities, old.acquiredUpgrades];
+    for (const list of lists) {
+      if (!Array.isArray(list)) continue;
+      for (const id of list) if (isAbilityId(id) && ABILITIES[id].slotBehavior === 'slot') owned = Math.max(owned, 1);
+    }
+    return { ...old, version: 2, player: { ...player, slotsOwned: Math.min(BALANCE.progression.slots, owned) } };
+  },
+};
 
 const STRONGHOLD_IDS: readonly StrongholdId[] = STRONGHOLDS.map(s => s.id);
 const TERRITORY_STATUSES: readonly TerritoryStatus[] = ['unknown', 'human', 'contested', 'infected'];
@@ -142,11 +162,12 @@ function normalizeUnlocked(list: readonly AbilityId[]): AbilityId[] {
 function sanitizeEquipped(
   equipped: readonly (AbilityId | null)[],
   unlocked: readonly AbilityId[],
+  owned: number = BALANCE.progression.slots,
 ): (AbilityId | null)[] {
   const slots = BALANCE.progression.slots;
   const out: (AbilityId | null)[] = new Array<AbilityId | null>(slots).fill(null);
   const seen = new Set<AbilityId>();
-  for (let i = 0; i < slots; i++) {
+  for (let i = 0; i < Math.min(slots, owned); i++) {
     const id = equipped[i] ?? null;
     if (
       id !== null &&
@@ -162,9 +183,22 @@ function sanitizeEquipped(
   return out;
 }
 
+function clampSlots(n: unknown): number {
+  return typeof n === 'number' && Number.isInteger(n) ? Math.max(0, Math.min(BALANCE.progression.slots, n)) : 0;
+}
+
+/** Owned slots, raised so a granted slot ability and the highest equipped entry always have a slot. */
+function reconcileSlots(owned: unknown, unlocked: readonly AbilityId[], equipped: readonly (AbilityId | null)[]): number {
+  let n = clampSlots(owned);
+  if (unlocked.some(id => ABILITIES[id].slotBehavior === 'slot')) n = Math.max(n, 1);
+  equipped.forEach((id, i) => { if (id !== null) n = Math.max(n, i + 1); });
+  return Math.min(BALANCE.progression.slots, n);
+}
+
 export function createSave(state: GameState, seed: number, savedAt = 0): WorldSave {
   const unlockedAbilities = normalizeUnlocked(state.progression.unlocked);
   const equippedAbilities = sanitizeEquipped(state.progression.equipped, unlockedAbilities);
+  const slotsOwned = reconcileSlots(state.progression.slotsOwned, unlockedAbilities, equippedAbilities);
   const acquiredUpgrades = unlockedAbilities.filter(id => !INNATE_ABILITIES.includes(id));
 
   const districts = {} as Record<DistrictId, DistrictState>;
@@ -226,6 +260,7 @@ export function createSave(state: GameState, seed: number, savedAt = 0): WorldSa
       unlockedAbilities,
       equippedAbilities,
       selectedNestId: typeof state.activeNestId === 'string' ? state.activeNestId : '',
+      slotsOwned,
     },
     districts,
     strongholds,
@@ -298,10 +333,10 @@ export function parseSave(raw: unknown): WorldSave | null {
       ...(player.unlockedAbilities as AbilityId[]),
       ...(data.acquiredUpgrades as AbilityId[]),
     ]);
-    const equippedAbilities = sanitizeEquipped(
-      player.equippedAbilities as (AbilityId | null)[],
-      unlockedAbilities,
-    );
+    // Reconcile before trimming: a missing/low slotsOwned never wipes a valid loadout (TD-V2 P2-3).
+    const fullEquipped = sanitizeEquipped(player.equippedAbilities as (AbilityId | null)[], unlockedAbilities);
+    const slotsOwned = reconcileSlots(player.slotsOwned, unlockedAbilities, fullEquipped);
+    const equippedAbilities = sanitizeEquipped(fullEquipped, unlockedAbilities, slotsOwned);
     const acquiredUpgrades = unlockedAbilities.filter(id => !INNATE_ABILITIES.includes(id));
 
     if (!isRecord(data.districts)) return null;
@@ -374,6 +409,7 @@ export function parseSave(raw: unknown): WorldSave | null {
         unlockedAbilities,
         equippedAbilities,
         selectedNestId: player.selectedNestId,
+        slotsOwned,
       },
       districts,
       strongholds,
@@ -408,10 +444,13 @@ export function applySave(ctx: SimContext, save: WorldSave): void {
     Number.isFinite(save.player?.biomass) ? save.player.biomass : 0,
   );
   state.progression.unlocked = unlocked;
-  state.progression.equipped = sanitizeEquipped(
+  // Reconcile before trimming so a missing/low slotsOwned never wipes a valid loadout (TD-V2 P2-3).
+  const fullEquipped = sanitizeEquipped(
     Array.isArray(save.player?.equippedAbilities) ? save.player.equippedAbilities : [],
     unlocked,
   );
+  state.progression.slotsOwned = reconcileSlots(save.player?.slotsOwned, unlocked, fullEquipped);
+  state.progression.equipped = sanitizeEquipped(fullEquipped, unlocked, state.progression.slotsOwned);
 
   // 2. Restore activeNestId (fall back to the start nest if unknown)
   const startNest = layout.nests.find(n => n.strongholdId === null) ?? layout.nests[0];
@@ -485,8 +524,10 @@ export function applySave(ctx: SimContext, save: WorldSave): void {
     const unlock = layout.strongholds.find(d => d.id === id)?.unlock ?? null;
     if (!unlock || state.progression.unlocked.includes(unlock)) continue;
     state.progression.unlocked.push(unlock);
+    if (ABILITIES[unlock].slotBehavior !== 'slot') continue;
+    if (state.progression.slotsOwned === 0) state.progression.slotsOwned = 1;
     const empty = state.progression.equipped.indexOf(null);
-    if (empty >= 0 && ABILITIES[unlock].slotBehavior === 'slot') state.progression.equipped[empty] = unlock;
+    if (empty >= 0 && empty < state.progression.slotsOwned) state.progression.equipped[empty] = unlock;
   }
 
   // 5. Destroy structures and gate silently; rebuild nav grids once if anything changed

@@ -11,6 +11,7 @@ import { CollisionWorld } from '../src/world/CollisionWorld';
 const b = BALANCE.alpha, input = emptyInput();
 function fixture(claws = false) {
   const sim = new Simulation(), l = sim.state.leader, g = sim.state.guards[5];
+  sim.state.progression.slotsOwned = BALANCE.progression.slots;
   sim.state.zombies = []; sim.state.followerCount = 0; sim.state.guards = [g];
   l.pos = { x: -85, z: 62 }; l.facing = 0;
   g.pos = { x: -85, z: 63.5 }; g.role = 'police'; g.hp = g.maxHp = BALANCE.police.maxHp;

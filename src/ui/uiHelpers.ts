@@ -271,6 +271,27 @@ export function abilitySlotView(state: GameState, slot: number): SlotView {
   return { slot, key, abilityId: id, name: def.name, kind: 'ready', remainingFrac: 0, seconds: 0, cost, caption: cost > 0 ? `READY - ${cost} BIO` : 'READY' };
 }
 
+/** Slots the player owns (0..BALANCE.progression.slots). Slots at or above this are hidden. */
+export function visibleSlotCount(state: GameState): number {
+  const n = Math.floor(state.progression.slotsOwned);
+  if (!(n > 0)) return 0;
+  return Math.min(n, BALANCE.progression.slots);
+}
+
+/** Biomass price of the next slot, or null when none can be bought (0 owned: first is granted; all owned). */
+export function nextSlotPrice(state: GameState): number | null {
+  const n = visibleSlotCount(state);
+  if (n < 1 || n >= BALANCE.progression.slots) return null;
+  return BALANCE.progression.slotCosts[n] ?? null;
+}
+
+/** True when an owned slot has no ability in it. */
+export function hasEmptyOwnedSlot(state: GameState): boolean {
+  const n = visibleSlotCount(state);
+  for (let i = 0; i < n; i++) if (!state.progression.equipped[i]) return true;
+  return false;
+}
+
 /** Abilities that may be placed in a slot: unlocked, slotBehavior 'slot', not pounce. */
 export function equippableAbilities(state: GameState): AbilityId[] {
   const out: AbilityId[] = [];
@@ -310,6 +331,8 @@ export function denyReasonText(reason: Extract<GameEvent, { type: 'abilityDenied
       return 'No valid target';
     case 'locked':
       return 'Ability locked';
+    case 'maxSlots':
+      return 'All ability slots owned';
     case 'cooldown':
     case 'empty':
     default:
@@ -318,7 +341,7 @@ export function denyReasonText(reason: Extract<GameEvent, { type: 'abilityDenied
 }
 
 /** Open-world toast for an event, or null if the event has none. `autosave` is handled by the HUD tick, not here. */
-export function toastForEvent(ev: GameEvent): ToastSpec | null {
+export function toastForEvent(ev: GameEvent, state?: GameState | null): ToastSpec | null {
   switch (ev.type) {
     case 'objectiveComplete':
       return { text: `Objective complete: ${ev.label}`, kind: 'good' };
@@ -332,8 +355,13 @@ export function toastForEvent(ev: GameEvent): ToastSpec | null {
       if (ev.slot !== null && ev.slot !== undefined) {
         return { text: `New mutation: ${name} - equipped in slot ${SLOT_KEYS[ev.slot] ?? ev.slot + 1}`, kind: 'good' };
       }
+      if (state && !hasEmptyOwnedSlot(state)) {
+        return { text: `New mutation: ${name} - buy or free a slot at a nest`, kind: 'good' };
+      }
       return { text: `New mutation: ${name} - equip it at a nest`, kind: 'good' };
     }
+    case 'slotPurchased':
+      return { text: `Ability slot ${SLOT_KEYS[ev.slot] ?? ev.slot + 1} unlocked`, kind: 'good' };
     case 'districtDiscovered':
       return { text: `Discovered: ${districtName(ev.districtId)}`, kind: 'info' };
     case 'reinforcements':
@@ -398,4 +426,13 @@ export function formatClock(seconds: number): string {
   const m = Math.floor(s / 60);
   const r = s % 60;
   return `${m}:${r < 10 ? '0' : ''}${r}`;
+}
+
+/**
+ * Toast dedupe decision: the index of an already-visible toast with identical text (restart its timer),
+ * or 'add' when a new node is needed.
+ */
+export function toastDedupe(visibleTexts: readonly (string | null)[], text: string): number | 'add' {
+  for (let i = 0; i < visibleTexts.length; i++) if (visibleTexts[i] === text) return i;
+  return 'add';
 }

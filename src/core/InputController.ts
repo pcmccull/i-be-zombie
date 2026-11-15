@@ -9,8 +9,23 @@ import {
   type KeyAction,
   isInitialLockJump,
   pickNearestScreenTarget,
+  touchGestureMode,
+  touchTapAllowed,
+  tapGroundBlocked,
   type ScreenTarget,
 } from './cameraMath';
+import { BALANCE } from '../config/balance';
+import { createStickOutput, pinchZoomDelta, touchDistance, type StickOutput } from './touchMath';
+
+/** What InputController needs from the touch overlay (TouchControls satisfies this structurally). */
+export interface TouchSource {
+  readStick(out: StickOutput): StickOutput;
+  containsPoint(clientX: number, clientY: number): boolean;
+  /** Release held stick/buttons (blur, visibility change, modal). */
+  reset?(): void;
+}
+
+interface TouchPoint { x: number; y: number; startX: number; startY: number; startT: number; moved: boolean }
 
 interface InputDependencies {
   camera: THREE.Camera;
@@ -73,6 +88,11 @@ export class InputController {
   private readonly targets: THREE.Object3D[] = [];
   private readonly screenPoints: ScreenTarget<number>[] = [];
   private readonly screenPointPool: ScreenTarget<number>[] = [];
+  private touchSource: TouchSource | null = null;
+  private readonly stick = createStickOutput();
+  private readonly touches = new Map<number, TouchPoint>();
+  private touchMulti = false;
+  private pinchDist = 0;
   private readonly previousTouchAction: string;
   private readonly previousTabIndex: string | null;
 
@@ -90,7 +110,7 @@ export class InputController {
     window.addEventListener('pointermove', this.onPointerMove, { signal });
     window.addEventListener('pointerup', this.onPointerUp, { signal });
     window.addEventListener('pointercancel', this.onPointerCancel, { signal });
-    canvas.addEventListener('lostpointercapture', this.onPointerCancel, { signal });
+    canvas.addEventListener('lostpointercapture', this.onLostCapture, { signal });
     canvas.addEventListener('pointerleave', this.onPointerLeave, { signal });
     canvas.addEventListener('contextmenu', this.onContextMenu, { signal });
     canvas.addEventListener('wheel', this.onWheel, { passive: false, signal });
@@ -114,18 +134,49 @@ export class InputController {
   /** Hold V to swing the camera around and look behind the leader at the horde. */
   get lookBack(): boolean { return this.keys.has('KeyV'); }
 
+  setTouchSource(src: TouchSource | null): void { this.touchSource = src; }
+
+  /** Touch ATTACK button: Alpha swing forward / auto-aim (no aim point). */
+  queueAttack(): void {
+    if (this.modal()) return;
+    this.attackEdge = true;
+    this.aimPoint = null;
+  }
+
+  queueAbility(slot: number): void {
+    if (this.modal()) return;
+    this.abilitySlot = slot;
+  }
+
+  queueCommand(cmd: HordeCommand): void {
+    if (this.modal()) return;
+    this.command = cmd;
+  }
+
   /** Builds one step's input. Edge fields (attack, command, ability) are consumed; legacy fields stay false/null. */
   buildSimInput(cameraYaw: number): SimInput {
     const modal = this.modal();
     const held = (a: string, b: string): number => modal ? 0 : Number(this.keys.has(a) || this.keys.has(b));
+    let moveForward = held('KeyW', 'ArrowUp') - held('KeyS', 'ArrowDown');
+    let moveRight = held('KeyD', 'ArrowRight') - held('KeyA', 'ArrowLeft');
+    let sprint = !modal && (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight'));
+    if (!modal && this.touchSource) {
+      const st = this.touchSource.readStick(this.stick);
+      if (st.mag > 0) {
+        moveForward = Math.max(-1, Math.min(1, moveForward + st.moveForward));
+        moveRight = Math.max(-1, Math.min(1, moveRight + st.moveRight));
+        sprint = sprint || st.sprint;
+      }
+    }
     const input: SimInput = {
-      moveForward: held('KeyW', 'ArrowUp') - held('KeyS', 'ArrowDown'),
-      moveRight: held('KeyD', 'ArrowRight') - held('KeyA', 'ArrowLeft'),
+      moveForward,
+      moveRight,
       cameraYaw,
-      sprint: !modal && (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')),
+      sprint,
       rally: false, rush: false, recall: false, attackTarget: null,
       attack: this.attackEdge, aimPoint: this.attackEdge ? this.aimPoint : null,
       hordeCommand: this.command, abilitySlot: this.abilitySlot, equip: null,
+      buySlot: false,
     };
     this.attackEdge = false;
     this.aimPoint = null;
@@ -171,6 +222,9 @@ export class InputController {
     this.hover = null;
     this.pointerKnown = false;
     this.firstMoveAfterLock = false;
+    this.touches.clear();
+    this.touchMulti = false;
+    this.touchSource?.reset?.();
     this.releasePointer();
   }
 
@@ -268,6 +322,7 @@ export class InputController {
     this.releasePointer();
   };
   private readonly onPointerDown = (event: PointerEvent): void => {
+    if (event.pointerType === 'touch') { this.onTouchDown(event); return; }
     if (this.pointerId !== null || (event.button !== 0 && event.button !== 2)) return;
     event.preventDefault();
     this.canvas.focus({ preventScroll: true });
@@ -294,6 +349,7 @@ export class InputController {
     }
   };
   private readonly onPointerMove = (event: PointerEvent): void => {
+    if (event.pointerType === 'touch') { this.onTouchMove(event); return; }
     if (this.isLocked) return;
     if (this.pointerId !== null && event.pointerId !== this.pointerId) return;
     if (this.pointerId === null && event.target !== this.canvas) {
@@ -314,6 +370,7 @@ export class InputController {
     if (this.dragged) this.deps.onOrbit(dx, dy);
   };
   private readonly onPointerUp = (event: PointerEvent): void => {
+    if (event.pointerType === 'touch') { this.onTouchUp(event, true); return; }
     if (event.pointerId !== this.pointerId || event.button !== this.pointerButton) return;
     this.lastX = event.clientX;
     this.lastY = event.clientY;
@@ -325,7 +382,7 @@ export class InputController {
   };
 
   /** LMB = Alpha attack (aimed at the ground point under the pointer/crosshair); RMB = horde command. */
-  private handleClick(button: number, x: number, y: number, shift: boolean, ctrl: boolean): void {
+  private handleClick(button: number, x: number, y: number, shift: boolean, ctrl: boolean, touch = false): void {
     if (button === 0) {
       this.attackEdge = true;
       this.aimPoint = this.groundAt(x, y);
@@ -336,12 +393,80 @@ export class InputController {
     let ground: Vec2 | null = null;
     if (!shift && !target) {
       // pick() leaves the nearest solid hit in this.intersections; a building in front of the ground point blocks the order.
-      const blockedAt = this.intersections[0]?.distance ?? Infinity;
+      let blockedAt = this.intersections[0]?.distance ?? Infinity;
+      if (touch) {
+        // Touch taps only treat real occluders (buildings, barricades) as cover, never characters or proxies.
+        blockedAt = Infinity;
+        for (const hit of this.intersections) {
+          if (this.deps.occluders.includes(hit.object) && !hit.object.userData.target) { blockedAt = hit.distance; break; }
+        }
+      }
       ground = this.groundAt(x, y);
-      if (ground && blockedAt < this.raycaster.ray.origin.distanceTo(this.groundPoint) - 0.75) ground = null;
+      if (ground && tapGroundBlocked(blockedAt, this.raycaster.ray.origin.distanceTo(this.groundPoint))) ground = null;
     }
     const command = hordeCommandForRightClick({ target, ground, shift, ctrl });
     if (command) this.command = command;
+  }
+
+  // --- touch (never pointer lock) -------------------------------------------------------------
+
+  private onTouchDown(event: PointerEvent): void {
+    if (this.touchSource?.containsPoint(event.clientX, event.clientY)) return;
+    event.preventDefault();
+    if (this.modal()) return;
+    this.touches.set(event.pointerId, {
+      x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY, startT: performance.now(), moved: false,
+    });
+    if (touchGestureMode(this.touches.size) === 'pinch') {
+      this.touchMulti = true;
+      this.pinchDist = this.pinchDistance();
+    }
+    try { this.canvas.setPointerCapture(event.pointerId); } catch { /* capture unavailable */ }
+  }
+
+  private pinchDistance(): number {
+    let ax = 0, ay = 0, n = 0, d = 0;
+    for (const t of this.touches.values()) {
+      if (n === 0) { ax = t.x; ay = t.y; } else { d = touchDistance(ax, ay, t.x, t.y); break; }
+      n++;
+    }
+    return d;
+  }
+
+  private onTouchMove(event: PointerEvent): void {
+    const t = this.touches.get(event.pointerId);
+    if (!t) return;
+    const dx = event.clientX - t.x;
+    const dy = event.clientY - t.y;
+    t.x = event.clientX;
+    t.y = event.clientY;
+    if (!t.moved && Math.hypot(t.x - t.startX, t.y - t.startY) > BALANCE.touch.tapMaxMove) t.moved = true;
+    const mode = touchGestureMode(this.touches.size);
+    if (mode === 'orbit') {
+      if (!this.modal()) this.deps.onOrbit(dx * BALANCE.touch.orbitSensitivity, dy * BALANCE.touch.orbitSensitivity);
+    } else if (mode === 'pinch') {
+      const d = this.pinchDistance();
+      if (!this.modal()) this.deps.onZoom(pinchZoomDelta(this.pinchDist, d, BALANCE.touch.pinchZoomScale));
+      this.pinchDist = d;
+    }
+  }
+
+  private onTouchUp(event: PointerEvent, commit: boolean): void {
+    const t = this.touches.get(event.pointerId);
+    if (!t) return;
+    this.touches.delete(event.pointerId);
+    const alone = this.touches.size === 0;
+    if (commit && alone && !this.modal()
+      && touchTapAllowed(this.touchMulti, event.clientX - t.startX, event.clientY - t.startY,
+        performance.now() - t.startT, BALANCE.touch.tapMaxMove, BALANCE.touch.tapMaxMs, t.moved)) {
+      // A tap orders the horde (RMB semantics): attack the target under the finger, else move there.
+      this.handleClick(2, event.clientX, event.clientY, false, false, true);
+    }
+    if (alone) this.touchMulti = false;
+    else this.pinchDist = this.touches.size >= 2 ? this.pinchDistance() : 0;
+    try {
+      if (this.canvas.hasPointerCapture(event.pointerId)) this.canvas.releasePointerCapture(event.pointerId);
+    } catch { /* already released */ }
   }
 
   private groundAt(x: number, y: number): Vec2 | null {
@@ -350,7 +475,13 @@ export class InputController {
   }
 
   private readonly onPointerCancel = (event: PointerEvent): void => {
+    if (event.pointerType === 'touch') { this.onTouchUp(event, false); return; }
     if (event.pointerId === this.pointerId) this.releasePointer();
+  };
+  /** A browser may drop capture while a finger is still down; only pointerup/pointercancel end a touch. */
+  private readonly onLostCapture = (event: PointerEvent): void => {
+    if (event.pointerType === 'touch') return;
+    this.onPointerCancel(event);
   };
   private readonly onPointerLeave = (): void => {
     if (this.isLocked) return;

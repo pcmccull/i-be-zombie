@@ -11,7 +11,7 @@ import {
 } from '../src/systems/ProgressionSystem';
 
 let sim: Simulation;
-beforeEach(() => { sim = new Simulation(); });
+beforeEach(() => { sim = new Simulation(); sim.state.progression.slotsOwned = BALANCE.progression.slots; });
 
 function followers(): ZombieAgent[] {
   return sim.state.zombies.filter(z => z.state === 'follower');
@@ -66,6 +66,7 @@ describe('biomass and unlocks', () => {
     expect(sim.state.progression.equipped).toHaveLength(BALANCE.progression.slots);
     // The next unlock fills a hole rather than shifting the other equipped abilities.
     sim.reset();
+    sim.state.progression.slotsOwned = BALANCE.progression.slots;
     unlockAbility(sim.ctx, 'alpha_claws');
     unlockAbility(sim.ctx, 'horde_frenzy');
     equipAbility(sim.ctx, 0, null);

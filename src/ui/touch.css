@@ -1,0 +1,266 @@
+/* Touch overlay (todos #7). Root stays click-through; only the controls take pointer events. */
+.ibz-touch {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  display: none;
+  z-index: 12;
+  font-family: 'Bahnschrift', 'Arial Narrow', 'Franklin Gothic Medium', system-ui, -apple-system, sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.ibz-touch.is-enabled {
+  display: block;
+}
+
+.ibz-touch-btn,
+.ibz-touch-stick {
+  pointer-events: auto;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Left stick */
+.ibz-touch-stick {
+  --ibz-stick-r: 56px;
+  position: absolute;
+  left: calc(env(safe-area-inset-left, 0px) + 28px);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 28px);
+  width: calc(var(--ibz-stick-r) * 2);
+  height: calc(var(--ibz-stick-r) * 2);
+  border-radius: 50%;
+  background: rgba(18, 22, 27, 0.45);
+  border: 2px solid rgba(155, 227, 90, 0.35);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+.ibz-touch-stick.is-active {
+  border-color: rgba(155, 227, 90, 0.7);
+}
+
+.ibz-touch-stick.is-sprint {
+  border-color: #ffb347;
+}
+
+.ibz-touch-knob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 52px;
+  height: 52px;
+  margin: -26px 0 0 -26px;
+  border-radius: 50%;
+  background: rgba(125, 154, 106, 0.85);
+  border: 2px solid rgba(240, 242, 236, 0.6);
+  pointer-events: none;
+}
+
+/* Top row: pause / map / camera */
+.ibz-touch-top {
+  position: absolute;
+  top: calc(env(safe-area-inset-top, 0px) + 10px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 8px;
+}
+
+/* Right cluster */
+.ibz-touch-actions {
+  position: absolute;
+  right: calc(env(safe-area-inset-right, 0px) + 18px);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 22px);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.ibz-touch-row,
+.ibz-touch-slots {
+  display: flex;
+  gap: 10px;
+}
+
+.ibz-touch-slots.is-hidden {
+  display: none;
+}
+
+.ibz-touch-btn {
+  position: relative;
+  min-width: 56px;
+  min-height: 48px;
+  padding: 0 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(155, 227, 90, 0.4);
+  background: rgba(18, 22, 27, 0.72);
+  color: #f0f2ec;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  overflow: hidden;
+}
+
+.ibz-touch-btn.is-small {
+  min-width: 52px;
+  min-height: 40px;
+  font-size: 12px;
+}
+
+.ibz-touch-btn.is-pressed {
+  background: rgba(125, 154, 106, 0.7);
+}
+
+.ibz-touch-btn.is-attack {
+  width: 92px;
+  height: 92px;
+  border-radius: 50%;
+  border: 2px solid #e0782a;
+  background: rgba(224, 120, 42, 0.32);
+  font-size: 15px;
+}
+
+.ibz-touch-btn.is-attack.is-pressed {
+  background: rgba(224, 120, 42, 0.7);
+}
+
+.ibz-touch-btn.is-slot {
+  width: 60px;
+  height: 60px;
+  padding: 4px;
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+
+.ibz-touch-key {
+  font-size: 16px;
+  color: #ffb347;
+}
+
+.ibz-touch-name {
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1.05;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ibz-touch-sweep {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 0;
+  background: rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+}
+
+.ibz-touch-btn.is-slot.is-active {
+  border-color: #9be35a;
+  box-shadow: 0 0 10px rgba(155, 227, 90, 0.6);
+}
+
+.ibz-touch-btn.is-slot.is-nobiomass,
+.ibz-touch-btn.is-slot.is-cooldown {
+  opacity: 0.6;
+}
+
+/* While touch is active the desktop ability strip and keyboard/mouse hints are redundant. */
+body.ibz-touch-active .ibz-slots,
+body.ibz-touch-active .ibz-minimap-hint,
+body.ibz-touch-active .ibz-capture-hint,
+body.ibz-touch-active .ibz-bottom-right,
+body.ibz-touch-active .ibz-intro-keys {
+  display: none !important;
+}
+
+/* Horde order pill sits above the stick instead of under it. */
+body.ibz-touch-active .ibz-bottom-left {
+  left: calc(env(safe-area-inset-left, 0px) + 28px);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 160px);
+}
+
+/*
+ * Phone layout (TD-T007): the desktop HUD panels are compacted so the touch controls fit.
+ * Left column: Alpha stats + objective tracker (scaled). Right column: horde counter (scaled), then the
+ * pause/map/camera row. The minimap is dropped (MAP opens the full map). The nest panel becomes a short
+ * scrollable card in the middle so it never covers the stick or the action buttons.
+ */
+@media (max-width: 760px) {
+  body.ibz-touch-active .ibz-top-left,
+  body.ibz-touch-active .ibz-tracker {
+    transform: scale(0.68);
+    transform-origin: top left;
+  }
+
+  body.ibz-touch-active .ibz-top-left {
+    top: calc(env(safe-area-inset-top, 0px) + 8px);
+    left: calc(env(safe-area-inset-left, 0px) + 8px);
+  }
+
+  body.ibz-touch-active .ibz-tracker {
+    top: calc(env(safe-area-inset-top, 0px) + 112px);
+    left: calc(env(safe-area-inset-left, 0px) + 8px);
+  }
+
+  body.ibz-touch-active .ibz-top-right {
+    min-width: 0;
+    transform: scale(0.68);
+    transform-origin: top right;
+    top: calc(env(safe-area-inset-top, 0px) + 8px);
+    right: calc(env(safe-area-inset-right, 0px) + 8px);
+  }
+
+  body.ibz-touch-active .ibz-minimap {
+    display: none !important;
+  }
+
+  .ibz-touch-top {
+    left: auto;
+    transform: none;
+    right: calc(env(safe-area-inset-right, 0px) + 8px);
+    top: calc(env(safe-area-inset-top, 0px) + 74px);
+  }
+
+  body.ibz-touch-active .ibz-nest-panel {
+    left: calc(env(safe-area-inset-left, 0px) + 8px);
+    right: calc(env(safe-area-inset-right, 0px) + 8px);
+    width: auto;
+    top: calc(env(safe-area-inset-top, 0px) + 190px);
+    transform: none;
+    max-height: calc(100vh - 190px - 330px);
+    min-height: 120px;
+    overflow-y: auto;
+    font-size: 12px;
+  }
+
+  body.ibz-touch-active .ibz-nest-desc,
+  body.ibz-touch-active .ibz-nest-hint {
+    display: none;
+  }
+}
+
+body.ibz-touch-active .ibz-nest-buy em {
+  display: none;
+}
+
+@media (max-width: 520px) {
+  .ibz-touch-btn.is-attack {
+    width: 80px;
+    height: 80px;
+  }
+
+  .ibz-touch-btn.is-slot {
+    width: 52px;
+    height: 52px;
+  }
+}

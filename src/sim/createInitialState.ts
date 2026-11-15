@@ -48,11 +48,11 @@ export function createInitialState(layout: DistrictLayout, collision: ICollision
     structures: createStructures(layout, collision), momentum: { value: 0, idleTime: 0, tier: 'dormant', gainFlash: 0 },
     order: { type: 'follow' }, squads: [], abilities: { rallyCooldown: 0, rushCooldown: 0, rushTimeLeft: 0 },
     pendingConversions: [], stats: { recruited: 0, conversions: 0, losses: 0, guardsKilled: 0, cascadeRecruits: 0, structuresDestroyed: 0 },
-    followerCount: BALANCE.horde.startFollowers, capReachedFlash: 0,
+    followerCount: BALANCE.horde.startFollowers, capReachedFlash: 0, atCapacity: false,
     districts: createDistrictStates(), strongholds: createStrongholdStates(layout),
     progression: {
       biomass: BALANCE.progression.startBiomass, unlocked: [...INNATE_ABILITIES],
-      equipped: new Array<AbilityId | null>(BALANCE.progression.slots).fill(null), cooldowns: {}, frenzyTimeLeft: 0,
+      equipped: new Array<AbilityId | null>(BALANCE.progression.slots).fill(null), cooldowns: {}, frenzyTimeLeft: 0, slotsOwned: 0,
     },
     discovery: createDiscovery(layout),
     activeNestId: layout.nests.find(n => n.strongholdId === null)?.id ?? '', deaths: 0,

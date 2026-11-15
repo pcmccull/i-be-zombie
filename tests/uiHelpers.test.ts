@@ -4,12 +4,15 @@ import { Simulation } from '../src/sim/Simulation';
 import { buildDistrictLayout } from '../src/world/districtLayout';
 import {
   abilitySlotView,
+  toastDedupe,
   buildDebugLines,
   equippableAbilities,
   followerCap,
   makeProjection,
   mapToWorld,
   nearbyEquipNest,
+  nextSlotPrice,
+  visibleSlotCount,
   selectObjectiveStronghold,
   staticLayerKey,
   toastForEvent,
@@ -143,5 +146,46 @@ describe('nest proximity, caps, toasts, debug lines', () => {
     expect(lines).toContain('phase playing');
     expect(lines).toContain('dormant');
     expect(lines).toContain('chunks 6');
+  });
+});
+
+describe('TD-T004 slot visibility and toasts', () => {
+  const mk = (n: number) => {
+    const st = new Simulation(buildDistrictLayout()).state;
+    st.progression.slotsOwned = n;
+    return st;
+  };
+  it('visibleSlotCount clamps', () => {
+    expect(visibleSlotCount(mk(0))).toBe(0);
+    expect(visibleSlotCount(mk(1))).toBe(1);
+    expect(visibleSlotCount(mk(4))).toBe(4);
+    expect(visibleSlotCount(mk(9))).toBe(BALANCE.progression.slots);
+    expect(visibleSlotCount(mk(-3))).toBe(0);
+  });
+  it('nextSlotPrice', () => {
+    expect(nextSlotPrice(mk(0))).toBeNull();
+    expect(nextSlotPrice(mk(1))).toBe(BALANCE.progression.slotCosts[1]);
+    expect(nextSlotPrice(mk(3))).toBe(BALANCE.progression.slotCosts[3]);
+    expect(nextSlotPrice(mk(4))).toBeNull();
+  });
+  it('toast text', () => {
+    expect(toastForEvent({ type: 'slotPurchased', slot: 1, cost: 40 })?.text).toBe('Ability slot E unlocked');
+    expect(toastForEvent({ type: 'abilityDenied', abilityId: null, reason: 'maxSlots' })?.text).toBe('All ability slots owned');
+    const st = mk(1);
+    st.progression.equipped[0] = 'rush';
+    expect(toastForEvent({ type: 'abilityUnlocked', abilityId: 'horde_frenzy', slot: null }, st)?.text).toContain('buy or free a slot');
+    expect(toastForEvent({ type: 'abilityUnlocked', abilityId: 'horde_frenzy', slot: null })?.text).toContain('equip it at a nest');
+  });
+  it('toastDedupe refreshes an identical visible toast, else adds', () => {
+    expect(toastDedupe([], 'HORDE FULL')).toBe('add');
+    expect(toastDedupe(['a', 'HORDE FULL', 'b'], 'HORDE FULL')).toBe(1);
+    expect(toastDedupe(['a', null], 'b')).toBe('add');
+  });
+  it('abilitySlotView still works', () => {
+    const st = mk(1);
+    st.progression.equipped[0] = null;
+    expect(abilitySlotView(st, 0).kind).toBe('empty');
+    st.progression.equipped[0] = 'rush';
+    expect(abilitySlotView(st, 0).abilityId).toBe('rush');
   });
 });
