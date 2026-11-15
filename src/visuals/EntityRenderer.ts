@@ -12,12 +12,17 @@ import {
   applyPose,
   computePose,
   createGuardRig,
-  createLeaderRig,
-  LEADER_GLOW,
   type CharacterRig,
   type Pose,
   type PoseParams,
 } from './LowPolyCharacters';
+import { animateZombie, createAnimInput, createAnimState, type ZombieAnimState } from './zombieAnimation';
+import { createZombieHeroRig, LEADER_GLOW, type ZombieHeroRig } from './zombieModel';
+import { alphaProfile, ATTACK_STYLE } from './zombieProfiles';
+import { createPose } from './zombieRig';
+
+/** Alpha combo step → attack key style: bite, right claw, left claw, overhead finisher. */
+const ALPHA_STYLE_BY_STEP = [ATTACK_STYLE.bite, ATTACK_STYLE.swipeR, ATTACK_STYLE.swipeL, ATTACK_STYLE.overhead];
 
 const TWO_PI = Math.PI * 2;
 
@@ -41,7 +46,12 @@ export class EntityRenderer {
 
   private readonly scene: THREE.Scene;
   private readonly rootGroup: THREE.Group;
-  private readonly leaderRig: CharacterRig;
+  private readonly leaderRig: ZombieHeroRig;
+  private readonly leaderProfile = alphaProfile();
+  private leaderAnim: ZombieAnimState = createAnimState();
+  private readonly leaderInput = createAnimInput();
+  private readonly leaderPose = createPose();
+  private leaderLastHitFlash = 0;
   private readonly leaderOuterRing: THREE.Mesh;
   private readonly leaderInnerRing: THREE.Mesh;
   private readonly leaderOuterRingMat: THREE.MeshBasicMaterial;
@@ -95,7 +105,7 @@ export class EntityRenderer {
   };
 
   private readonly scratchParams: PoseParams = {
-    kind: 'leader',
+    kind: 'guard',
     anim: 'idle',
     animTime: 0,
     speed: 0,
@@ -110,7 +120,7 @@ export class EntityRenderer {
     this.scene.add(this.rootGroup);
 
     // 1. Leader Rig + Pulsing Ground Highlight Rings
-    this.leaderRig = createLeaderRig();
+    this.leaderRig = createZombieHeroRig(this.leaderProfile.look, this.leaderProfile.scale, this.leaderProfile.width);
     for (const m of this.leaderRig.materials) {
       this.disposableMaterials.push(m);
     }
@@ -224,6 +234,8 @@ export class EntityRenderer {
     this.leaderWasAlive = true;
     this.leaderDeadTime = 0;
     this.leaderRiseTime = 99;
+    this.leaderAnim = createAnimState();
+    this.leaderLastHitFlash = 0;
   }
 
   /**
@@ -357,10 +369,19 @@ export class EntityRenderer {
     if (leader.alive && this.leaderRiseTime < BALANCE.conversion.riseDuration) this.leaderRiseTime += dt;
     const rising = leader.alive && this.leaderRiseTime < BALANCE.conversion.riseDuration;
 
-    let anim: AnimAction = !leader.alive ? 'dead' : rising ? 'rise' : leader.anim;
-    let animTime = !leader.alive ? this.leaderDeadTime : rising ? this.leaderRiseTime : leader.animTime;
+    const inp = this.leaderInput;
     const attacking = leader.alive && !rising && (leader.attackPhase === 'windup' || leader.attackPhase === 'recovery');
-    if (attacking && anim === 'attack') anim = 'idle'; // legacy clip would fight the phase overlay
+    inp.dt = dt;
+    inp.speed = leader.alive ? speed : 0;
+    inp.facing = facing;
+    inp.anim = !leader.alive ? 'dead' : rising ? 'rise' : leader.anim === 'attack' ? 'idle' : leader.anim;
+    inp.animTime = leader.animTime;
+    inp.deadTime = this.leaderDeadTime;
+    inp.riseT = rising ? this.leaderRiseTime / Math.max(0.01, BALANCE.conversion.riseDuration) : 0;
+    inp.mode = 'follow';
+    inp.engaged = attacking;
+    inp.cooldown = 0;
+    inp.fast = leader.sprinting || state.progression.frenzyTimeLeft > 0;
     if (attacking) {
       const step = leader.comboStep;
       const windup = step <= 0 ? BALANCE.alpha.biteWindup : BALANCE.alpha.clawWindup;
@@ -369,27 +390,27 @@ export class EntityRenderer {
           ? BALANCE.alpha.biteRecovery
           : BALANCE.alpha.clawRecovery[Math.min(step, BALANCE.alpha.clawRecovery.length) - 1];
       const dur = Math.max(0.01, leader.attackPhase === 'windup' ? windup : recovery);
-      this.scratchParams.attackT = 1 - Math.max(0, Math.min(1, leader.attackTimer / dur));
+      inp.attackPhase = leader.attackPhase === 'windup' ? 'windup' : 'recovery';
+      inp.attackT = 1 - Math.max(0, Math.min(1, leader.attackTimer / dur));
+      inp.attackStyle = ALPHA_STYLE_BY_STEP[Math.max(0, Math.min(3, step))];
     } else {
-      this.scratchParams.attackT = 0;
+      inp.attackPhase = 'none';
+      inp.attackT = 0;
+      inp.attackStyle = -1;
     }
-    this.scratchParams.attackPhase = attacking ? leader.attackPhase : 'ready';
-    this.scratchParams.comboStep = leader.comboStep;
-    this.scratchParams.hitStun = leader.alive && !rising ? leader.hitStun : 0;
-    this.scratchParams.stagger = 0;
-    this.scratchParams.kind = 'leader';
-    this.scratchParams.anim = anim;
-    this.scratchParams.animTime = animTime;
-    this.scratchParams.speed = speed;
-    this.scratchParams.time = time;
-    this.scratchParams.phase = 0;
-    this.scratchParams.guardState = undefined;
-    computePose(this.scratchParams, this.scratchPose);
-    applyPose(this.leaderRig, this.scratchPose);
+    inp.stun = leader.alive && !rising ? Math.min(1, leader.hitStun / Math.max(0.01, BALANCE.alpha.hitStunTime)) : 0;
+    inp.hitImpulse = leader.alive && leader.hitFlash > this.leaderLastHitFlash + 1e-4;
+    inp.hitFromX = 0;
+    inp.hitFromZ = 0;
+    this.leaderLastHitFlash = leader.hitFlash;
+    inp.lookYaw = NaN;
+    inp.detail = 0;
+    animateZombie(this.leaderAnim, this.leaderProfile, inp, this.leaderPose);
+    this.leaderRig.apply(this.leaderPose);
 
     // Hit flash emissive > frenzy glow > subtle Alpha glow
     const frenzy = state.progression.frenzyTimeLeft > 0;
-    const leaderMat = this.leaderRig.materials[0] as THREE.MeshLambertMaterial | undefined;
+    const leaderMat = this.leaderRig.materials[0] as THREE.MeshStandardMaterial | undefined;
     if (leaderMat) {
       if (leader.hitFlash > 0) {
         leaderMat.emissive.setHex(0xaa5544);

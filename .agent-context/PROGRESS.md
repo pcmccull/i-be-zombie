@@ -1,5 +1,14 @@
 # Master Implementation Progress
 
+## Side milestone: ZA — Zombie animation & visual polish (docs/6_zombie_movement.md). **COMPLETE** (orchestrator-implemented; visuals-only, disjoint from EW locks). Committed.
+
+| Task | Description | Agent | Files | Status |
+| :--- | :--- | :--- | :--- | :--- |
+| ZA1 | Pure core: skeleton + leg FK, deterministic profiles (8 archetypes × 6 body types), animation controller (IK gait, springs, lurch/twitch, attack keys synced to the damage step, 3 death styles, rise), tests | orchestrator | `src/visuals/{zombieRig,zombieProfiles,zombieAnimation}.ts`, `tests/zombieAnimation.test.ts` | VERIFIED (15 tests) |
+| ZA2 | 3D: procedural atlas + normal map, articulated part/accessory geometry, MeshStandard atlas patch, HordeRenderer rewrite (side-table, LOD, hit direction, look-at-leader), Alpha hero rig in EntityRenderer, Game wiring (camera/leader/dt) | orchestrator | `src/visuals/{zombieTextures,zombieModel,HordeRenderer,EntityRenderer,LowPolyCharacters}.ts`, `src/core/Game.ts` (horde setters + `hordeStats`), `src/main.ts` (dev handle) | VERIFIED (tsc 0, 539/539, build OK; browser: no console errors, 91 zombies drawn, horde CPU ≈ 1 ms/frame, +20 draw calls) |
+
+---
+
 ## Active Milestone: IN — Opening cinematic (docs/4_intro_scene.md). **COMPLETE** (orchestrator-implemented; tightly coupled to Game wiring, so not delegated). Not committed.
 
 | Task | Description | Agent | Files | Status |

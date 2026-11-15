@@ -790,7 +790,11 @@ export class Game {
     this.checkpoint.update(state.gate, dt, state.time);
     this.nests.update(state, layout, dt);
     this.horde.setView(fx, fz, state.progression.frenzyTimeLeft);
-    this.horde.update(state.zombies, alpha, state.time, state.abilities.rushTimeLeft > 0);
+    this.horde.setCamera(this.camera.position.x, this.camera.position.y, this.camera.position.z);
+    const lead = state.leader;
+    this.horde.setLeader(lead.prevPos.x + (lead.pos.x - lead.prevPos.x) * alpha,
+      lead.prevPos.z + (lead.pos.z - lead.prevPos.z) * alpha, lead.alive);
+    this.horde.update(state.zombies, alpha, state.time, state.abilities.rushTimeLeft > 0, dt);
     this.entities.setView(fx, fz);
     this.entities.update(state, alpha, state.time, dt);
     let target: TargetRef | null = null;
@@ -889,6 +893,12 @@ export class Game {
       frameMs: this.frameMs,
       loadedChunks: this.loadedChunkCount,
     });
+  }
+
+  /** Debug / profiling: zombie renderer stats (drawn, LOD split, CPU ms per frame). */
+  get hordeStats(): { drawn: number; lod: readonly number[]; updateMs: number; drawCalls: number } {
+    return { drawn: this.horde.drawnCount, lod: [...this.horde.lodCounts], updateMs: this.horde.updateMs,
+      drawCalls: this.renderer.info.render.calls };
   }
 
   private resetCamera(): void {

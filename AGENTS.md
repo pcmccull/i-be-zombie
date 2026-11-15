@@ -95,8 +95,13 @@ src/
   systems/StructureSystem.ts   [pure] findStructure, damageStructure, updateStructures (destroy -> release held zombies)
   systems/MomentumSystem.ts    [pure] addMomentum, updateMomentum, momentumTier, recruitRadiusMultiplier, speedMultiplier
   world/Landmarks.ts           [3D] Bus, locked alley, convenience store, police barricade/pen meshes + damage/release visuals + pick proxies
-  visuals/LowPolyCharacters.ts [3D] Articulated humanoid builders + procedural animation
-  visuals/HordeRenderer.ts     [3D] InstancedMesh-per-body-part renderer for all ZombieAgents
+  visuals/LowPolyCharacters.ts [3D] Human (guard/police/civilian) rigs + procedural animation
+  visuals/zombieRig.ts         [pure] zombie skeleton dims, ZombiePose, leg FK/grounding helpers
+  visuals/zombieProfiles.ts    [pure] deterministic per-id looks (8 archetypes) + gait personalities (6 body types), atlas tile ids
+  visuals/zombieAnimation.ts   [pure] zombie animation controller: IK gait, springs, twitches/lurches, attack keys, death/rise
+  visuals/zombieModel.ts       [3D] zombie part/accessory geometry, atlas material patch, composeBones, Alpha hero rig
+  visuals/zombieTextures.ts    [3D] procedural seamless texture atlas + normal map (canvas)
+  visuals/HordeRenderer.ts     [3D] InstancedMesh-per-part renderer for all ZombieAgents (side-table of profiles/anim state, LOD)
   visuals/EntityRenderer.ts    [3D] Leader + guards + gate sync from GameState (interpolated)
   visuals/Effects.ts           [3D] Pooled tracers, muzzle flashes, rings/pulses, sparkles, dust, camera shake requests
   audio/AudioSystem.ts         [3D-side, no three needed] Web Audio synth SFX; unlock on gesture; mute-safe
@@ -204,8 +209,12 @@ No victory/defeat; the world keeps simulating while `phase === 'respawning'`.
 
 - Flat-shaded `MeshLambertMaterial`/`MeshStandardMaterial({flatShading:true})`, shared geometries/materials, merged static city
   geometry where possible (BufferGeometryUtils from `three/examples/jsm/utils/BufferGeometryUtils.js` is allowed — it ships with three).
-- Zombies (up to ~170 incl. corpses) are drawn by `HordeRenderer` with one `InstancedMesh` per body part
-  (head, torso, pelvis, armL/R, legL/R, + accessory) and `instanceColor` for variants/rush tint/hit flash. Target < 40 draw calls for all zombies.
+- Zombies (up to ~220 incl. corpses) are drawn by `HordeRenderer` with one `InstancedMesh` per body part (L/R limbs share a
+  mesh, 2 instances per zombie) + one per accessory kind: ~20 draw calls for the whole horde. Per-instance `aTile` (atlas tile),
+  `aSkin` (skin tone) and `instanceColor` (part tint / rush / flash). The Alpha uses the same skeleton + controller as a hero rig.
+- Zombie animation is driven ONLY by `animateZombie` (pure, deterministic per id, renderer-side state in a side-table);
+  root position/facing always come from the sim. Follower strikes are timed to `attackCooldown → 0` (the damage step),
+  the Alpha's to its windup end. New zombie motion = tune `ANIM_TUNING` / `zombieProfiles.ts`, not per-call constants.
 - Characters are articulated: head, torso, pelvis, 2 arms, 2 legs; pivot at shoulder/hip; procedural animation from
   `anim`, `animTime`, speed. Feet on ground. Interpolate pos/facing with render alpha.
 - Palette: asphalt `#4a5260`, sidewalk `#a9a294`, concrete `#c9b99a`, zombie skin `#7d9a6a`/`#6f8a72`, leader `#4f6b3a`,

@@ -27,3 +27,7 @@ If any subagent returns `Status: QUOTA_EXHAUSTED`:
 
 - [x] **IN1–IN3** (orchestrator): flow states + input lock, CinematicController, tropical scenery, subtitles/skip/replay, intro audio, tests
 
+### Zombie animation & visual polish (docs/6_zombie_movement.md)
+
+- [x] **ZA1–ZA2** (orchestrator): pure gait/IK/animation controller + profiles, procedural atlas, articulated parts, horde + Alpha renderers, tests
+
