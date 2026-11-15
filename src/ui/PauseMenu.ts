@@ -5,6 +5,8 @@ export interface PauseCallbacks {
   /** Called only after the player confirms the second step. */
   onResetSave?: () => void;
   onToggleMute?: () => void;
+  /** Watch the opening cinematic again (the current conquest is restored afterwards). */
+  onReplayIntro?: () => void;
 }
 
 const CONTROLS: [string, string][] = [
@@ -31,6 +33,7 @@ export class PauseMenu {
   private readonly saveBtn: HTMLButtonElement;
   private readonly yesBtn: HTMLButtonElement;
   private readonly noBtn: HTMLButtonElement;
+  private readonly replayBtn: HTMLButtonElement;
   private _visible = false;
   private callbacks: PauseCallbacks = {};
   private msgTimer: number | null = null;
@@ -38,6 +41,7 @@ export class PauseMenu {
   private readonly onContinue = (): void => this.callbacks.onContinue?.();
   private readonly onSave = (): void => this.callbacks.onSave?.();
   private readonly onMute = (): void => this.callbacks.onToggleMute?.();
+  private readonly onReplay = (): void => this.callbacks.onReplayIntro?.();
   private readonly onReset = (): void => this.setConfirm(true);
   private readonly onNo = (): void => this.setConfirm(false);
   private readonly onYes = (): void => {
@@ -56,6 +60,7 @@ export class PauseMenu {
           <button type="button" class="ibz-btn" data-ref="continue">Continue</button>
           <button type="button" class="ibz-btn" data-ref="save">Save</button>
           <button type="button" class="ibz-btn" data-ref="mute">Sound: On</button>
+          <button type="button" class="ibz-btn" data-ref="replay">Replay Intro</button>
           <button type="button" class="ibz-btn ibz-btn-danger" data-ref="reset">Reset Save</button>
         </div>
         <div class="ibz-pause-confirm" data-ref="confirm">
@@ -76,12 +81,14 @@ export class PauseMenu {
     this.msgEl = q('msg');
     this.yesBtn = q('yes');
     this.noBtn = q('no');
+    this.replayBtn = q('replay');
     this.continueBtn.addEventListener('click', this.onContinue);
     this.saveBtn.addEventListener('click', this.onSave);
     this.muteBtn.addEventListener('click', this.onMute);
     this.resetBtn.addEventListener('click', this.onReset);
     this.yesBtn.addEventListener('click', this.onYes);
     this.noBtn.addEventListener('click', this.onNo);
+    this.replayBtn.addEventListener('click', this.onReplay);
   }
 
   get visible(): boolean {
@@ -136,6 +143,7 @@ export class PauseMenu {
     this.resetBtn.removeEventListener('click', this.onReset);
     this.yesBtn.removeEventListener('click', this.onYes);
     this.noBtn.removeEventListener('click', this.onNo);
+    this.replayBtn.removeEventListener('click', this.onReplay);
     this.callbacks = {};
     this.element.remove();
   }

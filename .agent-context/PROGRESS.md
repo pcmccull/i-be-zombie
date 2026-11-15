@@ -1,5 +1,15 @@
 # Master Implementation Progress
 
+## Active Milestone: IN — Opening cinematic (docs/4_intro_scene.md). **COMPLETE** (orchestrator-implemented; tightly coupled to Game wiring, so not delegated). Not committed.
+
+| Task | Description | Agent | Files | Status |
+| :--- | :--- | :--- | :--- | :--- |
+| IN1 | Pure core: `GameFlowState` + central input gate, spline/easing/timeline math, intro script (cues measured from intro2.mp3, keyframes, music cues), tropical dressing layout | orchestrator | `src/core/{gameFlow,cinematicMath}.ts`, `src/content/intro.ts`, `src/world/tropicalLayout.ts`, `tests/intro.test.ts` | VERIFIED (14 tests incl. camera-path collision + zombie-hidden-until-reveal) |
+| IN2 | 3D/UI/audio: CinematicController (drives the existing camera), TropicalScenery (ocean/beach/palms/umbrellas/traffic), CinematicOverlay + intro.css, IntroAudio (narration + synth score), Miami palette, south skirt removed | orchestrator | `src/core/CinematicController.ts`, `src/world/{TropicalScenery,CityDistrict}.ts`, `src/ui/{CinematicOverlay.ts,intro.css,PauseMenu.ts,HUD.ts}`, `src/audio/{IntroAudio,AudioSystem}.ts`, `src/visuals/HordeRenderer.ts` | VERIFIED |
+| IN3 | Wiring: flow states, input lock, skip, replay (watch-only, conquest restored), autosave gating, handoff + first objective | orchestrator | `src/core/{Game,InputController,ThirdPersonCamera}.ts` | VERIFIED (tsc 0, 463/463, build OK; browser: full run, skip, replay+restore, mobile) |
+
+---
+
 Spec: `docs/todos.md` items 7–9. Contracts: `.agent-context/ARCHITECTURE.md` §TD-0…TD-4. Conventions: `AGENTS.md`.
 Branch `open-world` (HEAD 572d264). Previous milestone OW: complete (archived below).
 

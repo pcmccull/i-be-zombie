@@ -52,35 +52,35 @@ export function onLayoutChunksChanged(
   };
 }
 
-// Palette of 8 faded urban wall colors (indexed by colorIndex & 7)
+// Miami art-deco stucco palette (indexed by colorIndex & 7)
 const BUILDING_WALL_PALETTE: readonly number[] = [
-  0xb98b73, // 0: faded terracotta brick
-  0xc9b99a, // 1: warm sandy concrete
-  0x8fa3ad, // 2: muted slate blue-gray
-  0xb5a895, // 3: weathered limestone
-  0xa67b68, // 4: aged red-brown masonry
-  0x7e8c85, // 5: industrial sage concrete
-  0xc2ab83, // 6: faded ochre stucco
-  0x8d8892, // 7: cool urban gray
+  0xf4a7b9, // 0: flamingo pink
+  0xf6e7c8, // 1: sand cream
+  0x8fd6d0, // 2: ocean mint
+  0xf9d58b, // 3: sunshine yellow
+  0xf7b58d, // 4: peach coral
+  0xa9c7f0, // 5: sky blue
+  0xc7b3e6, // 6: lavender
+  0xe9eef0, // 7: deco white
 ];
 
-// Suburban house siding palette
+// Tropical house stucco palette
 const HOUSE_WALL_PALETTE: readonly number[] = [
-  0xd8ccb8, // 0: warm cream clapboard
-  0x8ca184, // 1: suburban sage green
-  0x7c95a8, // 2: muted colonial blue
-  0xb87d68, // 3: warm red brick
-  0xd6c38b, // 4: buttercream yellow
-  0xc49a7e, // 5: peach-tan stucco
-  0x9aa69e, // 6: soft pewter gray
-  0xb58872, // 7: terracotta siding
+  0xfbeedd, // 0: coconut cream
+  0x9fe0c9, // 1: key-lime mint
+  0x86c9e8, // 2: lagoon blue
+  0xf6a8a0, // 3: coral
+  0xfbe08f, // 4: mango yellow
+  0xf7c4a5, // 5: peach stucco
+  0xd7c6ef, // 6: orchid
+  0xf2b4cf, // 7: hibiscus pink
 ];
 
 const HOUSE_ROOF_PALETTE: readonly number[] = [
-  0x4a3b34, // dark cedar shingle
-  0x384048, // charcoal slate shingle
-  0x593a2e, // weathered russet shingle
-  0x3d4a3e, // dark moss shingle
+  0xc0623f, // terracotta tile
+  0xe8e4da, // white flat roof
+  0xa8553a, // burnt clay tile
+  0x5f9aa3, // teal metal
 ];
 
 // Suburban yard fence palette
@@ -646,16 +646,16 @@ export class CityDistrict {
     const wBounds = this.layout.bounds;
     const groundGeoms: THREE.BufferGeometry[] = [];
 
-    // 1. Outer world surround skirt on boundary chunks so looking past the map edge shows dark ground
+    // 1. Outer world surround skirt on west/east/north boundary chunks so looking past the map edge shows dark ground
     const skirtPad = 90;
     if (cRect.minX <= wBounds.minX + 0.01) {
-      const d = cRect.maxZ - cRect.minZ + (cRect.minZ <= wBounds.minZ + 0.01 ? skirtPad : 0) + (cRect.maxZ >= wBounds.maxZ - 0.01 ? skirtPad : 0);
-      const cz = 0.5 * (cRect.minZ - (cRect.minZ <= wBounds.minZ + 0.01 ? skirtPad : 0) + cRect.maxZ + (cRect.maxZ >= wBounds.maxZ - 0.01 ? skirtPad : 0));
+      const d = cRect.maxZ - cRect.minZ + (cRect.minZ <= wBounds.minZ + 0.01 ? skirtPad : 0);
+      const cz = 0.5 * (cRect.minZ - (cRect.minZ <= wBounds.minZ + 0.01 ? skirtPad : 0) + cRect.maxZ);
       groundGeoms.push(makeColoredBox(skirtPad, 0.2, d, cRect.minX - skirtPad * 0.5, -0.14, cz, 0x353b44));
     }
     if (cRect.maxX >= wBounds.maxX - 0.01) {
-      const d = cRect.maxZ - cRect.minZ + (cRect.minZ <= wBounds.minZ + 0.01 ? skirtPad : 0) + (cRect.maxZ >= wBounds.maxZ - 0.01 ? skirtPad : 0);
-      const cz = 0.5 * (cRect.minZ - (cRect.minZ <= wBounds.minZ + 0.01 ? skirtPad : 0) + cRect.maxZ + (cRect.maxZ >= wBounds.maxZ - 0.01 ? skirtPad : 0));
+      const d = cRect.maxZ - cRect.minZ + (cRect.minZ <= wBounds.minZ + 0.01 ? skirtPad : 0);
+      const cz = 0.5 * (cRect.minZ - (cRect.minZ <= wBounds.minZ + 0.01 ? skirtPad : 0) + cRect.maxZ);
       groundGeoms.push(makeColoredBox(skirtPad, 0.2, d, cRect.maxX + skirtPad * 0.5, -0.14, cz, 0x353b44));
     }
     if (cRect.minZ <= wBounds.minZ + 0.01) {
@@ -671,19 +671,7 @@ export class CityDistrict {
         ),
       );
     }
-    if (cRect.maxZ >= wBounds.maxZ - 0.01) {
-      groundGeoms.push(
-        makeColoredBox(
-          cRect.maxX - cRect.minX,
-          0.2,
-          skirtPad,
-          0.5 * (cRect.minX + cRect.maxX),
-          -0.14,
-          cRect.maxZ + skirtPad * 0.5,
-          0x353b44,
-        ),
-      );
-    }
+    // South edge: no skirt — the beach and ocean (TropicalScenery) continue the world there.
 
     // 2. District-tinted base slab for this chunk (split at x=0 / z=0 seam if the chunk straddles two districts)
     const xSplits = [cRect.minX];

@@ -1,9 +1,12 @@
 import * as THREE from 'three';
 import { AudioSystem } from '../audio/AudioSystem';
+import { IntroAudio } from '../audio/IntroAudio';
+import { buildIntroScript, FIRST_OBJECTIVE, type IntroScript } from '../content/intro';
 import { BALANCE } from '../config/balance';
 import { createSave } from '../persistence/saveSchema';
 import { SaveStore } from '../persistence/SaveStore';
 import { Simulation } from '../sim/Simulation';
+import { CinematicOverlay } from '../ui/CinematicOverlay';
 import { HUD, structureHudLabel } from '../ui/HUD';
 import { TouchControls, type TouchSlotView } from '../ui/TouchControls';
 import { abilitySlotView, visibleSlotCount } from '../ui/uiHelpers';
@@ -15,8 +18,12 @@ import { CheckpointVisual } from '../world/Checkpoint';
 import { CityDistrict } from '../world/CityDistrict';
 import { Landmarks } from '../world/Landmarks';
 import { NestMarkers } from '../world/NestMarkers';
+import { TropicalScenery } from '../world/TropicalScenery';
 import { buildDistrictLayout } from '../world/districtLayout';
 import { chunkIdAt } from '../world/worldQueries';
+import { CinematicController } from './CinematicController';
+import { activeCue, advanceScriptClock, createPose, narrationTimeScale } from './cinematicMath';
+import { cinematicInputLock, shouldPlayIntro, transitionFlow, type GameFlowState } from './gameFlow';
 import { InputController } from './InputController';
 import { ThirdPersonCamera } from './ThirdPersonCamera';
 import type { StorageLike } from './contracts';
@@ -30,6 +37,11 @@ import {
 
 /** Minimum wall-clock gap between autosaves. */
 const AUTOSAVE_MIN_MS = 2000;
+/** Longest the black start screen waits for the narration to buffer before offering to begin anyway. */
+const INTRO_LOAD_TIMEOUT_MS = 4000;
+/** Fade-from-black after a replayed intro restores the saved conquest. */
+const RESTORE_FADE_S = 0.9;
+const EMPTY_HITS: Set<THREE.Object3D> = new Set();
 /** Leader distance (m) at which a map waypoint counts as reached. */
 const WAYPOINT_ARRIVE_M = 5;
 
@@ -96,6 +108,25 @@ export class Game {
   private lastSaveAt = -1e9;
   private savePending = false;
   private loadedChunkCount = 0;
+  // --- opening cinematic (docs/4_intro_scene.md) ---
+  /** Central flow state: gameplay input is enabled only in PLAYING. */
+  private flow: GameFlowState = 'LOADING';
+  private readonly scenery: TropicalScenery;
+  private readonly cinematic: CinematicController;
+  private readonly cineOverlay: CinematicOverlay;
+  private readonly introAudio = new IntroAudio();
+  private readonly intro: IntroScript;
+  private introClock = 0;
+  private introExiting = false;
+  private narrationStarted = false;
+  private musicStage = 0;
+  private loadingSince = 0;
+  private autoBeginIntro = false;
+  /** In-memory conquest to restore after a replayed intro (null = the intro starts a new game). */
+  private replayRestore: WorldSave | null = null;
+  private restoreFade = 0;
+  private objectiveWatch = false;
+  private gameplayMusicOn = false;
 
   constructor(private readonly container: HTMLElement, private readonly hudRoot: HTMLElement) {
     this.touchActive = typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
@@ -107,11 +138,11 @@ export class Game {
     this.renderer.toneMappingExposure = 1.05;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.container.appendChild(this.renderer.domElement);
-    const sky = 0x8ea9bd;
+    const sky = 0x93cdea; // bright tropical sky
     this.scene.background = new THREE.Color(sky);
     // Fog hides the chunk load edge (chunks load within BALANCE.chunks.loadRadius = 150 m of the leader).
     this.scene.fog = new THREE.Fog(sky, 120, 330);
-    const hemisphere = new THREE.HemisphereLight(0xdbe8f4, 0x5c574f, 0.78);
+    const hemisphere = new THREE.HemisphereLight(0xe4f4ff, 0x6a6150, 0.8);
     hemisphere.position.set(0, 80, 0);
     this.scene.add(hemisphere);
     this.sun = new THREE.DirectionalLight(0xfff1d6, 1.45);
@@ -134,8 +165,10 @@ export class Game {
     this.nests = new NestMarkers(null, layout);
     this.entities = new EntityRenderer(this.scene);
     this.horde = new HordeRenderer();
+    this.scenery = new TropicalScenery(layout);
+    this.intro = buildIntroScript(layout);
     this.scene.add(this.city.group, this.checkpoint.group, this.landmarks.group, this.nests.group, this.horde.group,
-      this.healthBars.group, this.extraOccluders);
+      this.healthBars.group, this.extraOccluders, this.scenery.group);
     this.effects = new Effects(this.scene);
     this.effects.setWorld(layout);
     this.hud = new HUD(hudRoot);
@@ -192,6 +225,10 @@ export class Game {
     this.scene.add(this.waypointMarker);
 
     this.cameraRig = new ThirdPersonCamera(this.camera, this.occluders);
+    this.cinematic = new CinematicController(this.camera);
+    this.cineOverlay = new CinematicOverlay(hudRoot);
+    this.cineOverlay.onStart(() => this.tryBeginIntro());
+    this.cineOverlay.onSkip(() => this.skipIntro());
     this.cameraRig.setBounds(layout.bounds);
     this.input = new InputController(this.renderer.domElement, {
       camera: this.camera,
@@ -203,12 +240,14 @@ export class Game {
       onUiKey: key => this.hud.isNestPanelVisible && this.hud.handleNestKey(key),
       onLockLost: () => {
         // Browser Esc / alt-tab released the mouse: show the pause menu instead of silently dropping control.
-        if (!this.hud.introVisible && !this.hud.isHelpVisible && !this.isModal()) this.openPause();
+        if (this.flow === 'PLAYING' && !this.hud.introVisible && !this.hud.isHelpVisible && !this.isModal()) this.openPause();
       },
       onKey: action => this.handleKeyAction(action),
-      onFirstGesture: () => { this.audio.unlock(); this.hud.hideIntro(); },
+      onFirstGesture: () => this.onGesture(),
+      inputLocked: () => cinematicInputLock(this.flow),
+      onLockedKey: code => this.onIntroKey(code),
       canLock: () =>
-        shouldRequestLock({
+        this.flow === 'PLAYING' && shouldRequestLock({
           isLocked: this.input.isLocked,
           phase: this.sim.state.phase,
           helpVisible: this.hud.isHelpVisible,
@@ -237,6 +276,7 @@ export class Game {
       onSave: () => this.hud.notifyPause(this.saveNow() ? 'Saved' : 'Save failed'),
       onResetSave: () => this.resetSave(),
       onToggleMute: () => this.toggleMute(),
+      onReplayIntro: () => this.replayIntro(),
     });
     window.addEventListener('resize', this.onResize);
     window.addEventListener('blur', this.onBlur);
@@ -245,6 +285,8 @@ export class Game {
     this.onResize();
     this.scene.updateMatrixWorld(true);
     this.resetCamera();
+    if (shouldPlayIntro({ hasSave: save !== null })) this.enterIntroLoading(null);
+    else this.flow = transitionFlow(this.flow, 'PLAYING');
     this.syncVisuals(0, 0);
     this.updateHud();
     (window as unknown as { __game?: Game }).__game = this;
@@ -282,6 +324,7 @@ export class Game {
     this.checkpoint.setGateHighlight(false);
     this.landmarks.reset();
     this.landmarks.setHighlight(null);
+    this.scenery.resetTraffic();
     this.occluderSignature = '';
     this.resetCamera();
     this.hud.hideIntro();
@@ -304,6 +347,8 @@ export class Game {
     this.input.dispose();
     this.touch.dispose();
     this.hud.dispose();
+    this.cineOverlay.dispose();
+    this.introAudio.dispose();
     this.audio.dispose();
     // The provided renderers do not release character part geometries.
     const characterGeometry = new Set<THREE.BufferGeometry>();
@@ -322,6 +367,7 @@ export class Game {
     this.entities.dispose();
     this.horde.dispose();
     this.healthBars.dispose();
+    this.scenery.dispose();
     for (const geometry of characterGeometry) geometry.dispose();
     this.gateOccluder.geometry.dispose();
     (this.gateOccluder.material as THREE.Material).dispose();
@@ -343,6 +389,7 @@ export class Game {
   }
 
   private handleKeyAction(action: 'recenter' | 'help' | 'debug' | 'mute' | 'map' | 'pause'): void {
+    if (cinematicInputLock(this.flow)) return;
     switch (action) {
       case 'recenter': this.cameraRig.recenter(); break;
       case 'help':
@@ -379,6 +426,8 @@ export class Game {
   private isModal(): boolean { return this.hud.isPauseVisible || this.hud.isMapVisible; }
 
   private openPause(): void {
+    if (this.flow !== 'PLAYING') return;
+    this.flow = transitionFlow(this.flow, 'PAUSED');
     this.hud.showPause();
     this.input.exitPointerLock();
     this.input.clear();
@@ -386,6 +435,7 @@ export class Game {
   }
 
   private closePause(): void {
+    if (this.flow === 'PAUSED') this.flow = transitionFlow(this.flow, 'PLAYING');
     this.hud.hidePause();
     this.input.clear();
     this.lastTime = null;
@@ -425,8 +475,203 @@ export class Game {
 
   private resetSave(): void {
     this.store.clear();
+    this.replayRestore = null;
     this.restart();
     this.closePause();
+    // A fresh game plays the opening (the confirm click already unlocked audio, so it starts once loaded).
+    this.enterIntroLoading(null);
+  }
+
+  // --- opening cinematic (docs/4_intro_scene.md) ----------------------------------------------
+
+  /** Debug: jump the running intro to script time `t` (narration follows). */
+  debugIntroSeek(t: number): void {
+    if (this.flow !== 'INTRO_CINEMATIC' || this.introExiting) return;
+    this.introClock = Math.max(0, t);
+    const scale = narrationTimeScale(this.intro.narrationDuration, this.introAudio.narrationDuration);
+    if (this.narrationStarted) this.introAudio.playNarration((this.introClock - this.intro.narrationStart) * scale);
+  }
+
+  get flowState(): GameFlowState { return this.flow; }
+
+  private onGesture(): void {
+    this.audio.unlock();
+    this.introAudio.bind(this.audio.context, this.audio.output);
+    this.hud.hideIntro();
+    // Returning players get the gameplay music as soon as audio is allowed.
+    if (this.flow === 'PLAYING' && !this.gameplayMusicOn) {
+      this.gameplayMusicOn = true;
+      this.introAudio.startGameplay();
+    }
+  }
+
+  /** LOADING: black screen + begin prompt; the world is built and the narration buffers behind it. */
+  private enterIntroLoading(restore: WorldSave | null): void {
+    this.flow = 'LOADING';
+    this.replayRestore = restore;
+    this.introExiting = false;
+    this.introClock = 0;
+    this.narrationStarted = false;
+    this.musicStage = 0;
+    this.objectiveWatch = false;
+    this.input.exitPointerLock();
+    this.input.clear();
+    this.hud.setCinematic(true);
+    this.touch.disable();
+    this.cineOverlay.hideObjective();
+    this.cineOverlay.setActive(false);
+    this.cineOverlay.showStart(false, this.touchActive);
+    this.introAudio.stopMusic();
+    this.gameplayMusicOn = false;
+    this.introAudio.preload();
+    this.scenery.resetTraffic();
+    this.loadingSince = performance.now();
+    // An earlier gesture (Reset Save / Replay Intro click) already unlocked audio: begin once loaded.
+    this.autoBeginIntro = this.audio.context?.state === 'running';
+    // Park the camera on the opening shot (behind the black fade) and warm up shaders for the streamed area.
+    this.cinematic.load(this.intro.keys, this.intro.endTime, this.gameplayPose());
+    this.cinematic.apply(0);
+    this.city.updateStreaming(this.intro.streamFocus);
+    try { this.renderer.compile(this.scene, this.camera); } catch { /* optional warm-up */ }
+  }
+
+  private introReady(): boolean {
+    return this.introAudio.narrationSettled || performance.now() - this.loadingSince > INTRO_LOAD_TIMEOUT_MS;
+  }
+
+  private tryBeginIntro(): void {
+    if (this.flow !== 'LOADING' || !this.introReady()) return;
+    this.audio.unlock();
+    this.introAudio.bind(this.audio.context, this.audio.output);
+    this.introAudio.setMuted(this.audio.muted);
+    this.flow = transitionFlow(this.flow, 'INTRO_CINEMATIC');
+    this.input.clear();
+    this.cineOverlay.hideStart();
+    this.cineOverlay.setActive(true);
+    this.introClock = 0;
+    // Final key = the exact pose the gameplay camera will take behind the zombie (seamless handoff).
+    this.cinematic.load(this.intro.keys, this.intro.endTime, this.gameplayPose());
+  }
+
+  private onIntroKey(code: string): void {
+    if (this.flow === 'LOADING') { this.tryBeginIntro(); return; }
+    if (this.flow === 'INTRO_CINEMATIC' && (code === 'Escape' || code === 'Enter')) this.skipIntro();
+  }
+
+  /** Same safe handoff as the full sequence: blend into the gameplay pose, then unlock (never earlier). */
+  private skipIntro(): void {
+    if (this.flow !== 'INTRO_CINEMATIC' || this.introExiting || this.introClock < this.intro.skipAvailableAt) return;
+    this.introExiting = true;
+    this.introAudio.stopNarration();
+    this.introAudio.stopMusic();
+    this.cineOverlay.setSubtitle('');
+    this.cineOverlay.setSkipVisible(false);
+    this.cineOverlay.setFade(0);
+    this.cinematic.beginExit(this.introClock, this.intro.skipBlend);
+  }
+
+  /** Gameplay camera pose behind the leader (computed by the real rig, then the camera is handed back). */
+  private gameplayPose() {
+    const pose = createPose();
+    this.resetCamera();
+    const cam = this.camera;
+    pose.pos.x = cam.position.x; pose.pos.y = cam.position.y; pose.pos.z = cam.position.z;
+    const look = this.cameraRig.lookPoint;
+    pose.look.x = look.x; pose.look.y = look.y; pose.look.z = look.z;
+    pose.fov = 55;
+    return pose;
+  }
+
+  /** Advances the cinematic. Returns true while the cinematic owns the camera. */
+  private updateIntro(dt: number): boolean {
+    const flow = this.flow;
+    if (flow === 'LOADING') {
+      const ready = this.introReady();
+      this.cineOverlay.showStart(ready, this.touchActive);
+      this.horde.setAmbientMask({ x: this.sim.state.leader.pos.x, z: this.sim.state.leader.pos.z, radius: 0 });
+      this.cinematic.apply(0);
+      if (ready && this.autoBeginIntro) this.tryBeginIntro();
+      return true;
+    }
+    if (flow !== 'INTRO_CINEMATIC') return false;
+    const s = this.intro;
+    const audio = this.introAudio;
+    const scale = narrationTimeScale(s.narrationDuration, audio.narrationDuration);
+    if (!this.introExiting) {
+      if (!this.narrationStarted && this.introClock >= s.narrationStart) {
+        this.narrationStarted = true;
+        audio.playNarration((this.introClock - s.narrationStart) * scale);
+      }
+      this.introClock = advanceScriptClock(this.introClock, dt, this.narrationStarted
+        ? { playing: audio.narrationPlaying, time: audio.narrationTime, narrationStart: s.narrationStart, scale }
+        : null);
+      const t = this.introClock;
+      if (this.musicStage === 0 && t >= s.music.start) { this.musicStage = 1; audio.startTheme(); }
+      if (this.musicStage === 1 && t >= s.music.buildFrom) { this.musicStage = 2; audio.startBuild((s.music.cut - t) * scale); }
+      if (this.musicStage === 2 && t >= s.music.cut) { this.musicStage = 3; audio.cutForReveal(); }
+      this.cineOverlay.setFade(1 - t / s.fadeIn);
+      this.cineOverlay.setSubtitle(activeCue(s.cues, t)?.text ?? '');
+      this.cineOverlay.setSkipVisible(t >= s.skipAvailableAt && t < s.keys[s.keys.length - 1].t);
+    } else {
+      this.introClock += Math.max(0, dt);
+    }
+    const leader = this.sim.state.leader;
+    const ambientRadius = this.introExiting || this.introClock >= s.revealAmbientAt ? s.ambientRadius : 0;
+    this.horde.setAmbientMask({ x: leader.pos.x, z: leader.pos.z, radius: ambientRadius });
+    this.cinematic.apply(this.introClock);
+    if (this.cinematic.isDone(this.introClock)) { this.finishIntro(); return false; }
+    return true;
+  }
+
+  /** Hand control to the player: gameplay camera, HUD, first objective, cleared input, then PLAYING. */
+  private finishIntro(): void {
+    this.introExiting = false;
+    this.introAudio.stopNarration();
+    this.cineOverlay.setActive(false);
+    this.cineOverlay.setFade(0);
+    this.horde.setAmbientMask(null);
+    this.scenery.retireTraffic();
+    const restore = this.replayRestore;
+    this.replayRestore = null;
+    if (restore) {
+      // Replay was watch-only: bring back the conquest exactly as it was, fading in from black.
+      this.sim.reset(restore.seed, restore);
+      this.seed = restore.seed;
+      this.effects.reset();
+      this.entities.reset();
+      this.hud.reset();
+      this.hud.setWorld(this.sim.ctx.layout, { firstRun: false });
+      this.landmarks.reset();
+      this.occluderSignature = '';
+      this.restoreFade = RESTORE_FADE_S;
+      this.cineOverlay.setFade(1);
+    }
+    this.camera.fov = 55;
+    this.camera.updateProjectionMatrix();
+    this.resetCamera();
+    this.hud.setCinematic(false);
+    this.hud.hideIntro();
+    if (this.touchActive) this.touch.enable();
+    this.input.clear();
+    this.accumulator = 0;
+    this.flow = transitionFlow(this.flow, 'PLAYING');
+    this.introAudio.startGameplay();
+    this.gameplayMusicOn = true;
+    if (!restore) {
+      this.savePending = true; // the new game exists once the player has control
+      this.cineOverlay.showObjective(FIRST_OBJECTIVE.title, this.touchActive ? FIRST_OBJECTIVE.touchText : FIRST_OBJECTIVE.text, 16000);
+      this.objectiveWatch = true;
+    }
+  }
+
+  /** Pause menu "Replay Intro": snapshot the conquest in memory, play the opening on a fresh world, restore after. */
+  private replayIntro(): void {
+    if (this.flow !== 'PAUSED') return;
+    const snapshot = createSave(this.sim.state, this.seed, Date.now());
+    this.hud.hidePause();
+    this.flow = transitionFlow(this.flow, 'PLAYING');
+    this.restart();
+    this.enterIntroLoading(snapshot);
   }
 
   // --- frame ---------------------------------------------------------------------------------
@@ -440,7 +685,8 @@ export class Game {
     if (this.lastTime !== null) this.frameMs += ((now - this.lastTime) - this.frameMs) * 0.1;
     this.lastTime = now;
     if (dt > 0) this.smoothFps += (1 / dt - this.smoothFps) * (1 - Math.exp(-3 * dt));
-    this.accumulator += dt;
+    // The world only starts living once the opening begins (nothing happens behind the black start screen).
+    if (this.flow !== 'LOADING') this.accumulator += dt;
     let steps = 0;
     while (this.accumulator >= BALANCE.sim.fixedDt && steps < BALANCE.sim.maxStepsPerFrame) {
       if (steps === 0) {
@@ -463,7 +709,16 @@ export class Game {
       isLocked: this.input.isLocked, phase: state.phase, helpVisible: this.hud.isHelpVisible, modalOpen: this.isModal(),
     })) this.input.exitPointerLock();
     const events = this.sim.drainEvents();
-    for (const event of events) if (event.type === 'autosave') this.savePending = true;
+    for (const event of events) {
+      if (event.type === 'autosave') {
+        // Nothing is saved until the player has control (a reload mid-intro replays it), and a replayed intro
+        // runs on a throwaway world that must never overwrite the real save.
+        if (this.replayRestore === null && !cinematicInputLock(this.flow)) this.savePending = true;
+      } else if (this.objectiveWatch && (event.type === 'recruited' || event.type === 'converted')) {
+        this.objectiveWatch = false;
+        window.setTimeout(() => this.cineOverlay.hideObjective(), 2500);
+      }
+    }
     this.effects.consume(events, state);
     this.audio.consume(events, state);
     this.hud.consume(events);
@@ -471,13 +726,26 @@ export class Game {
     this.horde.consume(events, state.zombies);
     this.flushAutosave();
     const leader = state.leader;
-    this.focus.set(leader.prevPos.x + (leader.pos.x - leader.prevPos.x) * alpha, 1.4,
-      leader.prevPos.z + (leader.pos.z - leader.prevPos.z) * alpha);
+    const cinematicCamera = this.updateIntro(dt);
+    this.introAudio.update();
+    if (cinematicCamera) {
+      // Visual focus (shadows, guard culling) follows what the cinematic camera is looking at.
+      const look = this.cinematic.lookTarget;
+      this.focus.set(look.x, 1.4, look.z);
+    } else {
+      this.focus.set(leader.prevPos.x + (leader.pos.x - leader.prevPos.x) * alpha, 1.4,
+        leader.prevPos.z + (leader.pos.z - leader.prevPos.z) * alpha);
+    }
     this.syncVisuals(alpha, dt);
     const facingDelta = approachAngle(leader.prevFacing, leader.facing, Math.PI) - leader.prevFacing;
     this.cameraRig.setLook(this.input.cameraTurn, this.input.lookBack);
-    const hits = this.cameraRig.update(dt, this.focus, leader.prevFacing + facingDelta * alpha,
-      state.phase === 'playing' && Math.hypot(leader.vel.x, leader.vel.z) > 0.15, this.effects.takeShake());
+    const shake = this.effects.takeShake();
+    const hits = cinematicCamera ? EMPTY_HITS : this.cameraRig.update(dt, this.focus, leader.prevFacing + facingDelta * alpha,
+      state.phase === 'playing' && Math.hypot(leader.vel.x, leader.vel.z) > 0.15, shake);
+    if (this.restoreFade > 0) {
+      this.restoreFade = Math.max(0, this.restoreFade - dt);
+      this.cineOverlay.setFade(this.restoreFade / RESTORE_FADE_S);
+    }
     this.city.setOccluderFade(hits, dt);
     this.landmarks.setOccluderFade(hits, dt);
     this.fadeCheckpoint(hits, dt);
@@ -509,7 +777,9 @@ export class Game {
     const fx = this.focus.x;
     const fz = this.focus.z;
     // Streaming first: chunk listeners (landmarks, checkpoint, nests) sync visibility inside this call.
-    this.loadedChunkCount = this.city.updateStreaming({ x: fx, z: fz }).loaded;
+    // During the opening, stream one fixed area that covers every shot (no chunk loads mid-glide).
+    const streamFocus = cinematicInputLock(this.flow) ? this.intro.streamFocus : { x: fx, z: fz };
+    this.loadedChunkCount = this.city.updateStreaming(streamFocus).loaded;
     this.syncOccluders();
     // Keep the shadow frustum centered on the focus so shadows work across the whole world.
     this.sun.position.set(fx - 70, 115, fz + 65);
@@ -539,6 +809,7 @@ export class Game {
     for (let i = 0; i < extra; i++) this.extraMarkerView.push(this.extraMarkers[i]);
     this.effects.setExtraOrderMarkers(this.extraMarkerView);
     this.effects.update(dt, state, alpha);
+    this.scenery.update(dt, state, this.camera);
     this.scene.updateMatrixWorld(true);
   }
 
@@ -642,7 +913,16 @@ export class Game {
     material.depthWrite = !transparent;
   }
 
-  private resetClock(): void { this.input.clear(); this.lastTime = null; this.accumulator = 0; }
+  private resetClock(): void {
+    this.input.clear();
+    this.lastTime = null;
+    this.accumulator = 0;
+    // The narration must not run on while the cinematic clock is frozen (hidden tab / lost focus).
+    if (this.flow === 'INTRO_CINEMATIC' && !this.introExiting) {
+      if (this.suspended) this.introAudio.pauseNarration();
+      else this.introAudio.resumeNarration();
+    }
+  }
   private readonly onBlur = (): void => { this.suspended = true; this.resetClock(); };
   private readonly onFocus = (): void => { this.suspended = document.hidden; this.resetClock(); };
   private readonly onVisibility = (): void => { this.suspended = document.hidden || !document.hasFocus(); this.resetClock(); };

@@ -76,6 +76,15 @@ export class AudioSystem {
     return this.isMuted;
   }
 
+  /** Shared Web Audio context (null until unlock()); music/intro audio routes through `output` so mute applies. */
+  get context(): AudioContext | null {
+    return this.ctx;
+  }
+
+  get output(): AudioNode | null {
+    return this.masterGain;
+  }
+
   consume(events: readonly GameEvent[], state?: GameState): void {
     if (state) {
       if (this.lastSimTime >= 0 && state.time < this.lastSimTime) {

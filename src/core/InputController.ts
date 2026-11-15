@@ -43,6 +43,13 @@ interface InputDependencies {
   onUiKey?: (key: string) => boolean;
   /** Pointer lock was lost without the game asking for it (browser Esc, alt-tab). */
   onLockLost?: () => void;
+  /**
+   * Central gameplay-input gate (GameFlowState !== 'PLAYING', e.g. the opening cinematic): while true every
+   * keyboard / mouse / touch gameplay input and manual camera control is dropped (never buffered).
+   */
+  inputLocked?: () => boolean;
+  /** Key presses while inputLocked (e.g. Esc / Enter to skip the intro). */
+  onLockedKey?: (code: string) => void;
 }
 
 function isEditing(target: EventTarget | null): boolean {
@@ -138,24 +145,28 @@ export class InputController {
 
   /** Touch ATTACK button: Alpha swing forward / auto-aim (no aim point). */
   queueAttack(): void {
-    if (this.modal()) return;
+    if (this.modal() || this.locked()) return;
     this.attackEdge = true;
     this.aimPoint = null;
   }
 
   queueAbility(slot: number): void {
-    if (this.modal()) return;
+    if (this.modal() || this.locked()) return;
     this.abilitySlot = slot;
   }
 
   queueCommand(cmd: HordeCommand): void {
-    if (this.modal()) return;
+    if (this.modal() || this.locked()) return;
     this.command = cmd;
   }
 
   /** Builds one step's input. Edge fields (attack, command, ability) are consumed; legacy fields stay false/null. */
   buildSimInput(cameraYaw: number): SimInput {
-    const modal = this.modal();
+    if (this.locked()) {
+      // Locked: nothing is buffered for later — edges are dropped, not deferred.
+      this.attackEdge = false; this.aimPoint = null; this.command = null; this.abilitySlot = null;
+    }
+    const modal = this.modal() || this.locked();
     const held = (a: string, b: string): number => modal ? 0 : Number(this.keys.has(a) || this.keys.has(b));
     let moveForward = held('KeyW', 'ArrowUp') - held('KeyS', 'ArrowDown');
     let moveRight = held('KeyD', 'ArrowRight') - held('KeyA', 'ArrowLeft');
@@ -186,8 +197,10 @@ export class InputController {
   }
 
   private modal(): boolean { return this.deps.isModal?.() === true; }
+  private locked(): boolean { return this.deps.inputLocked?.() === true; }
 
   updateHover(): void {
+    if (this.locked()) { this.hover = null; return; }
     if (this.isLocked) {
       const rect = this.canvas.getBoundingClientRect();
       this.hover = this.pick(rect.left + rect.width * 0.5, rect.top + rect.height * 0.5);
@@ -269,6 +282,10 @@ export class InputController {
     this.deps.onFirstGesture();
     if (isEditing(event.target)) return;
     if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab', 'F3'].includes(event.code)) event.preventDefault();
+    if (this.locked()) {
+      if (!event.repeat) this.deps.onLockedKey?.(event.code);
+      return;
+    }
     if (!event.repeat && this.deps.onUiKey?.(event.key)) return;
     if (!keyAllowedWhileModal(event.code, this.modal())) return;
     const alreadyHeld = this.keys.has(event.code);
@@ -290,7 +307,7 @@ export class InputController {
     if (!isEditing(event.target) && ['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab', 'F3'].includes(event.code)) event.preventDefault();
   };
   private readonly onMouseMove = (event: MouseEvent): void => {
-    if (!this.isLocked) return;
+    if (!this.isLocked || this.locked()) return;
     const mx = event.movementX;
     const my = event.movementY;
     if (mx === 0 && my === 0) return;
@@ -326,7 +343,7 @@ export class InputController {
     if (this.pointerId !== null || (event.button !== 0 && event.button !== 2)) return;
     event.preventDefault();
     this.canvas.focus({ preventScroll: true });
-    if (this.modal()) return;
+    if (this.modal() || this.locked()) return;
     if (this.isLocked) {
       // Captured mouse: act immediately on the crosshair (no drag possible).
       const rect = this.canvas.getBoundingClientRect();
@@ -413,7 +430,7 @@ export class InputController {
   private onTouchDown(event: PointerEvent): void {
     if (this.touchSource?.containsPoint(event.clientX, event.clientY)) return;
     event.preventDefault();
-    if (this.modal()) return;
+    if (this.modal() || this.locked()) return;
     this.touches.set(event.pointerId, {
       x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY, startT: performance.now(), moved: false,
     });
@@ -490,6 +507,7 @@ export class InputController {
   private readonly onContextMenu = (event: MouseEvent): void => { event.preventDefault(); };
   private readonly onWheel = (event: WheelEvent): void => {
     event.preventDefault();
+    if (this.locked()) return;
     // Normalize line/page wheels to pixel-like units.
     const scale = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? this.canvas.clientHeight : 1;
     this.deps.onZoom(event.deltaY * scale);

@@ -22,3 +22,8 @@ If any subagent returns `Status: QUOTA_EXHAUSTED`:
    - `@codex-worker` exhausted $\rightarrow$ fail over to `@claude-worker` (or `@agy-worker` if quota remains).
    - `@claude-worker` exhausted $\rightarrow$ fail over to `@codex-worker` or `@agy-worker`.
 3. **Resume From Checkpoint:** Instruct the fallback subagent to read `.agent-context/reports/<TASK_ID>-<failed-agent>.md` first, preserve valid partial edits already in the workspace, complete the **Remaining Work** section, and write `.agent-context/reports/<TASK_ID>-<fallback-agent>.md`.
+
+### Opening cinematic (docs/4_intro_scene.md) — task board in `.agent-context/PROGRESS.md`
+
+- [x] **IN1–IN3** (orchestrator): flow states + input lock, CinematicController, tropical scenery, subtitles/skip/replay, intro audio, tests
+

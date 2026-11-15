@@ -1,5 +1,29 @@
 # Architecture & Interface Contracts — Todos milestone (TD: docs/todos.md items 7–9)
 
+# IN — Opening cinematic (docs/4_intro_scene.md)
+
+- **Flow:** `GameFlowState = LOADING | INTRO_CINEMATIC | PLAYING | PAUSED` lives in `Game.flow` (`src/core/gameFlow.ts`, pure).
+  `cinematicInputLock(flow)` (LOADING/INTRO) is the single gate passed to `InputController.inputLocked`: keys, mouse, wheel,
+  touch, queue* calls and buildSimInput edges are dropped (never buffered); `Game.handleKeyAction`/`openPause`/`canLock` check
+  the flow too. PAUSED is entered/left by open/closePause only from/to PLAYING.
+- **When it plays:** boot without a save, Reset Save, or pause-menu Replay Intro. Never on district entry. Autosave is ignored
+  while locked; the first save happens at handoff (so a reload mid-intro replays it).
+- **Replay:** `createSave(state)` snapshot in memory -> `restart()` -> intro on a fresh world (autosave suppressed) -> at the end
+  `sim.reset(seed, snapshot)` with a 0.9 s fade from black. The stored save is never touched.
+- **Script clock:** authored in script seconds (`src/content/intro.ts`). Narration second `a` = script `0.4 + a/scale`,
+  `scale = narrationTimeScale(39.9, audio.duration)`; while narration plays the clock follows it (`advanceScriptClock`), otherwise
+  dt-accumulates (timed-subtitle fallback). Sim runs during INTRO, frozen during LOADING.
+- **Camera:** `CinematicController` samples Catmull-Rom keys (pos + look target + fov, per-segment easing, holds don't overshoot)
+  into the existing camera; final key = the real `ThirdPersonCamera.reset` pose, so the handoff is cut-free. Skip = rise over the
+  rooftops into the same pose. Portrait screens widen FOV (faded out before handoff). While active, chunk streaming uses the fixed
+  `streamFocus`, sun/culling follow the look target, and non-follower zombies are hidden until `revealAmbientAt`.
+- **Render-only dressing:** `TropicalScenery` (beach/ocean past z=maxZ, palms on sidewalks + promenade, umbrellas, traffic that
+  brakes for people and yields at intersections; retired after the intro, each car removed once off-camera). No gameplay effect.
+- **Audio:** `IntroAudio` (narration via HTMLAudioElement; theme -> crescendo -> cut + record scratch + crickets -> gameplay loop,
+  scheduled from the frame loop through `AudioSystem.output`). Every audio call is try/catch-guarded.
+
+---
+
 Spec: `docs/todos.md` open items. Everything from the Open World milestone (below the rule) still holds unless this section
 overrides it. `AGENTS.md` stays authoritative for stack, purity and step order. **The code written to `src/core/types.ts`,
 `src/core/contracts.ts` and `src/config/balance.ts` in TD-T001 is the contract**; this section is the map and the reasons.

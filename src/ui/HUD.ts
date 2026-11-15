@@ -739,6 +739,17 @@ export class HUD {
     }
   }
 
+  /** Opening cinematic: hide the whole gameplay HUD (the cinematic overlay lives outside this container). */
+  setCinematic(on: boolean): void {
+    this.container.classList.toggle('is-cinematic', on);
+    if (on) {
+      this.hideIntro();
+      if (this.helpVisible) this.toggleHelp();
+      this.worldMap?.hide();
+      this.clearToasts();
+    }
+  }
+
   toggleHelp(): void {
     this.helpVisible = !this.helpVisible;
     this.helpPanelEl.classList.toggle('is-visible', this.helpVisible);

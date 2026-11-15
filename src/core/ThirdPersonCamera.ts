@@ -79,6 +79,9 @@ export class ThirdPersonCamera {
     this.targetZoom = THREE.MathUtils.clamp(zoomTarget(this.targetZoom, wheelDeltaY), ZOOM_MIN, ZOOM_MAX);
   }
 
+  /** Point the rig last aimed the camera at (gameplay pose handoff for the intro cinematic). */
+  get lookPoint(): Readonly<THREE.Vector3> { return this.lookAt; }
+
   recenter(): void { this.recentering = true; this.manualYaw = false; }
 
   reset(leaderFacing: number, focus: Vec3): void {

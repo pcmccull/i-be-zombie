@@ -70,6 +70,7 @@ export class HordeRenderer {
   private readonly colorBrutePants = new THREE.Color(0x24262b);
   private readonly colorBruteAcc = new THREE.Color(0x8a7a5a);
 
+  private ambientMask: { x: number; z: number; radius: number } | null = null;
   // Render-radius culling + frenzy view state (set by setView before update)
   private hasFocus = false;
   private focusX = 0;
@@ -178,6 +179,14 @@ export class HordeRenderer {
     if (frenzyTimeLeft <= 0 && this.frenzyCohort.size > 0) this.frenzyCohort.clear();
   }
 
+  /**
+   * Opening cinematic: ambient zombies farther than `radius` from (x, z) are not drawn, so the city reads as
+   * "full of life" until the reveal. Pass null to draw everything again.
+   */
+  setAmbientMask(mask: { x: number; z: number; radius: number } | null): void {
+    this.ambientMask = mask;
+  }
+
   /** Snapshots the buffed follower cohort on frenzyStart (events only; no per-frame cost). */
   consume(events: readonly GameEvent[], zombies: readonly ZombieAgent[]): void {
     for (let i = 0; i < events.length; i++) {
@@ -215,6 +224,12 @@ export class HordeRenderer {
     for (let zi = 0; zi < zombies.length && count < this.maxInstances; zi++) {
       const z = zombies[zi];
       if (z.dormant) continue;
+      const mask = this.ambientMask;
+      if (mask && (z.state === 'ambient' || z.state === 'dead')) {
+        const mdx = z.pos.x - mask.x;
+        const mdz = z.pos.z - mask.z;
+        if (mdx * mdx + mdz * mdz > mask.radius * mask.radius) continue;
+      }
       if (this.hasFocus) {
         const cdx = z.pos.x - this.focusX;
         const cdz = z.pos.z - this.focusZ;

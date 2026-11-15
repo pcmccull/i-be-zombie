@@ -57,6 +57,14 @@ src/
   core/InputController.ts      [3D] Keyboard/pointer -> SimInput; click vs drag; raycast picking
   core/ThirdPersonCamera.ts    [3D] Orbit/follow/zoom/occlusion camera
   core/cameraMath.ts           [pure] camera/occluder fade math shared by camera, CityDistrict, Landmarks
+  core/gameFlow.ts             [pure] GameFlowState (LOADING/INTRO_CINEMATIC/PLAYING/PAUSED) + central input gate
+  core/cinematicMath.ts        [pure] Catmull-Rom camera keys, easing, subtitle cues, narration clock
+  core/CinematicController.ts  [3D] scripted camera driver (animates the game camera; no own loop)
+  content/intro.ts             [pure] opening cinematic script (cues, keyframes, music cues, first objective)
+  world/tropicalLayout.ts      [pure] beach/ocean/palm/traffic-lane data from a DistrictLayout
+  world/TropicalScenery.ts     [3D] render-only ocean, beach, palms, umbrellas, ambient traffic
+  ui/CinematicOverlay.ts       fade, letterbox, subtitles, Skip Intro, start prompt, objective card (+ ui/intro.css)
+  audio/IntroAudio.ts          narration (assets/voiceover/intro2.mp3) + synthesized intro/gameplay music
   sim/Simulation.ts            [pure] implements ISimulation; owns SimContext; fixed step order (below)
   sim/createInitialState.ts    [pure] DistrictLayout + Rng -> GameState (leader, 5 start followers, 85 ambient incl. 45 held, 16 humans, gate, structures, momentum)
   world/districtLayout.ts      [pure] buildDistrictLayout(seed?): DistrictLayout — the open world (4 districts) as data

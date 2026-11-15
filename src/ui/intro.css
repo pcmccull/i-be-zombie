@@ -1,0 +1,141 @@
+/* Opening cinematic overlay. Shares the HUD's typeface + green accent. */
+.ibz-cine {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 30;
+  font-family: 'Bahnschrift', 'Arial Narrow', 'Franklin Gothic Medium', system-ui, -apple-system, sans-serif;
+  color: #f0f2ec;
+}
+
+.ibz-cine-fade {
+  position: absolute;
+  inset: 0;
+  background: #000;
+  opacity: 0;
+  display: none;
+}
+
+.ibz-cine-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 9vh;
+  background: #000;
+  transform: scaleY(0);
+  transition: transform 0.9s ease;
+}
+.ibz-cine-bar-top { top: 0; transform-origin: top; }
+.ibz-cine-bar-bottom { bottom: 0; transform-origin: bottom; }
+.ibz-cine.is-active .ibz-cine-bar { transform: scaleY(1); }
+
+.ibz-cine-subtitle {
+  position: absolute;
+  left: 50%;
+  bottom: calc(9vh + 18px);
+  transform: translateX(-50%);
+  max-width: min(860px, calc(100vw - 32px));
+  padding: 10px 20px;
+  background: rgba(18, 22, 27, 0.78);
+  border: 1px solid rgba(155, 227, 90, 0.28);
+  border-radius: 6px;
+  font-size: clamp(16px, 2.4vw, 24px);
+  line-height: 1.35;
+  letter-spacing: 0.02em;
+  text-align: center;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8);
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+.ibz-cine-subtitle.is-visible { opacity: 1; }
+
+.ibz-cine-skip {
+  position: absolute;
+  right: 18px;
+  bottom: calc(9vh + 18px);
+  display: none;
+  pointer-events: auto;
+  padding: 8px 14px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #e8f2e0;
+  background: rgba(18, 22, 27, 0.7);
+  border: 1px solid rgba(155, 227, 90, 0.45);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.ibz-cine-skip span {
+  margin-left: 6px;
+  padding: 1px 5px;
+  font-size: 11px;
+  border: 1px solid rgba(232, 242, 224, 0.4);
+  border-radius: 3px;
+  opacity: 0.8;
+}
+.ibz-cine-skip:hover { border-color: #9be35a; color: #fff; }
+.ibz-cine-skip.is-visible { display: block; }
+
+.ibz-cine-start {
+  position: absolute;
+  inset: 0;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  pointer-events: auto;
+  cursor: default;
+}
+.ibz-cine-start.is-visible { display: flex; }
+.ibz-cine-start.is-ready { cursor: pointer; }
+.ibz-cine-title {
+  margin: 0;
+  font-size: clamp(34px, 7vw, 72px);
+  letter-spacing: 0.18em;
+  color: #9be35a;
+  text-shadow: 0 0 24px rgba(155, 227, 90, 0.35);
+}
+.ibz-cine-start-hint {
+  font-size: 15px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  opacity: 0.55;
+}
+.ibz-cine-start.is-ready .ibz-cine-start-hint { opacity: 0.9; animation: ibz-cine-pulse 1.6s ease-in-out infinite; }
+@keyframes ibz-cine-pulse { 50% { opacity: 0.45; } }
+
+.ibz-cine-objective {
+  position: absolute;
+  top: 92px;
+  left: 50%;
+  transform: translate(-50%, -12px);
+  width: min(460px, calc(100vw - 32px));
+  box-sizing: border-box;
+  padding: 14px 20px 16px;
+  background: rgba(18, 23, 29, 0.92);
+  border: 2px solid #9be35a;
+  border-radius: 8px;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.6);
+  text-align: center;
+  opacity: 0;
+  transition: opacity 0.45s ease, transform 0.45s ease;
+}
+.ibz-cine-objective.is-visible { opacity: 1; transform: translate(-50%, 0); }
+.ibz-cine-objective-tag { font-size: 11px; letter-spacing: 0.22em; color: #9be35a; font-weight: 700; }
+.ibz-cine-objective-title { margin: 4px 0 6px; font-size: 26px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+.ibz-cine-objective-text { font-size: 15px; line-height: 1.4; color: #cfd8c8; }
+
+/* Gameplay HUD hidden during the cinematic (HUD.setCinematic). */
+.ibz-hud.is-cinematic > * { visibility: hidden !important; }
+
+@media (pointer: coarse) {
+  .ibz-cine-skip span { display: none; }
+}
+
+@media (max-width: 640px) {
+  .ibz-cine-skip { top: calc(9vh + 12px); bottom: auto; }
+  .ibz-cine-objective { top: 70px; }
+}
