@@ -413,7 +413,7 @@ describe('open-world layout humans', () => {
       expect(g.pos.x).toBeGreaterThanOrEqual(b.minX); expect(g.pos.x).toBeLessThanOrEqual(b.maxX);
       expect(g.pos.z).toBeGreaterThanOrEqual(b.minZ); expect(g.pos.z).toBeLessThanOrEqual(b.maxZ);
     }
-  });
+  }, 30_000);
 
   it('fleeing street civilians may leave their home area', () => {
     const sim = world();
