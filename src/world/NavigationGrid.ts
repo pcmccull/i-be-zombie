@@ -20,8 +20,8 @@ class CellHeap {
   }
 
   clear(): void {
+    for (let i = 0; i < this.size; i++) this.positions[this.ids[i]] = -1;
     this.size = 0;
-    this.positions.fill(-1);
   }
 
   put(id: number, priority: number): void {
@@ -73,6 +73,8 @@ export class NavigationGrid implements INavigationGrid {
   private readonly cost: Float64Array;
   private readonly parent: Int32Array;
   private readonly closed: Uint8Array;
+  private readonly searchCells: Int32Array;
+  private searchCount = 0;
   private readonly heap: CellHeap;
   private readonly flowCells: Int32Array;
   private readonly connections: Uint8Array;
@@ -81,6 +83,9 @@ export class NavigationGrid implements INavigationGrid {
   private readonly route: number[] = [];
   private readonly clearanceBox: AABB = { minX: 0, minZ: 0, maxX: 0, maxZ: 0 };
   private readonly clearanceCandidates: Collider[] = [];
+  private colliderRanges = new Int32Array(0);
+  private colliderActive = new Uint8Array(0);
+  private walkableCount = 0;
 
   constructor(
     private readonly collision: ICollisionWorld,
@@ -96,9 +101,10 @@ export class NavigationGrid implements INavigationGrid {
     this.rows = Math.ceil((bounds.maxZ - bounds.minZ) / cellSize);
     const size = this.cols * this.rows;
     this.walkable = new Uint8Array(size);
-    this.cost = new Float64Array(size);
+    this.cost = new Float64Array(size).fill(Infinity);
     this.parent = new Int32Array(size);
     this.closed = new Uint8Array(size);
+    this.searchCells = new Int32Array(size);
     this.heap = new CellHeap(size);
     this.flowCells = new Int32Array(size);
     this.connections = new Uint8Array(size);
@@ -111,40 +117,84 @@ export class NavigationGrid implements INavigationGrid {
     const b = this.collision.bounds;
     const s = this.cellSize;
     const r = this.agentRadius;
-    for (let z = 0; z < this.rows; z++) {
-      const worldZ = b.minZ + (z + 0.5) * s;
-      for (let x = 0; x < this.cols; x++) {
-        const worldX = b.minX + (x + 0.5) * s;
-        this.walkable[z * this.cols + x] = +(worldX >= b.minX + r && worldX <= b.maxX - r &&
-          worldZ >= b.minZ + r && worldZ <= b.maxZ - r);
-      }
+    const colliders = this.collision.colliders;
+    const full = this.version === 0 || this.colliderActive.length !== colliders.length;
+    if (full) {
+      this.colliderRanges = new Int32Array(colliders.length * 4);
+      this.colliderActive = new Uint8Array(colliders.length);
     }
-    // Rasterize collider rectangles directly, rather than query the world for every cell.
-    for (const c of this.collision.colliders) {
-      if (!c.enabled || !c.blocksMove || this.passable(c)) continue;
+    let left = full ? 0 : this.cols, right = full ? this.cols - 1 : -1;
+    let top = full ? 0 : this.rows, bottom = full ? this.rows - 1 : -1;
+    // Compare raster footprints, including passability, so toggles, overlapping doors,
+    // moved colliders and changes to a caller's passable predicate all remain exact.
+    for (let i = 0; i < colliders.length; i++) {
+      const c = colliders[i], offset = i * 4;
       const minX = Math.max(0, Math.ceil((c.minX - r - b.minX) / s - 0.5));
       const maxX = Math.min(this.cols - 1, Math.floor((c.maxX + r - b.minX) / s - 0.5));
       const minZ = Math.max(0, Math.ceil((c.minZ - r - b.minZ) / s - 0.5));
       const maxZ = Math.min(this.rows - 1, Math.floor((c.maxZ + r - b.minZ) / s - 0.5));
+      const active = +(c.enabled && c.blocksMove && !this.passable(c) && minX <= maxX && minZ <= maxZ);
+      const ranges = this.colliderRanges;
+      if (!full && (active !== this.colliderActive[i] || (active &&
+          (minX !== ranges[offset] || maxX !== ranges[offset + 1] ||
+           minZ !== ranges[offset + 2] || maxZ !== ranges[offset + 3])))) {
+        if (this.colliderActive[i]) {
+          left = Math.min(left, ranges[offset]); right = Math.max(right, ranges[offset + 1]);
+          top = Math.min(top, ranges[offset + 2]); bottom = Math.max(bottom, ranges[offset + 3]);
+        }
+        if (active) {
+          left = Math.min(left, minX); right = Math.max(right, maxX);
+          top = Math.min(top, minZ); bottom = Math.max(bottom, maxZ);
+        }
+      }
+      ranges[offset] = minX; ranges[offset + 1] = maxX;
+      ranges[offset + 2] = minZ; ranges[offset + 3] = maxZ;
+      this.colliderActive[i] = active;
+    }
+    // Restore only the changed rectangle, then reapply every overlapping footprint.
+    for (let z = top; z <= bottom; z++) {
+      const worldZ = b.minZ + (z + 0.5) * s;
+      for (let x = left; x <= right; x++) {
+        const worldX = b.minX + (x + 0.5) * s;
+        this.walkableCount -= this.walkable[z * this.cols + x];
+        this.walkable[z * this.cols + x] = +(worldX >= b.minX + r && worldX <= b.maxX - r &&
+          worldZ >= b.minZ + r && worldZ <= b.maxZ - r);
+        this.walkableCount += this.walkable[z * this.cols + x];
+      }
+    }
+    // Rasterize collider rectangles directly, rather than query the world for every cell.
+    for (let i = 0; i < colliders.length && left <= right; i++) {
+      if (!this.colliderActive[i]) continue;
+      const offset = i * 4, ranges = this.colliderRanges;
+      const minX = Math.max(left, ranges[offset]), maxX = Math.min(right, ranges[offset + 1]);
+      const minZ = Math.max(top, ranges[offset + 2]), maxZ = Math.min(bottom, ranges[offset + 3]);
       if (minX > maxX || minZ > maxZ) continue;
       for (let z = minZ; z <= maxZ; z++) {
-        this.walkable.fill(0, z * this.cols + minX, z * this.cols + maxX + 1);
+        for (let id = z * this.cols + minX, end = z * this.cols + maxX; id <= end; id++) {
+          this.walkableCount -= this.walkable[id];
+          this.walkable[id] = 0;
+        }
       }
     }
     // Connectivity changes only on a rebuild, not on every shared-field replan.
     // Cache the eight legal edges, including the no-corner-cutting rule.
-    this.connections.fill(0);
-    for (let z = 0; z < this.rows; z++) {
-      for (let x = 0; x < this.cols; x++) {
+    if (left <= right) for (let z = Math.max(0, top - 1); z <= Math.min(this.rows - 1, bottom + 1); z++) {
+      for (let x = Math.max(0, left - 1); x <= Math.min(this.cols - 1, right + 1); x++) {
         const id = z * this.cols + x;
-        if (!this.walkable[id]) continue;
+        if (!this.walkable[id]) { this.connections[id] = 0; continue; }
+        const w = x > 0 && this.walkable[id - 1] !== 0;
+        const e = x + 1 < this.cols && this.walkable[id + 1] !== 0;
+        const n = z > 0 && this.walkable[id - this.cols] !== 0;
+        const south = z + 1 < this.rows && this.walkable[id + this.cols] !== 0;
         let mask = 0;
-        for (let i = 0; i < 8; i++) {
-          const dx = STEP_X[i], dz = STEP_Z[i];
-          if (!this.open(x + dx, z + dz)) continue;
-          if (dx && dz && (!this.open(x + dx, z) || !this.open(x, z + dz))) continue;
-          mask |= 1 << i;
-        }
+        if (n) mask |= 2;
+        if (w) mask |= 8;
+        if (e) mask |= 16;
+        if (south) mask |= 64;
+        if (n && w && this.walkable[id - this.cols - 1]) mask |= 1;
+        if (n && e && this.walkable[id - this.cols + 1]) mask |= 4;
+        if (south && w && this.walkable[id + this.cols - 1]) mask |= 32;
+        if (south && e && this.walkable[id + this.cols + 1]) mask |= 128;
         this.connections[id] = mask;
       }
     }
@@ -292,6 +342,27 @@ export class NavigationGrid implements INavigationGrid {
     return (Math.max(dx, dz) + (Math.SQRT2 - 1) * Math.min(dx, dz)) * this.cellSize;
   }
 
+  private resetSearch(): void {
+    // Sparse searches clear only the cells they touched; near-full searches are cheaper as bulk fills.
+    if (this.searchCount > this.cost.length >> 2) {
+      this.cost.fill(Infinity);
+      this.closed.fill(0);
+    } else {
+      for (let i = 0; i < this.searchCount; i++) {
+        const id = this.searchCells[i];
+        this.cost[id] = Infinity;
+        this.closed[id] = 0;
+      }
+    }
+    this.searchCount = 0;
+    this.heap.clear();
+  }
+
+  private setCost(id: number, cost: number): void {
+    if (this.cost[id] === Infinity) this.searchCells[this.searchCount++] = id;
+    this.cost[id] = cost;
+  }
+
   findPath(from: Vec2, to: Vec2): Vec2[] | null {
     const startPoint = this.nearestWalkable(from);
     const endPoint = this.nearestWalkable(to);
@@ -299,35 +370,35 @@ export class NavigationGrid implements INavigationGrid {
     const goal = this.index(endPoint);
     if (start < 0 || goal < 0 || !this.walkable[start] || !this.walkable[goal]) return null;
     if (start === goal) return [endPoint];
-    this.cost.fill(Infinity);
-    this.closed.fill(0);
-    this.heap.clear();
-    this.cost[start] = 0;
+    this.resetSearch();
+    this.setCost(start, 0);
     this.parent[start] = -1;
     const gx = goal % this.cols;
     const gz = Math.floor(goal / this.cols);
     this.heap.put(start, this.heuristic(start % this.cols, Math.floor(start / this.cols), gx, gz));
-    while (this.heap.size > 0) {
+    // A consistent octile heuristic closes each walkable cell at most once.
+    // The exact budget preserves complete-search semantics, even for long detours.
+    let remaining = this.walkableCount;
+    let reached = false;
+    while (this.heap.size > 0 && remaining-- > 0) {
       const id = this.heap.pop();
-      if (id === goal) break;
+      if (id === goal) { reached = true; break; }
       this.closed[id] = 1;
       const x = id % this.cols;
       const z = Math.floor(id / this.cols);
-      for (let dz = -1; dz <= 1; dz++) {
-        for (let dx = -1; dx <= 1; dx++) {
-          if ((dx === 0 && dz === 0) || !this.open(x + dx, z + dz)) continue;
-          if (dx !== 0 && dz !== 0 && (!this.open(x + dx, z) || !this.open(x, z + dz))) continue;
-          const neighbor = (z + dz) * this.cols + x + dx;
-          if (this.closed[neighbor]) continue;
-          const cost = this.cost[id] + (dx !== 0 && dz !== 0 ? Math.SQRT2 : 1) * this.cellSize;
-          if (cost >= this.cost[neighbor]) continue;
-          this.cost[neighbor] = cost;
-          this.parent[neighbor] = id;
-          this.heap.put(neighbor, cost + this.heuristic(x + dx, z + dz, gx, gz));
-        }
+      const mask = this.connections[id];
+      for (let i = 0; i < 8; i++) {
+        if (!(mask & (1 << i))) continue;
+        const neighbor = id + this.neighborOffsets[i];
+        if (this.closed[neighbor]) continue;
+        const cost = this.cost[id] + this.stepCosts[i];
+        if (cost >= this.cost[neighbor]) continue;
+        this.setCost(neighbor, cost);
+        this.parent[neighbor] = id;
+        this.heap.put(neighbor, cost + this.heuristic(x + STEP_X[i], z + STEP_Z[i], gx, gz));
       }
     }
-    if (!Number.isFinite(this.cost[goal])) return null;
+    if (!reached) return null;
     this.route.length = 0;
     for (let id = goal; id !== start; id = this.parent[id]) this.route.push(id);
     const points: Vec2[] = [startPoint];
@@ -358,12 +429,10 @@ export class NavigationGrid implements INavigationGrid {
       if (this.isWalkable(point)) snapped.push(point);
     }
     field.reset(snapped, this.version, this.walkable);
-    this.cost.fill(Infinity);
-    this.closed.fill(0);
-    this.heap.clear();
+    this.resetSearch();
     for (let g = 0; g < snapped.length; g++) {
       const id = this.index(snapped[g]);
-      this.cost[id] = 0;
+      this.setCost(id, 0);
       field.goalIndex[id] = g;
       this.heap.put(id, 0);
     }
@@ -382,7 +451,7 @@ export class NavigationGrid implements INavigationGrid {
         const cost = current + this.stepCosts[i];
         // Do not enqueue or expose a fringe beyond the requested path cost.
         if (cost > maxDistance || cost >= this.cost[neighbor]) continue;
-        this.cost[neighbor] = cost;
+        this.setCost(neighbor, cost);
         this.heap.put(neighbor, cost);
       }
     }
@@ -400,6 +469,9 @@ export class FlowField implements IFlowField {
   readonly directionZ: Float32Array;
   readonly goalIndex: Int32Array;
   private readonly walkable: Uint8Array;
+  private sourceWalkable?: Uint8Array;
+  private readonly touched: Int32Array;
+  private touchedCount = 0;
   private readonly neighborCenter: Vec2 = { x: 0, z: 0 };
   private readonly moveAccess: SegmentOptions = { mode: 'move' };
 
@@ -419,6 +491,7 @@ export class FlowField implements IFlowField {
     this.directionZ = new Float32Array(size);
     this.goalIndex = new Int32Array(size).fill(-1);
     this.walkable = new Uint8Array(size);
+    this.touched = new Int32Array(size);
   }
 
   matches(cols: number, rows: number, size: number, x: number, z: number, maxX: number, maxZ: number, collision?: ICollisionWorld): boolean {
@@ -427,13 +500,27 @@ export class FlowField implements IFlowField {
   }
 
   reset(goals: readonly Vec2[], version: number, walkable: Uint8Array): void {
+    if (this.sourceWalkable !== walkable || this.navVersion !== version) {
+      this.walkable.set(walkable);
+      this.sourceWalkable = walkable;
+    }
     this.goals = goals;
     this.navVersion = version;
-    this.walkable.set(walkable);
-    this.distance.fill(Infinity);
-    this.directionX.fill(0);
-    this.directionZ.fill(0);
-    this.goalIndex.fill(-1);
+    if (this.touchedCount > this.distance.length >> 2) {
+      this.distance.fill(Infinity);
+      this.directionX.fill(0);
+      this.directionZ.fill(0);
+      this.goalIndex.fill(-1);
+    } else {
+      for (let i = 0; i < this.touchedCount; i++) {
+        const id = this.touched[i];
+        this.distance[id] = Infinity;
+        this.directionX[id] = 0;
+        this.directionZ[id] = 0;
+        this.goalIndex[id] = -1;
+      }
+    }
+    this.touchedCount = 0;
   }
 
   buildDirections(cells?: Int32Array, count: number = cells?.length ?? this.distance.length,
@@ -442,6 +529,7 @@ export class FlowField implements IFlowField {
     for (let i = 0; i < count; i++) {
       const id = cells ? cells[i] : i;
       if (!Number.isFinite(this.distance[id])) continue;
+      this.touched[this.touchedCount++] = id;
       const goal = this.goalIndex[id];
       let vx = 0;
       let vz = 0;

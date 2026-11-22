@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { BALANCE } from '../config/balance';
 import type { DistrictLayout, EntityId, GameEvent, GameState, StrongholdId, Vec2, Vec3 } from '../core/types';
+import { asGroundDecal, DECAL_STEP, DECAL_Y } from '../world/groundLevels';
 
 const MAX_TRACERS = 64;
 const MAX_MUZZLES = 32;
@@ -211,6 +212,8 @@ export class Effects {
     this.scene = scene;
     this.rootGroup = new THREE.Group();
     this.rootGroup.name = 'EffectsRoot';
+    // Tracers, muzzle flashes, rings and markers stay readable at any distance (EW vision haze).
+    this.rootGroup.userData.noVisionHaze = true;
     this.scene.add(this.rootGroup);
 
     // 1. Tracers InstancedMesh (unit box along +Z from 0..1)
@@ -310,6 +313,7 @@ export class Effects {
       depthWrite: false,
       side: THREE.DoubleSide,
     });
+    asGroundDecal(this.ringMat);
     this.ringMesh = new THREE.InstancedMesh(this.ringGeo, this.ringMat, MAX_RINGS * 2);
     this.ringMesh.frustumCulled = false;
     this.ringMesh.count = 0;
@@ -446,8 +450,9 @@ export class Effects {
     this.auraInner = new THREE.Mesh(this.auraGeo, this.auraMat);
     this.auraOuter.visible = false;
     this.auraInner.visible = false;
-    this.auraOuter.position.y = 0.07;
-    this.auraInner.position.y = 0.075;
+    asGroundDecal(this.auraMat);
+    this.auraOuter.position.y = DECAL_Y;
+    this.auraInner.position.y = DECAL_Y + DECAL_STEP;
     this.rootGroup.add(this.auraOuter, this.auraInner);
 
     // 6e. Move-order marker: cyan ring + inner dot ring + bobbing arrow
@@ -467,10 +472,11 @@ export class Effects {
       depthWrite: false,
       side: THREE.DoubleSide,
     });
+    asGroundDecal(this.moveMat);
     this.moveRing = new THREE.Mesh(this.moveRingGeo, this.moveMat);
-    this.moveRing.position.y = 0.06;
+    this.moveRing.position.y = DECAL_Y;
     const moveDot = new THREE.Mesh(this.moveDotGeo, this.moveMat);
-    moveDot.position.y = 0.065;
+    moveDot.position.y = DECAL_Y + DECAL_STEP;
     this.moveArrow = new THREE.Mesh(this.moveArrowGeo, this.moveMat);
     this.moveArrow.position.y = 1.3;
     this.moveGroup.add(this.moveRing, moveDot, this.moveArrow);
@@ -493,10 +499,11 @@ export class Effects {
       side: THREE.DoubleSide,
     });
 
+    asGroundDecal(this.orderMat);
     this.orderOuterRing = new THREE.Mesh(this.orderRingGeo, this.orderMat);
-    this.orderOuterRing.position.y = 0.05;
+    this.orderOuterRing.position.y = DECAL_Y;
     this.orderInnerRing = new THREE.Mesh(this.orderInnerGeo, this.orderMat);
-    this.orderInnerRing.position.y = 0.055;
+    this.orderInnerRing.position.y = DECAL_Y + DECAL_STEP;
 
     this.orderChevron = new THREE.Group();
     this.orderChevron.position.y = 2.6;
@@ -516,33 +523,25 @@ export class Effects {
         case 'shot': {
           this.spawnTracer(ev.from, ev.to);
           this.spawnMuzzle(ev.from);
-          if (ev.hit) {
-            this.spawnBurst(ev.to.x, ev.to.y, ev.to.z, 5, 0xffaa33, 3.2, 0.1, 0.22);
-          }
-          break;
-        }
-        case 'melee': {
-          this.spawnBurst(ev.pos.x, 1.0, ev.pos.z, 5, 0xc4b89b, 2.8, 0.11, 0.28);
           break;
         }
         case 'damage': {
-          if (ev.target.kind === 'leader') {
-            this.spawnBurst(ev.pos.x, 1.1, ev.pos.z, 9, 0xe83b2c, 4.2, 0.14, 0.35);
-            this.requestShake(0.18);
-          } else if (ev.target.kind === 'gate') {
-            this.spawnBurst(ev.pos.x, 1.4, ev.pos.z, 6, 0xff9933, 3.8, 0.12, 0.3);
-          } else if (
-            ev.target.kind === 'structure' &&
-            !events.some((e) => e.type === 'structureDamaged')
-          ) {
-            this.spawnBurst(ev.pos.x, 1.35, ev.pos.z, 6, 0xff9933, 3.8, 0.12, 0.3);
+          if (ev.target.kind === 'leader') this.requestShake(0.18);
+          break;
+        }
+        case 'sharedDamage': {
+          this.requestShake(Math.max(0.12, Math.min(0.45, ev.incoming / 45)));
+          break;
+        }
+        case 'lastBrainEnd': {
+          if (ev.outcome === 'recovered') {
+            this.spawnRing(ev.pos.x, 0.09, ev.pos.z, 0.5, 4.5, 0.6, 0x5effb8, 0.25, true, 1.0);
           }
           break;
         }
         case 'recruited': {
           const gen = ev.generation ?? 0;
           const col = gen >= 2 ? 0xffe84a : gen >= 1 ? 0x5effb8 : 0xbfff47;
-          this.spawnBurst(ev.pos.x, 0.9, ev.pos.z, 8, col, 3.5, 0.12, 0.48, -2.0);
           this.spawnRing(ev.pos.x, 0.1, ev.pos.z, 0.35, 1.65, 0.45, col, 1.6);
           break;
         }
@@ -570,27 +569,13 @@ export class Effects {
           );
           break;
         }
-        case 'structureDamaged': {
-          this.spawnBurst(ev.pos.x, 1.35, ev.pos.z, 6, 0xff9933, 3.8, 0.12, 0.3);
-          break;
-        }
         case 'structureDestroyed': {
-          const col =
-            ev.kind === 'storeDoor'
-              ? 0x88ccff
-              : ev.kind === 'busDoor'
-                ? 0xe59824
-                : 0xc9b99a;
-          this.spawnBurst(ev.pos.x, 1.3, ev.pos.z, 24, col, 6.5, 0.2, 0.65);
-          this.spawnBurst(ev.pos.x, 0.9, ev.pos.z, 16, 0x8a8478, 5.0, 0.18, 0.6);
           this.spawnRing(ev.pos.x, 0.08, ev.pos.z, 0.5, 5.5, 0.5, 0xffb347, 0.1, true, 0.9);
           this.requestShake(0.32);
           break;
         }
         case 'released': {
           if ((ev.count ?? 0) > 0) {
-            this.spawnBurst(ev.pos.x, 0.85, ev.pos.z, 18, 0xc2b8a3, 4.2, 0.22, 0.65, 2.2);
-            this.spawnBurst(ev.pos.x, 0.45, ev.pos.z, 12, 0x948c7c, 3.4, 0.18, 0.55, 1.6);
             this.spawnRing(ev.pos.x, 0.07, ev.pos.z, 0.45, 4.2, 0.48, 0xc9b99a, 0.08, false, 0.8);
             this.requestShake(0.22);
           }
@@ -604,30 +589,46 @@ export class Effects {
         case 'rushStart': {
           const lp = state.leader.pos;
           this.spawnRing(lp.x, 0.08, lp.z, 0.5, 9.0, 0.55, 0xff451c, 0.2);
-          this.spawnBurst(lp.x, 1.0, lp.z, 14, 0xff5a24, 5.5, 0.16, 0.45);
           this.requestShake(0.24);
           break;
         }
         case 'gateDestroyed': {
-          this.spawnBurst(ev.pos.x, 1.4, ev.pos.z, 36, 0xe0782a, 8.5, 0.24, 0.75);
-          this.spawnBurst(ev.pos.x, 1.0, ev.pos.z, 28, 0xa9a294, 6.5, 0.28, 0.85);
           this.spawnRing(ev.pos.x, 0.1, ev.pos.z, 0.8, 11.0, 0.65, 0xffaa44, 0.1);
           this.requestShake(0.6);
           break;
         }
-        case 'zombieDied': {
-          this.spawnBurst(ev.pos.x, 0.7, ev.pos.z, 8, 0x7d8a74, 2.8, 0.15, 0.45);
+        // todos #10b/#12: car impacts, bat swings, shop break-ins and drinks
+        case 'vehicleHit': {
+          this.requestShake(ev.target === 'leader' ? 0.45 : 0.12);
           break;
         }
-        case 'guardDied': {
-          let gy = 0.8;
-          for (let gIdx = 0; gIdx < state.guards.length; gIdx++) {
-            if (state.guards[gIdx].id === ev.guardId) {
-              gy = state.guards[gIdx].elevation + 0.8;
-              break;
-            }
-          }
-          this.spawnBurst(ev.pos.x, gy, ev.pos.z, 10, 0xb5ac99, 3.2, 0.16, 0.48);
+        case 'vehicleCrash': {
+          this.requestShake(Math.min(0.5, 0.15 + ev.speed / 40));
+          break;
+        }
+        case 'shellBlast': {
+          this.spawnRing(ev.pos.x, 0.1, ev.pos.z, 0.6, ev.radius * 1.6, 0.5, 0xffa040, 0.15);
+          // Felt more the closer it lands to the Alpha.
+          const d = state ? Math.hypot(state.leader.pos.x - ev.pos.x, state.leader.pos.z - ev.pos.z) : 0;
+          this.requestShake(Math.max(0.1, 0.55 - d / 60));
+          break;
+        }
+        case 'driverBailed': {
+          // Glass, dust and dazed stars come from VFXManager; this is the jolt of the door being torn open.
+          if (ev.pulled) this.requestShake(0.14);
+          break;
+        }
+        case 'vehicleRam': {
+          this.spawnRing(ev.pos.x, 0.1, ev.pos.z, 0.8, 4.5, 0.5, 0xff4433, 0.1);
+          break;
+        }
+        case 'shopLooted': {
+          this.spawnBurst(ev.pos.x, 1.2, ev.pos.z, 16, 0x7ff3ff, 5.0, 0.14, 0.6);
+          break;
+        }
+        case 'pickup': {
+          this.spawnRing(ev.pos.x, 0.08, ev.pos.z, 0.3, 2.2, 0.5, 0x7ff3ff, 0.4);
+          this.spawnBurst(ev.pos.x, 0.6, ev.pos.z, 14, 0x9be35a, 3.0, 0.12, 0.6, 2);
           break;
         }
         case 'conversionStart': {
@@ -635,7 +636,6 @@ export class Effects {
           break;
         }
         case 'converted': {
-          this.spawnBurst(ev.pos.x, 1.0, ev.pos.z, 16, 0x8ff542, 4.8, 0.16, 0.6, -1.5);
           this.spawnRing(ev.pos.x, 0.08, ev.pos.z, 0.4, 3.2, 0.55, 0x8ff542, 1.2);
           break;
         }
@@ -645,7 +645,6 @@ export class Effects {
           if (ev.combo <= 0) {
             // Bite: small bright jaw flash in front of the Alpha
             this.spawnArc(ev.pos.x + fx * 1.0, 1.15, ev.pos.z + fz * 1.0, ev.facing, 0.0, 0.5, ev.hit ? 0xffffff : 0x9aa090, 0.16);
-            if (ev.hit) this.spawnBurst(ev.pos.x + fx * 1.2, 1.1, ev.pos.z + fz * 1.2, 5, 0xf2f0e0, 3.0, 0.1, 0.25);
           } else {
             const finisher = ev.combo >= 3;
             const tilt = finisher ? Math.PI / 2 : ev.combo === 1 ? -0.6 : 0.6;
@@ -657,7 +656,6 @@ export class Effects {
               finisher ? 1.7 : 1.35, this.tempColor.getHex(), finisher ? 0.3 : 0.22,
             );
             if (ev.hit) {
-              this.spawnBurst(ev.pos.x + fx * 1.6, 1.1, ev.pos.z + fz * 1.6, finisher ? 10 : 6, col, 3.6, 0.1, 0.3);
               if (finisher) this.requestShake(0.2);
             }
           }
@@ -666,7 +664,6 @@ export class Effects {
         case 'frenzyStart': {
           this.spawnRing(ev.pos.x, 0.08, ev.pos.z, 0.8, ev.radius, 0.7, 0xff2a1a, 0.1, true, 1.0);
           this.spawnRing(ev.pos.x, 0.12, ev.pos.z, 0.5, ev.radius * 0.6, 0.55, 0xff7a3a, 0.2);
-          this.spawnBurst(ev.pos.x, 1.0, ev.pos.z, 18, 0xff3a22, 6.0, 0.16, 0.55, 3.0);
           this.spawnPillar(ev.pos.x, ev.pos.z, 1.4, 6.0, 0.8, 0xff2a1a);
           this.auraTimer = 0;
           this.requestShake(0.26);
@@ -694,8 +691,6 @@ export class Effects {
           this.spawnRing(cx, 0.1, cz, 1.0, 16, 1.0, 0x5eff7a, 0.2, true, 1.0);
           this.spawnRing(cx, 0.4, cz, 1.0, 11, 1.2, 0xb8ff8a, 2.5);
           this.spawnRing(cx, 0.8, cz, 1.0, 8, 1.4, 0xe6ffd0, 5.0);
-          this.spawnBurst(cx, 1.0, cz, 40, 0x7dff6a, 9.0, 0.22, 1.1, -1.5);
-          this.spawnBurst(cx, 2.0, cz, 24, 0xe6ffd0, 6.0, 0.18, 1.0, -0.5);
           this.requestShake(0.4);
           break;
         }
@@ -1028,8 +1023,8 @@ export class Effects {
     const pulse = 0.5 + 0.5 * Math.sin(this.time * 9.0);
     this.auraOuter.visible = true;
     this.auraInner.visible = true;
-    this.auraOuter.position.set(x, 0.07, z);
-    this.auraInner.position.set(x, 0.075, z);
+    this.auraOuter.position.set(x, DECAL_Y, z);
+    this.auraInner.position.set(x, DECAL_Y + DECAL_STEP, z);
     this.auraOuter.scale.setScalar((2.0 + 0.5 * pulse) * (0.4 + 0.6 * fade));
     this.auraInner.scale.setScalar(1.3 + 0.25 * (1 - pulse));
     this.auraMat.opacity = 0.35 + 0.35 * pulse * fade;
@@ -1039,6 +1034,14 @@ export class Effects {
       this.auraTimer = 1.1;
       this.spawnRing(x, 0.08, z, 1.5, Math.min(BALANCE.frenzy.radius, 12), 0.8, 0xff2a1a, 0.0, false, 0.7);
     }
+  }
+
+  /** EW vision limit: world-anchored order markers past `limit` (XZ from the Alpha) are not drawn. Infinity = off. */
+  private markerCullX = 0;
+  private markerCullZ = 0;
+  private markerCullLimit = Infinity;
+  setMarkerCull(x: number, z: number, limit: number): void {
+    this.markerCullX = x; this.markerCullZ = z; this.markerCullLimit = limit;
   }
 
   private updateMoveMarker(dt: number, state: GameState | undefined): void {
@@ -1052,7 +1055,8 @@ export class Effects {
     } else {
       this.moveAlpha = Math.max(0, this.moveAlpha - dt * 3.5);
     }
-    if (this.moveAlpha <= 0.001) {
+    const mdx = this.moveGroup.position.x - this.markerCullX, mdz = this.moveGroup.position.z - this.markerCullZ;
+    if (this.moveAlpha <= 0.001 || mdx * mdx + mdz * mdz >= this.markerCullLimit * this.markerCullLimit) {
       this.moveGroup.visible = false;
       return;
     }
@@ -1253,7 +1257,7 @@ export class Effects {
     slot.age = 0;
     slot.duration = duration;
     slot.x = x;
-    slot.y = y;
+    slot.y = Math.max(y, DECAL_Y); // never below the top flat ground layer (z-fight)
     slot.z = z;
     slot.startRadius = startRadius;
     slot.endRadius = endRadius;

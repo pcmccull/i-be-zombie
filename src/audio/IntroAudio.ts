@@ -3,6 +3,18 @@
 // energetic gameplay loop. Every failure path is silent: the cinematic never waits on or breaks from audio.
 // The scheduler is driven from the game's single frame loop (update()), never its own timer.
 import narrationUrl from '../../assets/voiceover/intro2.mp3';
+import musicUrl from '../../assets/background/music1.mp3';
+import windUrl from '../../assets/background/background_wind.mp3';
+
+/** Looping gameplay bed (assets/background): track + level. Played via <audio>, routed through Web Audio for mute/fades. */
+interface BedTrack {
+  url: string;
+  level: number;
+  el: HTMLAudioElement | null;
+  gain: GainNode | null;
+  failed: boolean;
+}
+const BED_FADE_IN = 2.5;
 
 type MusicMode = 'off' | 'theme' | 'gameplay';
 
@@ -33,9 +45,14 @@ export class IntroAudio {
   private buildEnd = 1;
   private crickets: number[] = [];
   private noise: AudioBuffer | null = null;
+  private readonly music: BedTrack = { url: musicUrl, level: 0.38, el: null, gain: null, failed: false };
+  private readonly wind: BedTrack = { url: windUrl, level: 0.22, el: null, gain: null, failed: false };
+  private bedOn = false;
 
   /** Starts preloading the narration (safe to call before any user gesture). */
   preload(): void {
+    this.preloadBed(this.music);
+    this.preloadBed(this.wind);
     if (this.narration || this.narrationFailed || typeof Audio === 'undefined') return;
     try {
       const a = new Audio();
@@ -76,6 +93,10 @@ export class IntroAudio {
     const data = this.noise.getChannelData(0);
     let s = 7;
     for (let i = 0; i < len; i++) { s = (s * 16807) % 2147483647; data[i] = (s / 2147483647) * 2 - 1; }
+    this.attachBed(this.music);
+    this.attachBed(this.wind);
+    // Gameplay was requested before audio was unlocked: bring the bed in now.
+    if (this.bedOn) this.safe(() => this.startBed());
   }
 
   setMuted(m: boolean): void {
@@ -141,14 +162,23 @@ export class IntroAudio {
     for (const at of [1.1, 1.45, 2.6, 2.95, 4.0]) this.crickets.push(t + at);
   }
 
-  /** Energetic gameplay loop (fades in). */
-  startGameplay(): void { this.safe(() => this.setMode('gameplay', 0.42, 1.2)); }
+  /** Gameplay music: the looping music1 track + wind ambience; synthesized loop only if the track can't play. */
+  startGameplay(): void {
+    this.safe(() => {
+      this.bedOn = true;
+      if (this.music.failed) this.setMode('gameplay', 0.42, 1.2);
+      this.startBed();
+    });
+  }
 
   /** Silence all music immediately (skip, replay restore, dispose). */
   stopMusic(): void {
     this.mode = 'off';
     this.building = false;
     this.crickets.length = 0;
+    this.bedOn = false;
+    this.stopBed(this.music);
+    this.stopBed(this.wind);
     this.safe(() => {
       if (!this.ctx || !this.musicGain) return;
       const g = this.musicGain.gain;
@@ -181,8 +211,78 @@ export class IntroAudio {
     this.stopMusic();
     this.stopNarration();
     try { this.musicGain?.disconnect(); } catch { /* ignore */ }
+    for (const b of [this.music, this.wind]) {
+      try { b.gain?.disconnect(); } catch { /* ignore */ }
+      if (b.el) { b.el.removeAttribute('src'); try { b.el.load(); } catch { /* ignore */ } }
+      b.el = null;
+      b.gain = null;
+    }
     if (this.narration) { this.narration.removeAttribute('src'); try { this.narration.load(); } catch { /* ignore */ } }
     this.narration = null;
+  }
+
+  // --- gameplay bed (assets/background) ---------------------------------------------------------
+
+  private preloadBed(b: BedTrack): void {
+    if (b.el || b.failed || typeof Audio === 'undefined') return;
+    try {
+      const a = new Audio();
+      a.preload = 'auto';
+      a.loop = true;
+      a.src = b.url;
+      a.addEventListener('error', () => this.bedFailed(b), { once: true });
+      a.load();
+      b.el = a;
+      this.attachBed(b);
+    } catch {
+      b.failed = true;
+    }
+  }
+
+  /** Routes the element through the shared graph (mute = master gain). Without a context it stays unplayed. */
+  private attachBed(b: BedTrack): void {
+    const ctx = this.ctx;
+    if (!ctx || !this.out || !b.el || b.gain) return;
+    try {
+      const src = ctx.createMediaElementSource(b.el);
+      b.gain = ctx.createGain();
+      b.gain.gain.value = 0;
+      src.connect(b.gain).connect(this.out);
+    } catch {
+      b.failed = true;
+    }
+  }
+
+  private bedFailed(b: BedTrack): void {
+    b.failed = true;
+    // Music track unavailable during gameplay: fall back to the synthesized loop.
+    if (b === this.music && this.bedOn && this.mode === 'off') this.safe(() => this.setMode('gameplay', 0.42, 1.2));
+  }
+
+  private startBed(): void {
+    const ctx = this.ctx;
+    if (!ctx) return; // bind() retries once audio is unlocked
+    for (const b of [this.music, this.wind]) {
+      if (b.failed || !b.el || !b.gain) continue;
+      const g = b.gain.gain;
+      g.cancelScheduledValues(ctx.currentTime);
+      g.setValueAtTime(Math.max(0.0001, g.value), ctx.currentTime);
+      g.setTargetAtTime(b.level, ctx.currentTime, BED_FADE_IN / 3);
+      if (b.el.paused) {
+        const p = b.el.play();
+        if (p && typeof p.catch === 'function') p.catch(() => { /* autoplay: retried on the next startGameplay */ });
+      }
+    }
+  }
+
+  private stopBed(b: BedTrack): void {
+    try {
+      if (this.ctx && b.gain) {
+        b.gain.gain.cancelScheduledValues(this.ctx.currentTime);
+        b.gain.gain.setValueAtTime(0, this.ctx.currentTime);
+      }
+      if (b.el) { b.el.pause(); b.el.currentTime = 0; }
+    } catch { /* ignore */ }
   }
 
   // --- internals -----------------------------------------------------------------------------

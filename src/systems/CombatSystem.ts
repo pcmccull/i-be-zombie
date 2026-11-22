@@ -1,14 +1,19 @@
 import { BALANCE } from '../config/balance';
 import type { SegmentOptions, SimContext } from '../core/contracts';
-import type { DamageSource, GuardAgent, LeaderState, SimInput, StructureState, TargetRef, Vec2, ZombieAgent } from '../core/types';
+import type { AlphaDamageSource, DamageSource, GuardAgent, LeaderState, SimInput, StructureState, TargetRef, Vec2, ZombieAgent } from '../core/types';
 import { guidanceFor, killZombie } from './HordeSystem';
+import { applyAlphaDamage, finishLastBrain, isHordeShielded, isLastBrain } from './HordeHealthSystem';
 import { damageStructure, findStructure } from './StructureSystem';
 import { addMomentum } from './MomentumSystem';
-import { addBiomass, hordeAttackRateMultiplier } from './ProgressionSystem';
+import { addBiomass, hordeAttackRateMultiplier, traitAttackRateMultiplier } from './ProgressionSystem';
+import { damageVehicle, findVehicle, isVehicleTargetable, vehicleOverlap } from './TrafficSystem';
+import type { VehicleAgent } from '../core/types';
+import { halfLength, halfWidth } from './vehicleModels';
 
 const guardAccess = new WeakMap<GuardAgent, SegmentOptions>();
 const guardTargets = new WeakMap<GuardAgent, TargetRef>();
 const structureTargets = new WeakMap<StructureState, TargetRef>();
+const vehicleTargets = new WeakMap<VehicleAgent, TargetRef>();
 const gateTarget: TargetRef = { kind: 'gate' };
 const moveOptions: SegmentOptions = { mode: 'move' };
 
@@ -29,6 +34,12 @@ function structureTarget(s: StructureState): TargetRef {
   return target;
 }
 
+function vehicleTarget(v: VehicleAgent): TargetRef {
+  let target = vehicleTargets.get(v);
+  if (!target) { target = { kind: 'vehicle', id: v.id }; vehicleTargets.set(v, target); }
+  return target;
+}
+
 export function resolveTargetPos(ctx: SimContext, target: TargetRef, out: Vec2): boolean {
   const s = ctx.state;
   let pos: Vec2;
@@ -39,7 +50,7 @@ export function resolveTargetPos(ctx: SimContext, target: TargetRef, out: Vec2):
       pos = structure.center; break;
     }
     case 'leader':
-      if (!s.leader.alive || s.leader.hp <= 0) return false;
+      if (!s.leader.alive) return false;
       pos = s.leader.pos; break;
     case 'gate':
       if (s.gate.destroyed || s.gate.hp <= 0) return false;
@@ -53,6 +64,11 @@ export function resolveTargetPos(ctx: SimContext, target: TargetRef, out: Vec2):
       const z = s.zombies.find(z => z.id === target.id);
       if (!z || z.dormant || z.state === 'dead' || z.hp <= 0) return false;
       pos = z.pos; break;
+    }
+    case 'vehicle': {
+      const v = findVehicle(s, target.id);
+      if (!isVehicleTargetable(v)) return false;
+      pos = v.pos; break;
     }
   }
   out.x = pos.x; out.z = pos.z;
@@ -72,21 +88,29 @@ export function damageZombie(ctx: SimContext, z: ZombieAgent, amount: number): v
   if (z.hp <= 0) killZombie(ctx, z);
 }
 
-export function damageLeader(ctx: SimContext, amount: number): void {
+/** HH: Alpha damage is poured into the horde (followers + core) by HordeHealthSystem; the Alpha has no HP of its own. */
+export function damageLeader(ctx: SimContext, amount: number, source: AlphaDamageSource = 'bullet'): void {
   const l = ctx.state.leader;
-  if (!l.alive || ctx.state.phase !== 'playing' || amount <= 0) return;
-  l.hp -= amount; l.hitFlash = 0.2;
+  if (!l.alive || ctx.state.phase !== 'playing' || !(amount > 0)) return;
+  l.hitFlash = 0.2; // still flashes while shielded (ARCHITECTURE §HH-0)
+  if (isHordeShielded(ctx.state)) return;
   if (amount >= BALANCE.alpha.hitStunDamage) {
     l.hitStun = BALANCE.alpha.hitStunTime;
     l.attackPhase = 'ready'; l.attackTimer = 0; l.comboStep = 0; l.comboWindow = 0;
     l.vel.x = l.vel.z = 0; l.sprinting = false; l.anim = 'hit'; l.animTime = 0;
   }
   ctx.emit({ type: 'damage', target: { kind: 'leader' }, amount, pos: { ...l.pos } });
-  if (l.hp <= 0) {
-    l.hp = 0; l.alive = false; l.vel.x = l.vel.z = 0; l.sprinting = false;
-    l.anim = 'dead'; l.animTime = 0;
-    ctx.emit({ type: 'leaderDied', pos: { ...l.pos } });
-  }
+  if (isLastBrain(ctx.state)) { finishLastBrain(ctx); return; }
+  applyAlphaDamage(ctx, amount, source);
+}
+
+/** The single Alpha death path (Last Brain expiry / finishing hit after HH-T003). */
+export function killLeader(ctx: SimContext): void {
+  const l = ctx.state.leader;
+  if (!l.alive) return;
+  l.alive = false; l.vel.x = l.vel.z = 0; l.sprinting = false;
+  l.anim = 'dead'; l.animTime = 0;
+  ctx.emit({ type: 'leaderDied', pos: { ...l.pos } });
 }
 
 export function damageGuard(ctx: SimContext, g: GuardAgent, amount: number, source: DamageSource, byAlpha = false): void {
@@ -106,14 +130,25 @@ export function damageGuard(ctx: SimContext, g: GuardAgent, amount: number, sour
     ctx.emit({ type: 'guardDied', guardId: g.id, pos: { ...g.pos }, source, role: g.role });
     if (source === 'zombie' && g.role !== 'civilian') {
       addMomentum(ctx, 'armedKill');
-      addBiomass(ctx, BALANCE.progression.biomassKill, 'kill');
-    } else if (g.killedByAlpha) addBiomass(ctx, BALANCE.progression.biomassInfect, 'infect');
+      addBiomass(ctx, BALANCE.progression.biomassKill, 'kill', g.pos);
+    } else if (g.killedByAlpha) addBiomass(ctx, BALANCE.progression.biomassInfect, 'infect', g.pos);
     if (source === 'zombie') ctx.state.pendingConversions.push({
-      guardId: g.id, pos: { ...g.pos }, facing: g.facing,
+      guardId: g.id, pos: g.heavy === 'tank' ? crewExit(ctx, g) : { ...g.pos }, facing: g.facing,
       resolveAt: ctx.state.time + BALANCE.conversion.delay,
       willConvert: ctx.rng.next() < (g.killedByAlpha ? BALANCE.alpha.infectChance : BALANCE.conversion.chance),
     });
   }
+}
+
+/** A knocked-out tank's crew climbs out beside the hull (its collider stays as the wreck). */
+function crewExit(ctx: SimContext, g: GuardAgent): Vec2 {
+  const hull = g.towerColliderId === null ? undefined : ctx.collision.colliders[g.towerColliderId];
+  if (!hull) return { ...g.pos };
+  const cx = (hull.minX + hull.maxX) / 2, cz = (hull.minZ + hull.maxZ) / 2;
+  for (const p of [{ x: hull.maxX + 0.9, z: cz }, { x: hull.minX - 0.9, z: cz }, { x: cx, z: hull.maxZ + 0.9 }, { x: cx, z: hull.minZ - 0.9 }]) {
+    if (!ctx.collision.isBlocked(p, BALANCE.walker.radius)) return p;
+  }
+  return { ...g.pos };
 }
 
 export function damageGate(ctx: SimContext, amount: number): void {
@@ -162,6 +197,11 @@ export function canMelee(ctx: SimContext, attackerPos: Vec2, attackRange: number
     return !ctx.collision.segmentBlocked(attackerPos, targetPos,
       target.kind === 'gate' ? gateOptions(ctx) : structureOptions(gate as StructureState));
   }
+  if (target.kind === 'vehicle') {
+    // Measured to the car's footprint (a moving box), at ground level: climbers on a tower can't reach it.
+    const v = findVehicle(ctx.state, target.id);
+    return isVehicleTargetable(v) && attackerElevation < 1.2 && vehicleOverlap(v, attackerPos, attackRange + 0.1);
+  }
   return false;
 }
 
@@ -197,6 +237,15 @@ export function aimLeaderAttack(ctx: SimContext, aimPoint: Vec2 | null): void {
     choice.target = ref; choice.distance = d;
   };
   for (const g of ctx.state.guards) consider(guardTarget(g), g.pos.x, g.pos.z);
+  for (const v of ctx.state.vehicles) {
+    if (!isVehicleTargetable(v)) continue;
+    // Aim at the nearest point of the car's footprint, not its center (a car is 4.4 m long).
+    const fx = Math.sin(v.facing), fz = Math.cos(v.facing);
+    const dx = l.pos.x - v.pos.x, dz = l.pos.z - v.pos.z;
+    const hl = halfLength(v), hw = halfWidth(v);
+    const lf = Math.max(-hl, Math.min(hl, dx * fx + dz * fz)), lr = Math.max(-hw, Math.min(hw, dx * fz - dz * fx));
+    consider(vehicleTarget(v), v.pos.x + fx * lf + fz * lr, v.pos.z + fz * lf - fx * lr);
+  }
   if (!choice.target) {
     for (let i = -1; i < ctx.state.structures.length; i++) {
       const s = i < 0 ? ctx.state.gate : ctx.state.structures[i], r = s.rect;
@@ -222,11 +271,11 @@ export function aimLeaderAttack(ctx: SimContext, aimPoint: Vec2 | null): void {
 /** Resolve a completed windup once, through the same damage helpers as horde combat. */
 export function resolveLeaderAttack(ctx: SimContext): void {
   const l = ctx.state.leader, b = BALANCE.alpha;
-  if (ctx.state.phase !== 'playing' || !l.alive || l.hp <= 0 || l.hitStun > 0 ||
+  if (ctx.state.phase !== 'playing' || !l.alive || l.hitStun > 0 ||
       l.attackPhase !== 'windup' || l.attackTimer > 1e-9) return;
   const claw = l.comboStep > 0, index = l.comboStep - 1;
   l.attackPhase = 'recovery';
-  l.attackTimer = claw ? b.clawRecovery[index] : b.biteRecovery;
+  l.attackTimer = (claw ? b.clawRecovery[index] : b.biteRecovery) / traitAttackRateMultiplier(ctx.state);
   const target = leaderTargets.get(l);
   leaderTargets.delete(l);
   const hit = !!target && canMelee(ctx, l.pos, claw ? b.clawRange : b.biteRange, target);
@@ -238,6 +287,10 @@ export function resolveLeaderAttack(ctx: SimContext): void {
       if (l.comboStep === 3 && g.state !== 'DEAD') g.staggerTime = b.staggerTime;
     } else if (target.kind === 'gate') damageGate(ctx, amount * b.structureDamageMultiplier);
     else if (target.kind === 'structure') damageStructure(ctx, findStructure(ctx.state, target.id)!, amount * b.structureDamageMultiplier);
+    else if (target.kind === 'vehicle') {
+      const v = findVehicle(ctx.state, target.id);
+      if (v) damageVehicle(ctx, v, amount * BALANCE.traffic.alphaDamageFactor);
+    }
     ctx.emit({ type: 'melee', attacker: 'leader', attackerId: l.id, target, pos: { ...l.pos } });
   }
   ctx.emit({ type: 'attackSwing', pos: { ...l.pos }, facing: l.facing, combo: l.comboStep, hit });
@@ -251,13 +304,16 @@ function melee(ctx: SimContext, target: TargetRef, amount: number): void {
   else if (target.kind === 'structure') {
     const s = findStructure(ctx.state, target.id);
     if (s) damageStructure(ctx, s, amount);
+  } else if (target.kind === 'vehicle') {
+    const v = findVehicle(ctx.state, target.id);
+    if (v) damageVehicle(ctx, v, amount);
   }
 }
 
 function followerSwingTarget(ctx: SimContext, z: ZombieAgent): TargetRef | null {
   // Engagement remains the steering target. Self-defense never redirects the route.
   if (z.engageTarget && canMelee(ctx, z.pos, BALANCE.walker.attackRange, z.engageTarget, z.elevation)) return z.engageTarget;
-  if (!guidanceFor(ctx, z)) return null;
+  if (!guidanceFor(ctx, z)) return vehicleInReach(ctx, z);
   let target: TargetRef | null = null;
   let nearest = Infinity;
   for (const g of ctx.state.guards) {
@@ -268,7 +324,17 @@ function followerSwingTarget(ctx: SimContext, z: ZombieAgent): TargetRef | null 
       nearest = d; target = ref;
     }
   }
-  return target;
+  return target ?? vehicleInReach(ctx, z);
+}
+
+/** Self-defense: a live car in claw reach (a car ploughing into the horde gets mobbed). */
+function vehicleInReach(ctx: SimContext, z: ZombieAgent): TargetRef | null {
+  for (const v of ctx.state.vehicles) {
+    if (!isVehicleTargetable(v)) continue;
+    const ref = vehicleTarget(v);
+    if (canMelee(ctx, z.pos, BALANCE.walker.attackRange, ref, z.elevation)) return ref;
+  }
+  return null;
 }
 
 export function updateCombat(ctx: SimContext, dt: number, _input: SimInput): void {
@@ -283,13 +349,14 @@ export function updateCombat(ctx: SimContext, dt: number, _input: SimInput): voi
     if (z.state === 'dead') {
       z.stateTime += dt;
       if (z.stateTime > BALANCE.walker.corpseFadeTime) continue;
-    } else if (z.state === 'follower' && z.hp > 0 && z.attackCooldown <= 1e-9) {
+    } else if (z.state === 'follower' && z.hp > 0 && z.attackCooldown <= 1e-9 && z.emergeTimer <= 1e-9 &&
+      !ctx.state.nestTravel) {
       const target = followerSwingTarget(ctx, z);
       if (target) {
         const siege = target.kind === 'gate' || target.kind === 'structure';
         melee(ctx, target, z.brute ? BALANCE.brute.attackDamage * (siege ? BALANCE.brute.structureDamageMultiplier : 1) : BALANCE.walker.attackDamage);
         z.attackCooldown = BALANCE.walker.attackCooldown /
-          ((ctx.state.abilities.rushTimeLeft > 0 ? BALANCE.rush.attackRateMultiplier : 1) * hordeAttackRateMultiplier(ctx.state));
+          ((ctx.state.abilities.rushTimeLeft > 0 ? BALANCE.rush.attackRateMultiplier : 1) * hordeAttackRateMultiplier(ctx.state) * traitAttackRateMultiplier(ctx.state));
         z.anim = 'attack'; z.animTime = 0;
         ctx.emit({ type: 'melee', attacker: 'zombie', attackerId: z.id, target, pos: { ...z.pos } });
       }

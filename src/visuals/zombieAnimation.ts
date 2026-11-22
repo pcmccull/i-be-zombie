@@ -15,8 +15,16 @@
  * Followers' melee damage lands the step `attackCooldown` reaches 0, so the strike key pose is timed to that
  * moment from the cooldown countdown; the Alpha uses its own windup/recovery phases (hit at windup end).
  */
-import { ATTACK_STYLE, type GaitProfile, type ZombieProfile } from './zombieProfiles';
+import { ATTACK_STYLE, hashId, type GaitProfile, type ZombieProfile } from './zombieProfiles';
 import { copyPose, createPose, groundedHipY, RIG, type PoseField, type ZombiePose } from './zombieRig';
+import {
+  applyClip,
+  applyClipAuthored,
+  BITE_SNAP_T,
+  CLIPS,
+  clipDuration,
+  hitSign,
+} from '../graphics/characters/characterClips';
 
 const TWO_PI = Math.PI * 2;
 
@@ -29,7 +37,9 @@ export type ZombieAnimStateName =
   | 'fastWalk'
   | 'turn'
   | 'attack'
+  | 'bite'
   | 'hit'
+  | 'celebrate'
   | 'stunned'
   | 'climb'
   | 'dead'
@@ -69,6 +79,12 @@ export interface ZombieAnimInput {
   deadTime: number;
   /** 0..1 progress of a rise (conversion / respawn). */
   riseT: number;
+  /** With anim 'rise': climb up out of the ground (Alpha at a nest) instead of getting up off it. */
+  emerge: boolean;
+  /** 0..1 progress of a nest-teleport dive (leap up, plunge head first into the hole); < 0 = not diving. */
+  dive: number;
+  /** Seconds since a victory celebration was triggered (looping flail); < 0 / undefined = none. Optional. */
+  celebrate?: number;
   /** Yaw (character space) toward something worth looking at (leader, target), or NaN. */
   lookYaw: number;
   /** 0 near camera (full secondary motion), 1 medium, 2 far (no twitches / lurches). */
@@ -95,6 +111,8 @@ export function createAnimInput(): ZombieAnimInput {
     stun: 0,
     deadTime: 0,
     riseT: 0,
+    emerge: false,
+    dive: -1,
     lookYaw: NaN,
     detail: 0,
   };
@@ -159,6 +177,29 @@ export interface ZombieAnimState {
   hipH: number;
   /** Last discrete state name (debug). */
   stateName: ZombieAnimStateName;
+  // Clip overlays (characterClips): per-id variation, one-shot timers (-1 = idle).
+  clipVar: number;
+  clipPlays: number;
+  celW: number;
+  celT: number;
+  hitClipT: number;
+  hitClipSign: 1 | -1;
+  hitClipVar: number;
+  turnClipT: number;
+  turnClipDir: number;
+  turnClipVar: number;
+  turnCool: number;
+  idleT: number;
+  idleLookT: number;
+  idleLookNext: number;
+  idleLookCount: number;
+  idleLookVar: number;
+  lungeT: number;
+  lungeCool: number;
+  lungeVar: number;
+  flourishT: number;
+  flourishVar: number;
+  wasRising: boolean;
 }
 
 export function createAnimState(): ZombieAnimState {
@@ -211,6 +252,28 @@ export function createAnimState(): ZombieAnimState {
     deathW: 0,
     hipH: 0,
     stateName: 'idle',
+    clipVar: 0,
+    clipPlays: 0,
+    celW: 0,
+    celT: 0,
+    hitClipT: -1,
+    hitClipSign: 1,
+    hitClipVar: 0,
+    turnClipT: -1,
+    turnClipDir: 1,
+    turnClipVar: 0,
+    turnCool: 0,
+    idleT: 0,
+    idleLookT: -1,
+    idleLookNext: 8,
+    idleLookCount: 0,
+    idleLookVar: 0,
+    lungeT: -1,
+    lungeCool: 0,
+    lungeVar: 0,
+    flourishT: -1,
+    flourishVar: 0,
+    wasRising: false,
   };
 }
 
@@ -247,6 +310,17 @@ export const ANIM_TUNING = {
   attackFade: 4.5,
   deathFall: 0.62,
   stunSmoothing: 14,
+  /** Clip overlays: turn trigger (rad/s, smoothed) / max speed, idle-look spacing (s), lunge trigger speed + cooldown. */
+  turnClipRate: 1.3,
+  turnClipMaxSpeed: 0.7,
+  turnClipCooldown: 0.35,
+  idleLookMin: 7,
+  idleLookSpread: 9,
+  lungeMinSpeed: 1.4,
+  lungeCooldown: 5,
+  /** Celebrate weight smoothing (1/s) and the Alpha's cockier amplitude. */
+  celebrateRate: 9,
+  alphaCelebrateGain: 1.3,
   twitchIntervalMin: 2.2,
   twitchIntervalMax: 6.5,
   lurchDuration: 0.85,
@@ -466,8 +540,20 @@ function pickStyle(s: ZombieAnimState, g: GaitProfile): number {
   return list[Math.floor(rand(s) * list.length) % list.length];
 }
 
+function unitHash(seed: number, salt: number): number {
+  return hashId(seed, salt) / 4294967296;
+}
+
+/** Variation for the next play of a clip: per-id base, decorrelated per play (never touches the rng stream). */
+function playVar(s: ZombieAnimState): number {
+  const v = s.clipVar + 0.381966 * s.clipPlays++;
+  return v - Math.floor(v);
+}
+
 function initState(s: ZombieAnimState, p: ZombieProfile, inp: ZombieAnimInput): void {
   s.init = true;
+  s.clipVar = unitHash(p.seed, 91);
+  s.idleLookNext = ANIM_TUNING.idleLookMin + ANIM_TUNING.idleLookSpread * unitHash(p.seed, 119);
   s.rng = (p.seed | 0) || 0x1234567;
   s.clock = (p.seed % 997) * 0.13;
   s.gait = p.gait.phase0;
@@ -612,6 +698,9 @@ export function animateZombie(
     s.rollV += hx * 3.4 * strength;
     s.headPitchV += -hz * 7 * strength;
     s.headYawV += -hx * 6 * strength;
+    s.hitClipT = 0;
+    s.hitClipSign = hitSign(inp.hitFromX, inp.hitFromZ);
+    s.hitClipVar = playVar(s);
   }
   s.hitAge += dt;
   s.lastAnim = inp.anim;
@@ -783,6 +872,17 @@ export function animateZombie(
     b.spinePitch += 0.03;
   }
 
+  // Alpha swagger: chest out, a cockier pelvis roll — upright where the horde slouches.
+  if (p.bodyShape === 'alpha') {
+    b.spinePitch -= 0.06;
+    b.neckPitch -= 0.05;
+    b.hipYaw *= 1.3;
+    b.hipRoll *= 1.25;
+    b.hipX *= 1.2;
+    b.shrugL += 0.012;
+    b.shrugR += 0.012;
+  }
+
   copyPose(b, out);
 
   // --- 2. Secondary motion (springs) ------------------------------------------
@@ -820,10 +920,12 @@ export function animateZombie(
     out.armRRoll -= 0.45 * e;
     out.armLPitch = mix(out.armLPitch, -0.6, 0.4 * e);
     out.armRPitch = mix(out.armRPitch, -0.55, 0.4 * e);
-    out.kneeL += 0.12 * e;
-    out.kneeR += 0.1 * e;
     out.jaw += 0.2 * e;
   }
+  // Keep the legs' absolute angles when the pelvis tilts (inertial lean, hits, clips): planted feet stay planted.
+  const dHip = out.hipPitch - b.hipPitch;
+  out.thighLPitch -= dHip;
+  out.thighRPitch -= dHip;
 
   // --- 3. Personality: lurches & twitches ------------------------------------
   if (active && !climbing) {
@@ -940,6 +1042,78 @@ export function animateZombie(
     }
   }
 
+  // --- 3b. Clip overlays (characterClips): additive flourishes on top of locomotion / IK ----------
+  if (s.wasRising && !rising && !dead) { s.flourishT = 0; s.flourishVar = playVar(s); }
+  s.wasRising = rising;
+  s.turnCool -= dt;
+  s.lungeCool -= dt;
+  const clipsOn = active && !climbing;
+
+  // Celebrate (input-driven, loops while the trigger clock runs, fades in / out smoothly).
+  const celOn = clipsOn && inp.celebrate !== undefined && inp.celebrate >= 0;
+  if (celOn) s.celT = inp.celebrate as number; else s.celT += dt;
+  s.celW += ((celOn ? 1 : 0) - s.celW) * (1 - Math.exp(-T.celebrateRate * dt));
+  if (s.celW > 0.001 && clipsOn) {
+    const gain = p.bodyShape === 'alpha' ? T.alphaCelebrateGain : 1;
+    applyClip(out, CLIPS.celebrate, s.celT, easeInOut(s.celW) * gain, s.clipVar);
+  }
+
+  // Idle look-around after a long stand-still.
+  if (s.idleLookT >= 0) {
+    s.idleLookT += dt;
+    if (!clipsOn || s.idleLookT >= clipDuration('idleLook', s.idleLookVar)) {
+      s.idleLookT = -1;
+      s.idleT = 0;
+      s.idleLookCount++;
+      s.idleLookNext = T.idleLookMin + T.idleLookSpread * unitHash(p.seed, 120 + s.idleLookCount);
+    }
+  } else if (clipsOn && idle > 0.95 && !inp.engaged && detail < 2 && s.hitClipT < 0 && s.turnClipT < 0) {
+    s.idleT += dt;
+    if (s.idleT >= s.idleLookNext) { s.idleLookT = 0; s.idleLookVar = playVar(s); }
+  } else {
+    s.idleT = 0;
+  }
+  if (s.idleLookT >= 0) applyClip(out, CLIPS.idleLook, s.idleLookT, 1, s.idleLookVar);
+
+  // Turn on the spot: the head leads, then chest, then hips.
+  if (s.turnClipT >= 0) {
+    s.turnClipT += dt;
+    if (!clipsOn || s.turnClipT >= clipDuration('turnL', s.turnClipVar)) { s.turnClipT = -1; s.turnCool = T.turnClipCooldown; }
+  } else if (clipsOn && detail < 2 && s.turnCool <= 0 && s.speed < T.turnClipMaxSpeed && Math.abs(s.turn) > T.turnClipRate) {
+    s.turnClipT = 0;
+    s.turnClipDir = s.turn > 0 ? 1 : -1;
+    s.turnClipVar = playVar(s);
+  }
+  if (s.turnClipT >= 0) applyClip(out, s.turnClipDir > 0 ? CLIPS.turnL : CLIPS.turnR, s.turnClipT, 1, s.turnClipVar);
+
+  // Hit stagger (direction-signed).
+  if (s.hitClipT >= 0) {
+    s.hitClipT += dt;
+    if (!clipsOn || s.hitClipT >= clipDuration('hitReact', s.hitClipVar)) s.hitClipT = -1;
+    else applyClip(out, CLIPS.hitReact, s.hitClipT, 1 - 0.3 * g.heavy, s.hitClipVar, s.hitClipSign < 0);
+  }
+
+  // Lunge: a charging, freshly engaged zombie winds its arms back and throws them forward.
+  if (s.lungeT >= 0) {
+    s.lungeT += dt;
+    if (!clipsOn || s.lungeT >= clipDuration('lunge', s.lungeVar)) { s.lungeT = -1; s.lungeCool = T.lungeCooldown; }
+  } else if (clipsOn && detail < 2 && inp.engaged && inp.attackPhase === 'none' && s.speed > T.lungeMinSpeed && s.lungeCool <= 0 && s.aggro < 0.5) {
+    s.lungeT = 0;
+    s.lungeVar = playVar(s);
+  }
+  if (s.lungeT >= 0) {
+    const d = clipDuration('lunge', s.lungeVar);
+    applyClip(out, CLIPS.lunge, s.lungeT, easeInOut(clamp01(s.lungeT / 0.12)) * (1 - easeInOut(clamp01((s.lungeT - (d - 0.2)) / 0.2))), s.lungeVar);
+  }
+
+  // Rise flourish: shake it off once back on its feet.
+  if (s.flourishT >= 0) {
+    s.flourishT += dt;
+    const d = clipDuration('riseFlourish', s.flourishVar);
+    if (!clipsOn || s.flourishT >= d) s.flourishT = -1;
+    else applyClip(out, CLIPS.riseFlourish, s.flourishT, easeInOut(clamp01(s.flourishT / 0.12)) * (1 - easeInOut(clamp01((s.flourishT - (d - 0.25)) / 0.25))), s.flourishVar);
+  }
+
   // --- 4. Overlays -----------------------------------------------------------
   // Attack.
   let phase: 0 | 1 | 2 = 0;
@@ -975,6 +1149,12 @@ export function animateZombie(
   }
   if (s.atkW > 0 && s.atkPhase !== 0) {
     applyAttackPose(out, s.atkStyleShown, s.atkPhase, s.atkT, easeInOut(s.atkW));
+    if (s.atkStyleShown === ATTACK_STYLE.bite) {
+      // Time-warped so the jaw snap (BITE_SNAP_T) lands exactly at the strike key (windup end = gameplay hit).
+      const u = s.atkPhase === 1 ? s.atkT * BITE_SNAP_T : BITE_SNAP_T + s.atkT * (CLIPS.bite.duration - BITE_SNAP_T);
+      applyClipAuthored(out, CLIPS.bite, u, easeInOut(s.atkW), s.clipVar);
+      if (out.jaw < 0) out.jaw = 0;
+    }
   }
 
   // Stun (Alpha hit stun): unsteady, arms out, knees soft.
@@ -1016,18 +1196,25 @@ export function animateZombie(
   // Death (3 styles) and rise.
   if (dead) applyDeath(out, p, inp.deadTime, s);
   else s.deathW = 0;
-  if (rising) applyRise(out, p, clamp01(inp.riseT), tc);
+  if (rising) {
+    if (inp.emerge) applyEmerge(out, p, clamp01(inp.riseT), tc);
+    else applyRise(out, p, clamp01(inp.riseT), tc);
+  }
+  if (inp.dive >= 0 && !dead) applyDive(out, clamp01(inp.dive));
 
   // --- 5. Grounding ------------------------------------------------------------
-  out.hipY = groundedHipY(out);
+  // Celebrate hops lift the pelvis above the grounded height (the only intentional foot lift).
+  const hop = dead || rising ? 0 : Math.max(0, out.hipY - RIG.hipY);
+  out.hipY = groundedHipY(out) + hop;
 
   s.stateName = dead ? 'dead'
     : rising ? 'rise'
     : climbing ? 'climb'
     : s.stun > 0.3 ? 'stunned'
-    : phase !== 0 ? 'attack'
+    : s.celW > 0.3 ? 'celebrate'
+    : phase !== 0 ? (style === ATTACK_STYLE.bite ? 'bite' : 'attack')
     : s.hitAge < 0.35 ? 'hit'
-    : Math.abs(s.turn) > 2.2 ? 'turn'
+    : s.turnClipT >= 0 || Math.abs(s.turn) > 2.2 ? 'turn'
     : fast > 0.5 ? 'fastWalk'
     : move > 0.5 ? 'walk'
     : 'idle';
@@ -1118,6 +1305,87 @@ function applyDeath(out: ZombiePose, p: ZombieProfile, t: number, s: ZombieAnimS
   // Lying bodies rest on their front/back, not on the pivot line.
   const lying = Math.abs(Math.sin(out.rootPitch)) + Math.abs(Math.sin(out.rootRoll)) * 0.9;
   out.rootY = mix(out.rootY, 0.13 * Math.min(1, lying), W);
+}
+
+/**
+ * Nest-teleport dive: crouch, spring up with both arms thrown overhead, tip head first and plunge into the hole
+ * until the whole body is below the ground (EMERGE_BURIED_Y). Starts from the current pose, ends fully buried.
+ */
+function applyDive(out: ZombiePose, u: number): void {
+  const crouch = smoothstep(0, 0.22, u) * (1 - smoothstep(0.22, 0.36, u));
+  const reach = smoothstep(0.18, 0.42, u); // arms swing up overhead
+  const tip = smoothstep(0.34, 0.7, u); // body pitches head down
+  const W = smoothstep(0, 0.12, u); // blend in from the run
+  const air = Math.sin(Math.PI * smoothstep(0.22, 0.62, u)) * (1 - smoothstep(0.5, 0.62, u));
+  const plunge = smoothstep(0.52, 1, u);
+  const depth = -0.3 * crouch + 0.75 * air + (EMERGE_BURIED_Y - 0.4) * plunge * plunge;
+  const set = (f: PoseField, v: number): void => { out[f] = mix(out[f], v, W); };
+  out.rootY = mix(out.rootY, depth, W);
+  set('rootPitch', 1.35 * tip);
+  set('rootRoll', 0);
+  set('spinePitch', 0.35 * crouch + 0.25 * tip);
+  set('neckPitch', -0.3 * reach);
+  set('armRPitch', mix(0.5 * crouch, -3.05, reach));
+  set('armLPitch', mix(0.5 * crouch, -3.0, reach));
+  set('armRRoll', -0.12 * reach);
+  set('armLRoll', 0.12 * reach);
+  set('elbowR', 0.15);
+  set('elbowL', 0.15);
+  set('thighLPitch', -0.9 * crouch + 0.35 * tip);
+  set('thighRPitch', -0.9 * crouch + 0.3 * tip);
+  set('kneeL', 1.5 * crouch + 0.2 * tip);
+  set('kneeR', 1.5 * crouch + 0.25 * tip);
+  set('jaw', 0.5 * reach);
+}
+
+/** Root depth (rig units) of a fully buried body: the raised hand's fingertips are just below the ground. */
+export const EMERGE_BURIED_Y = -2.15;
+
+/**
+ * Emerge (Alpha at a nest): buried → one claw bursts up through the soil, the second follows, the head and
+ * shoulders push out, both hands plant on the ground and haul the body up, one knee hooks over the rim and it
+ * staggers upright. The rig root sinks below Y = 0 (the ground hides what is still buried). Ends at zero offsets.
+ */
+function applyEmerge(out: ZombiePose, p: ZombieProfile, u: number, tc: number): void {
+  const jerk = Math.sin(tc * 21 + p.seed) * (1 - smoothstep(0.7, 0.95, u));
+  const reachR = smoothstep(0.08, 0.24, u); // first claw punches up
+  const reachL = smoothstep(0.2, 0.36, u); // second claw follows
+  const plant = smoothstep(0.38, 0.52, u) * (1 - smoothstep(0.7, 0.86, u)); // hands on the rim, haul
+  const step = smoothstep(0.58, 0.72, u) * (1 - smoothstep(0.78, 0.92, u)); // knee hooks over the rim
+  const stand = smoothstep(0.78, 0.98, u);
+  const wobble = Math.sin(tc * 7 + p.seed) * stand * (1 - stand) * 4;
+  const W = 1 - smoothstep(0.93, 1, u);
+  // Depth: hidden → hand out (-1.75) → head + shoulders (-0.95) → hips at the rim (-0.3) → on the ground.
+  const depth = EMERGE_BURIED_Y
+    + (EMERGE_BURIED_Y * -1 - 1.75) * smoothstep(0.04, 0.24, u)
+    + 0.8 * smoothstep(0.26, 0.48, u)
+    + 0.65 * smoothstep(0.5, 0.74, u)
+    + 0.3 * smoothstep(0.74, 0.9, u);
+
+  const set = (f: PoseField, v: number): void => { out[f] = mix(out[f], v, W); };
+  out.rootY = mix(out.rootY, depth, W); // depth reaches 0 at the end, so the blend never pops
+  set('rootPitch', 0.06 * jerk * (1 - stand) + 0.32 * plant + 0.12 * step);
+  set('rootRoll', 0.05 * jerk + 0.06 * wobble);
+  // Arms: straight up (≈ -3) while clawing through, then forward-down onto the rim, then back to the stance.
+  const upR = mix(-0.4, -3.0, reachR), upL = mix(-0.4, -2.85, reachL);
+  set('armRPitch', mix(mix(upR, -1.35, plant), out.armRPitch, stand) + 0.22 * jerk);
+  set('armLPitch', mix(mix(upL, -1.45, plant), out.armLPitch, stand) - 0.22 * jerk);
+  set('armRRoll', mix(out.armRRoll - 0.15 * reachR, -0.35, plant));
+  set('armLRoll', mix(out.armLRoll + 0.15 * reachL, 0.35, plant));
+  set('elbowR', mix(mix(0.15 + 0.35 * Math.max(0, jerk), 0.9, plant), out.elbowR, stand));
+  set('elbowL', mix(mix(0.2 + 0.35 * Math.max(0, -jerk), 0.95, plant), out.elbowL, stand));
+  // Torso strains forward over the rim while hauling, head tips back at the sky as it breaks the surface.
+  set('spinePitch', out.spinePitch + 0.55 * plant + 0.25 * step + 0.1 * jerk + 0.15 * wobble);
+  set('spineRoll', out.spineRoll + 0.1 * jerk + 0.08 * wobble);
+  set('neckPitch', out.neckPitch - 0.45 * (reachL - plant) * (1 - stand) + 0.15 * jerk);
+  set('neckYaw', out.neckYaw + 0.3 * jerk);
+  // Legs: one knee hooks up over the edge, the other pushes from below.
+  set('thighLPitch', -1.35 * step - 0.25 * plant);
+  set('thighRPitch', 0.25 * step + 0.1 * plant);
+  set('kneeL', 1.85 * step + 0.4 * plant + 0.1);
+  set('kneeR', 0.45 * step + 0.3 * plant + 0.1);
+  set('ankleL', 0.35 * step);
+  set('jaw', out.jaw + 0.45 * (1 - stand));
 }
 
 /**

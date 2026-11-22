@@ -33,9 +33,9 @@ export const ABILITIES: Readonly<Record<AbilityId, AbilityDef>> = {
   brute_evolution: {
     id: 'brute_evolution', name: 'Brute Evolution', type: 'horde', source: 'industrial_yard', slotBehavior: 'slot', activatable: true,
     cooldown: BALANCE.brute.cooldown, biomassCost: BALANCE.brute.costPerBrute, duration: 0,
-    description: 'Spend biomass to mutate the nearest followers into durable siege Brutes.',
+    description: 'Spend brains to mutate the nearest followers into durable siege Brutes.',
   },
 };
 
 export const INNATE_ABILITIES: readonly AbilityId[] = ['bite', 'infect'];
-export const SLOT_KEYS: readonly string[] = ['Q', 'E', 'R', 'F'];
+export const SLOT_KEYS: readonly string[] = ['Q', 'T', 'R', 'F'];

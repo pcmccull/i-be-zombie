@@ -174,7 +174,7 @@ export type SystemUpdate =(ctx: SimContext, dt: number, input: SimInput) => void
 
 /**
  * src/systems/ProgressionSystem.ts (T005) — mutations, biomass, loadout. Pure.
- *   addBiomass(ctx, amount, reason): void            // amount > 0; emits biomassGain
+ *   addBiomass(ctx, amount, reason, pos?): void      // amount > 0; emits biomassGain (pos = source, for the pickup VFX)
  *   isUnlocked(state, id) / isEquipped(state, id): boolean
  *   canActivate(state, id): AbilityDenyReason | null  // null = OK. unlocked ∧ equipped ∧ activatable ∧ cooldown 0 ∧ biomass >= cost
  *   activateAbility(ctx, id): boolean                 // atomic check+spend+cooldown; emits abilityUsed / abilityDenied
@@ -216,7 +216,62 @@ export type SystemUpdate =(ctx: SimContext, dt: number, input: SimInput) => void
  * src/persistence/SaveStore.ts (T006)
  *   class SaveStore { constructor(storage: StorageLike | null, key?: string); load(): WorldSave | null; save(s: WorldSave): boolean; clear(): void }  // never throws
  */
-export type AbilityDenyReason = 'locked' | 'cooldown' | 'biomass' | 'noTarget' | 'notAtNest' | 'empty' | 'maxSlots';
+export type AbilityDenyReason = 'locked' | 'cooldown' | 'biomass' | 'noTarget' | 'notAtNest' | 'empty' | 'maxSlots' | 'maxVision' | 'maxTrait';
+
+// ===========================================================================
+// EW — expanded world, boundaries, zombie vision (docs/5_expand_world.md, ARCHITECTURE §EW-3)
+// ===========================================================================
+
+/**
+ * src/world/boundaryLayout.ts (EW-T003) — pure.
+ *   buildWorldBoundaries(world: Omit<DistrictLayout, 'checkpoint'>, seed: number): void
+ *     Appends kind:'boundary' colliders (tag 'boundary-<segmentId>-<n>') to world.colliders, fills world.boundaries
+ *     (isWorldEdge:true, destructible:false) and world.backdrop. Colliders lie in the band between playArea and bounds,
+ *     overlap at corners, and cover the whole playArea perimeter. Never touches playArea content.
+ *
+ * src/systems/AwarenessSystem.ts (EW-T005) — pure; the only writer of state.vision.
+ *   visionProfile(tier: VisionTier): VisionProfile           // from BALANCE.vision.tiers[tier - 1]
+ *   updateAwareness(ctx, dt, stepEvents: readonly GameEvent[]): void
+ *       copies progression.visionTier -> vision.tier; at vision.updateHz rebuilds identified/seen (sorted ids) for living,
+ *       non-dormant humans; LOS uses the collision LOS height rule from eye vision.eyeHeight, at most
+ *       vision.maxLosChecksPerUpdate checks per update (round-robin, cached between updates); converts stepEvents to
+ *       cues, ages/expires/aggregates them; no per-agent allocation per step. Reads leader.pos only (never camera).
+ *   isIdentified(state, id) / isSeen(state, id): boolean      // binary search
+ *   awarenessOf(state, id): Awareness                          // 'identified' | 'seen' | 'none' for humans
+ *   canTarget(state, id): boolean                              // === isIdentified
+ *   isWorldPositionInSight(state, p): boolean                  // XZ distance to leader <= current clearRadius (no LOS)
+ *   Rules (XZ distances from leader.pos; leader dead/respawning => identified = engaged only):
+ *     identified <= dist <= vision.alwaysRadius
+ *                 | (dist <= clearRadius & LOS)
+ *                 | (engaged: shot/hit the leader or a follower within vision.engagedMemory s & dist <= 2 * clearRadius)
+ *     seen <= !identified & ((detectMovingHumans & speed > vision.movingSpeed & dist <= movingDetectRadius & LOS)
+ *                          | (detectDefenses & strongholdId != null & dist <= defenseRadius)
+ *                          | (detectReinforcements & spawned by a reinforcement wave & dist <= reinforcementRadius))
+ *     Cues only for sources beyond clearRadius and within senses.kinds[k].range: 'shot' -> gunshot, civilian starting to
+ *     flee -> scream, 'reinforcements' -> siren (tier 4: fuzz * vision.reinforcementFuzzFactor), crowd scan at
+ *     senses.crowdScanHz (>= crowdMinHumans living humans in a crowdCellSize cell). pos = source + ctx.rng offset with
+ *     radius clamp(dist * fuzzFrac, fuzzMin, fuzzMax). Same kind within senses.aggregateRadius => refresh (age 0,
+ *     intensity max, count++, emit senseCue fresh:false). Over maxCues => drop the weakest. Cues never identify.
+ *
+ * src/systems/ProgressionSystem.ts (EW-T006)
+ *   visionCost(state): number | null                           // vision.tierCosts[visionTier]; null at tier 4
+ *   buyVision(ctx): boolean                                    // leader alive & phase 'playing' (else 'locked'), tier < 4
+ *       (else 'maxVision'), within nest.equipRadius of an active nest (else 'notAtNest'), biomass >= cost (else 'biomass');
+ *       spend atomically, visionTier++, emit visionUpgraded + autosave{reason:'equip'}; denial = abilityDenied{abilityId:null}
+ *   updateProgression: input.buyVision => buyVision(ctx); input.buyTrait => buyTrait(ctx, id)
+ *   traitCost(state, id): number | null                        // traits[id].costs[level]; null at max level
+ *   buyTrait(ctx, id): boolean                                 // same gates as buyVision ('maxTrait' at max); level++,
+ *       emit traitUpgraded + autosave{reason:'equip'}
+ *   alphaSpeedMultiplier(state) = 1 + speedLevel * traits.speed.perLevel   (Alpha walk/sprint + follower speed)
+ *   attackRateMultiplier(state) = 1 + attackLevel * traits.attack.perLevel (Alpha windup/recovery + follower cooldown)
+ *
+ * src/persistence/saveSchema.ts (EW-T006): save v3 = PlayerSave.visionTier + records for all 16 districts/strongholds.
+ *   v2 -> v3: visionTier 1; missing district/stronghold ids get defaults; discoveryBits decoded on the v2 grid
+ *   (20 x 16, origin -200/-160) and copied into the v3 grid (42 x 34, origin -420/-500) at col +11, row +17.
+ *
+ * src/systems/HordeSystem.ts applyHordeCommands (EW-T010): open world only — an attack order whose target is a human
+ *   with !canTarget becomes a move order to that human's current position. Legacy layout unchanged.
+ */
 
 /** Minimal Web Storage subset (window.localStorage satisfies it; tests use an in-memory map). */
 export interface StorageLike {

@@ -33,15 +33,35 @@ export function vehicle(w: WorldDraft, kind: 'car' | 'truck' | 'dumpster' | 'bar
 
 /** Hollow room with one breakable opening, never a solid building over its interior. */
 export function enclosure(w: WorldDraft, id: number, kind: StructureKind, landmark: StructureDef['landmark'],
-  bounds: AABB, side: 'south' | 'west', gap: [number, number], height: number, defensive: boolean): StructureDef {
+  bounds: AABB, side: 'south' | 'west' | 'north' | 'east', gap: [number, number], height: number, defensive: boolean): StructureDef {
   const b = bounds, t = 0.6, prefix = `${landmark}-${id}`;
   const shellKind = landmark === 'bus' ? 'vehicle' : landmark === 'store' ? 'building' : 'wall';
   const wall = (suffix: string, r: AABB): void => solid(w, r, `${prefix}-${suffix}`, shellKind, height, landmark !== 'barricade');
-  wall('n', rect(b.minX, b.minZ, b.maxX, b.minZ + t));
-  wall('e', rect(b.maxX - t, b.minZ, b.maxX, b.maxZ));
+  if (side !== 'north') wall('n', rect(b.minX, b.minZ, b.maxX, b.minZ + t));
+  if (side !== 'east') wall('e', rect(b.maxX - t, b.minZ, b.maxX, b.maxZ));
   let door: AABB, approachOutside: Vec2[], approachInside: Vec2[];
   const mid = (gap[0] + gap[1]) / 2;
-  if (side === 'south') {
+  let facing = side === 'south' ? 0 : -Math.PI / 2;
+  if (side === 'north' || side === 'east') {
+    // Door on the far side: the rest of the shell is closed (n/e walls above are skipped for this side).
+    wall('w', rect(b.minX, b.minZ, b.minX + t, b.maxZ));
+    wall('s', rect(b.minX, b.maxZ - t, b.maxX, b.maxZ));
+    if (side === 'north') {
+      wall('nw', rect(b.minX, b.minZ, gap[0], b.minZ + t));
+      wall('ne', rect(gap[1], b.minZ, b.maxX, b.minZ + t));
+      door = rect(gap[0], b.minZ, gap[1], b.minZ + t);
+      approachOutside = [-1, 0, 1].map(dx => ({ x: mid + dx, z: b.minZ - 1.8 }));
+      approachInside = [-0.8, 0.8].map(dx => ({ x: mid + dx, z: b.minZ + 2 }));
+      facing = Math.PI;
+    } else {
+      wall('en', rect(b.maxX - t, b.minZ, b.maxX, gap[0]));
+      wall('es', rect(b.maxX - t, gap[1], b.maxX, b.maxZ));
+      door = rect(b.maxX - t, gap[0], b.maxX, gap[1]);
+      approachOutside = [-1, 0, 1].map(dz => ({ x: b.maxX + 1.8, z: mid + dz }));
+      approachInside = [-0.8, 0.8].map(dz => ({ x: b.maxX - 2, z: mid + dz }));
+      facing = Math.PI / 2;
+    }
+  } else if (side === 'south') {
     wall('w', rect(b.minX, b.minZ, b.minX + t, b.maxZ));
     wall('sw', rect(b.minX, b.maxZ - t, gap[0], b.maxZ));
     wall('se', rect(gap[1], b.maxZ - t, b.maxX, b.maxZ));
@@ -57,7 +77,7 @@ export function enclosure(w: WorldDraft, id: number, kind: StructureKind, landma
     approachInside = [-0.8, 0.8].map(dz => ({ x: b.minX + 2, z: mid + dz }));
   }
   const def: StructureDef = {
-    id, kind, landmark, tag: `${prefix}-door`, rect: door, facing: side === 'south' ? 0 : -Math.PI / 2,
+    id, kind, landmark, tag: `${prefix}-door`, rect: door, facing,
     approachOutside, approachInside, enclosure: rect(b.minX + t, b.minZ + t, b.maxX - t, b.maxZ - t), defensive,
   };
   solid(w, door, def.tag, 'breakable', height);

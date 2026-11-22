@@ -11,6 +11,7 @@ import { getDistrictAt } from '../world/worldQueries';
 import { followerCap } from './HordeSystem';
 import { addBiomass, unlockAbility } from './ProgressionSystem';
 import { findStructure, takeStructureHits } from './StructureSystem';
+import { isNestActiveIn } from './nests';
 
 export interface ObjectiveStatus { id: string; label: string; done: boolean; progress: number }
 
@@ -70,8 +71,7 @@ function setStatus(ctx: SimContext, id: DistrictId, status: TerritoryStatus): vo
 
 export function isNestActive(ctx: SimContext, nestId: string): boolean {
   const nest = ctx.layout.nests.find(n => n.id === nestId);
-  return !!nest && (nest.strongholdId === null ||
-    ctx.state.strongholds.some(s => s.id === nest.strongholdId && s.captured));
+  return !!nest && isNestActiveIn(ctx.state, nest);
 }
 
 /** Reveal cell centers in a circle. Discovering only promotes unknown to human. */
@@ -154,8 +154,8 @@ function holdPoint(ctx: SimContext, sh: StrongholdState, obj: ObjectiveDef, dt: 
 function capture(ctx: SimContext, def: StrongholdDef, sh: StrongholdState, r: Runtime): void {
   sh.captured = true; sh.contested = false; sh.holdProgress = 0;
   if (def.unlock) unlockAbility(ctx, def.unlock);
-  addBiomass(ctx, def.biomassReward, 'capture');
   const nest = ctx.layout.nests.find(n => n.id === def.nestId);
+  addBiomass(ctx, def.biomassReward, 'capture', nest?.pos);
   if (nest) {
     ctx.emit({ type: 'nestActivated', nestId: nest.id, pos: { ...nest.pos } });
     if (!r.nestChosen) { ctx.state.activeNestId = nest.id; r.autoNest = nest.id; }
@@ -174,6 +174,29 @@ function capture(ctx: SimContext, def: StrongholdDef, sh: StrongholdState, r: Ru
   ctx.emit({ type: 'strongholdCaptured', strongholdId: sh.id, districtId: def.districtId, unlock: def.unlock, biomass: def.biomassReward });
   setStatus(ctx, def.districtId, 'infected');
   ctx.emit({ type: 'autosave', reason: 'capture' });
+}
+
+/**
+ * Walk-in nests (NestDef.claim): the Alpha starts alone (base cap 0) and claims the nest by the bus by walking into it.
+ * Claiming activates it (+followersPerNest cap, respawn/loadout point) and the first claim raises
+ * BALANCE.openWorld.firstNestHorde free followers around the Alpha.
+ */
+function claimNests(ctx: SimContext, r: Runtime): void {
+  const s = ctx.state, l = s.leader;
+  if (s.phase !== 'playing' || !l.alive) return;
+  for (const nest of ctx.layout.nests) {
+    if (!nest.claim || s.claimedNests.includes(nest.id) ||
+      distanceSq(l.pos, nest.pos) > BALANCE.nest.claimRadius ** 2) continue;
+    const first = s.claimedNests.length === 0;
+    s.claimedNests.push(nest.id);
+    if (!r.nestChosen || !isNestActive(ctx, s.activeNestId)) { s.activeNestId = nest.id; r.autoNest = nest.id; }
+    ctx.emit({ type: 'nestActivated', nestId: nest.id, pos: { ...nest.pos } });
+    if (first && BALANCE.openWorld.firstNestHorde > 0) {
+      const count = spawnNestFollowers(ctx, l.pos, BALANCE.openWorld.firstNestHorde);
+      if (count > 0) ctx.emit({ type: 'hordeUnlocked', count, cap: followerCap(ctx), pos: { ...l.pos } });
+    }
+    ctx.emit({ type: 'autosave', reason: 'capture' });
+  }
 }
 
 function updateStronghold(ctx: SimContext, def: StrongholdDef, sh: StrongholdState, r: Runtime,
@@ -272,7 +295,11 @@ export function spawnNestFollowers(ctx: SimContext, point: Vec2, requested: numb
     }
     if (!pos) break;
     const id = ctx.newId();
-    s.zombies.push(createZombie(id, pos, { state: 'follower', variant: id % 6, spawnZone: -1, isConverted: false, rng: ctx.rng }));
+    const z = createZombie(id, pos, { state: 'follower', variant: id % 6, spawnZone: -1, isConverted: false, rng: ctx.rng });
+    // Crawls up out of the ground; a little extra buried time staggers the pack.
+    z.emergeTimer = BALANCE.respawn.emergeTime * (1 + BALANCE.respawn.emergeStagger * ctx.rng.next());
+    z.anim = 'rise';
+    s.zombies.push(z);
     s.followerCount++; spawned++;
   }
   return spawned;
@@ -280,7 +307,7 @@ export function spawnNestFollowers(ctx: SimContext, point: Vec2, requested: numb
 
 function replenish(ctx: SimContext, r: Runtime, dt: number): void {
   const s = ctx.state, leader = s.leader;
-  const nest = leader.alive && leader.hp > 0 && s.phase === 'playing' && s.followerCount < BALANCE.nest.replenishTarget ?
+  const nest = leader.alive && s.phase === 'playing' && s.followerCount < BALANCE.nest.replenishTarget ?
     ctx.layout.nests.find(n => isNestActive(ctx, n.id) && distanceSq(leader.pos, n.pos) <= BALANCE.nest.replenishRadius ** 2) : undefined;
   if (!nest) { r.replenishTimer = 0; r.replenishNest = null; return; }
   if (r.replenishNest !== nest.id) { r.replenishTimer = 0; r.replenishNest = nest.id; }
@@ -341,5 +368,6 @@ export function updateConquest(ctx: SimContext, dt: number): void {
     const sh = s.strongholds.find(sh => sh.id === def.id);
     if (sh) reinforce(ctx, def, sh);
   }
+  claimNests(ctx, r);
   replenish(ctx, r, elapsed);
 }

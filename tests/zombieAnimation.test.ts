@@ -7,8 +7,8 @@ import {
   type ZombieAnimInput,
   type ZombieAnimState,
 } from '../src/visuals/zombieAnimation';
-import { ARCHETYPES, alphaProfile, zombieProfile, type ZombieProfile } from '../src/visuals/zombieProfiles';
-import { createPose, footReach, POSE_FIELDS, RIG, soleHeights, type ZombiePose } from '../src/visuals/zombieRig';
+import { ARCHETYPES, ATTACK_STYLE, alphaProfile, zombieProfile, type ZombieProfile } from '../src/visuals/zombieProfiles';
+import { createPose, footReach, groundedHipY, POSE_FIELDS, RIG, soleHeights, type ZombiePose } from '../src/visuals/zombieRig';
 
 const DT = 1 / 60;
 
@@ -339,5 +339,216 @@ describe('zombie hits, death and rise', () => {
     animateZombie(s, p, inp, pose);
     expect(maxJump(prev, pose).d).toBeLessThan(0.3);
     expect(Math.abs(pose.rootPitch)).toBeLessThan(0.01);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VP2-T008: clip-driven states, body shapes
+// ---------------------------------------------------------------------------
+
+function clamp01(v: number): number {
+  return v < 0 ? 0 : v > 1 ? 1 : v;
+}
+
+function footWorld(pose: ZombiePose, scale: number): { l: number; r: number } {
+  const r = footReach(pose, { l: 0, r: 0 });
+  return { l: r.l * scale, r: r.r * scale };
+}
+
+describe('VP2 body shapes', () => {
+  it('maps ids deterministically with the target distribution; brutes are heavy, the Alpha is alpha', () => {
+    const counts: Record<string, number> = {};
+    const N = 4000;
+    for (let id = 1; id <= N; id++) {
+      const a = zombieProfile(id).bodyShape;
+      expect(zombieProfile(id).bodyShape).toBe(a);
+      counts[a] = (counts[a] ?? 0) + 1;
+    }
+    const share = (k: string): number => (counts[k] ?? 0) / N;
+    expect(Object.keys(counts).sort()).toEqual(['average', 'heavy', 'lanky', 'shortRound', 'tallSkinny']);
+    expect(Math.abs(share('average') - 0.35)).toBeLessThan(0.06);
+    expect(Math.abs(share('tallSkinny') - 0.18)).toBeLessThan(0.05);
+    expect(Math.abs(share('shortRound') - 0.17)).toBeLessThan(0.05);
+    expect(Math.abs(share('heavy') - 0.15)).toBeLessThan(0.05);
+    expect(Math.abs(share('lanky') - 0.15)).toBeLessThan(0.05);
+    for (let id = 1; id <= 200; id++) {
+      expect(zombieProfile(id, { brute: true }).bodyShape).toBe('heavy');
+      const p = zombieProfile(id);
+      if (p.gait.body === 'heavy') expect(['heavy', 'shortRound']).toContain(p.bodyShape);
+      if (p.gait.body === 'thin') expect(['tallSkinny', 'lanky']).toContain(p.bodyShape);
+    }
+    expect(alphaProfile().bodyShape).toBe('alpha');
+  });
+});
+
+describe('VP2 clip states', () => {
+  it('snaps the jaw shut exactly at the follower strike step (bite style)', () => {
+    const { p, s, inp, pose } = rig(31);
+    inp.engaged = true;
+    inp.speed = 0;
+    inp.cooldown = 0.9;
+    s.cdTotal = 1.2;
+    animateZombie(s, p, inp, pose);
+    s.nextStyle = ATTACK_STYLE.bite;
+    const jaws: number[] = [];
+    let biteSeen = false;
+    for (let cd = 0.5; cd > 0; cd -= DT) {
+      inp.cooldown = Math.max(cd, 1e-3);
+      animateZombie(s, p, inp, pose);
+      jaws.push(pose.jaw);
+      if (s.stateName === 'bite') biteSeen = true;
+    }
+    const last = jaws[jaws.length - 1];
+    expect(biteSeen).toBe(true);
+    expect(last).toBeLessThan(0.1); // jaws clamped shut at the strike
+    expect(jaws[jaws.length - 6]).toBeGreaterThan(last + 0.2); // was wide open a few frames earlier
+    expect(Math.max(...jaws)).toBeGreaterThan(0.4);
+  });
+
+  it('plays the bite for the Alpha windup and recovery phases too', () => {
+    const p = alphaProfile();
+    const s = createAnimState();
+    const inp = createAnimInput();
+    const pose = createPose();
+    inp.attackPhase = 'windup';
+    inp.attackStyle = ATTACK_STYLE.bite;
+    inp.attackT = 0.5;
+    animateZombie(s, p, inp, pose);
+    const open = pose.jaw;
+    inp.attackT = 1;
+    animateZombie(s, p, inp, pose);
+    expect(s.stateName).toBe('bite');
+    expect(pose.jaw).toBeLessThan(open);
+  });
+
+  it('reaches celebrate and hit states; celebrate and hit keep the feet planted (within 1 cm)', () => {
+    for (const id of [5, 23, 64]) {
+      const ref = rig(id);
+      const cel = rig(id);
+      const hit = rig(id);
+      const states = new Set<string>();
+      let maxHop = 0;
+      let slip = 0;
+      let minSole = 1;
+      const soles = { l: 0, r: 0 };
+      for (let f = 0; f < 60 * 4; f++) {
+        const t = f * DT;
+        cel.inp.celebrate = t > 0.5 ? t - 0.5 : -1;
+        hit.inp.hitImpulse = f === 90;
+        hit.inp.hitFromX = 0.8;
+        hit.inp.hitFromZ = 0.3;
+        animateZombie(ref.s, ref.p, ref.inp, ref.pose);
+        animateZombie(cel.s, cel.p, cel.inp, cel.pose);
+        animateZombie(hit.s, hit.p, hit.inp, hit.pose);
+        states.add(cel.s.stateName);
+        states.add(hit.s.stateName);
+        const fr = footWorld(ref.pose, ref.p.scale);
+        for (const o of [cel, hit]) {
+          const fo = footWorld(o.pose, o.p.scale);
+          slip = Math.max(slip, Math.abs(fo.l - fr.l), Math.abs(fo.r - fr.r));
+        }
+        maxHop = Math.max(maxHop, cel.pose.hipY - groundedHipY(cel.pose));
+        soleHeights(cel.pose, soles);
+        minSole = Math.min(minSole, soles.l, soles.r);
+        soleHeights(hit.pose, soles);
+        minSole = Math.min(minSole, soles.l, soles.r);
+      }
+      expect(states.has('celebrate')).toBe(true);
+      expect(states.has('hit')).toBe(true);
+      expect(slip).toBeLessThan(0.01);
+      expect(maxHop).toBeLessThan(0.12); // it hops, but only a little
+      expect(minSole).toBeGreaterThan(-1e-6);
+    }
+  });
+
+  it('hit stagger is direction-signed (left vs right hits)', () => {
+    const l = rig(8);
+    const r = rig(8);
+    for (let f = 0; f < 30; f++) { animateZombie(l.s, l.p, l.inp, l.pose); animateZombie(r.s, r.p, r.inp, r.pose); }
+    l.inp.hitImpulse = r.inp.hitImpulse = true;
+    l.inp.hitFromX = 1;
+    r.inp.hitFromX = -1;
+    animateZombie(l.s, l.p, l.inp, l.pose);
+    animateZombie(r.s, r.p, r.inp, r.pose);
+    expect(l.s.hitClipSign).toBe(1);
+    expect(r.s.hitClipSign).toBe(-1);
+    l.inp.hitImpulse = r.inp.hitImpulse = false;
+    for (let f = 0; f < 4; f++) { animateZombie(l.s, l.p, l.inp, l.pose); animateZombie(r.s, r.p, r.inp, r.pose); }
+    expect(Math.abs(l.pose.neckYaw - r.pose.neckYaw)).toBeGreaterThan(0.01); // mirrored stagger differs
+  });
+
+  it('turns on the spot in either direction, scans around when idle for long, lunges when charging in', () => {
+    const left = rig(14);
+    const right = rig(14);
+    let sawL = false;
+    let sawR = false;
+    for (let f = 0; f < 90; f++) {
+      left.inp.facing += 0.07;
+      right.inp.facing -= 0.07;
+      animateZombie(left.s, left.p, left.inp, left.pose);
+      animateZombie(right.s, right.p, right.inp, right.pose);
+      if (left.s.turnClipT >= 0 && left.s.turnClipDir > 0 && left.s.stateName === 'turn') sawL = true;
+      if (right.s.turnClipT >= 0 && right.s.turnClipDir < 0) sawR = true;
+    }
+    expect(sawL && sawR).toBe(true);
+
+    let looks = 0;
+    for (const id of [3, 4, 5, 6]) {
+      const { p, s, inp, pose } = rig(id);
+      for (let f = 0; f < 60 * 60; f++) animateZombie(s, p, inp, pose);
+      looks += s.idleLookCount;
+    }
+    expect(looks).toBeGreaterThanOrEqual(4);
+
+    const { p, s, inp, pose } = rig(9);
+    inp.speed = 3;
+    inp.engaged = true;
+    let lunged = false;
+    for (let f = 0; f < 30; f++) { animateZombie(s, p, inp, pose); if (s.lungeT >= 0) lunged = true; }
+    expect(lunged).toBe(true);
+  });
+
+  it('flourishes after rising; the Alpha stands more upright than the same body in the horde', () => {
+    const { p, s, inp, pose } = rig(4);
+    inp.anim = 'rise';
+    for (let f = 0; f <= 72; f++) { inp.riseT = f / 72; animateZombie(s, p, inp, pose); }
+    inp.anim = 'idle';
+    let flourished = false;
+    for (let f = 0; f < 30; f++) { animateZombie(s, p, inp, pose); if (s.flourishT >= 0) flourished = true; }
+    expect(flourished).toBe(true);
+
+    const mk = (shape: 'alpha' | 'average') => ({ p: { ...alphaProfile(), bodyShape: shape }, s: createAnimState(), inp: createAnimInput(), pose: createPose() });
+    const alpha = mk('alpha');
+    const plain = mk('average');
+    for (const r of [alpha, plain]) { r.inp.speed = 2; for (let f = 0; f < 120; f++) animateZombie(r.s, r.p, r.inp, r.pose); }
+    expect(alpha.pose.spinePitch).toBeLessThan(plain.pose.spinePitch - 0.03);
+  });
+
+  it('enters and leaves celebrate / hit / bite without snapping (240 Hz vs 960 Hz)', () => {
+    const run = (id: number, hz: number): number => {
+      const { p, s, inp, pose } = rig(id);
+      inp.dt = 1 / hz;
+      const prev = createPose();
+      let worst = 0;
+      for (let f = 0; f < hz * 9; f++) {
+        const t = f / hz;
+        inp.celebrate = t > 1 && t < 3.5 ? t - 1 : -1;
+        inp.hitImpulse = f === Math.round(hz * 5);
+        inp.hitFromX = 0.7;
+        inp.attackPhase = t > 6 && t < 6.3 ? 'windup' : t >= 6.3 && t < 6.7 ? 'recovery' : 'none';
+        inp.attackStyle = ATTACK_STYLE.bite;
+        inp.attackT = t < 6.3 ? clamp01((t - 6) / 0.3) : clamp01((t - 6.3) / 0.4);
+        animateZombie(s, p, inp, pose);
+        if (f > 0) worst = Math.max(worst, maxJump(prev, pose).d);
+        for (const k of POSE_FIELDS) prev[k] = pose[k];
+      }
+      return worst;
+    };
+    for (const id of [5, 23, 90]) {
+      const coarse = run(id, 240);
+      const fine = run(id, 960);
+      expect(coarse).toBeLessThan(0.2);
+      expect(fine).toBeLessThan(coarse * 0.45);
+    }
   });
 });

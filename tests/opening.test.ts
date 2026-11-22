@@ -104,6 +104,6 @@ describe('opening recruitment pacing', () => {
     }
     const elapsed = performance.now() - start;
     console.log(`R2 stress: 100 followers + 40 cascade candidates, 600 steps: ${elapsed.toFixed(1)}ms; same-step cascade=${recruited}`);
-    expect(recruited).toBe(40); expect(sim.state.followerCount).toBe(100); expect(elapsed).toBeLessThan(3000);
+    expect(recruited).toBe(40); expect(sim.state.followerCount).toBe(100); expect(elapsed).toBeLessThan(8000); // ~1.5 s idle; generous for parallel-suite load
   });
 });

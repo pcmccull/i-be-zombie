@@ -1,13 +1,16 @@
 import { BALANCE } from '../config/balance';
 import type { IFlowField, INavigationGrid, SegmentOptions, SimContext, SquadGuidance } from '../core/contracts';
-import type { AABB, AnimAction, Collider, GameState, GuardAgent, HordeOrder, SimInput, TargetRef, Vec2, ZombieAgent } from '../core/types';
+import type { AABB, AnimAction, EntityId, Collider, DistrictLayout, GameState, GuardAgent, HordeOrder, SimInput, TargetRef, Vec2, ZombieAgent } from '../core/types';
 import { distSq, wrapAngle } from '../utils/math';
-import { isCrawlable } from '../world/CollisionWorld';
+import { climbHeightAt, isCrawlable } from '../world/CollisionWorld';
 import { isTargetAlive, resolveTargetPos } from './CombatSystem';
 import { hordeGrid, nearestReachableGuard } from './NavigationSystem';
 import { addMomentum, recruitRadiusMultiplier, speedMultiplier } from './MomentumSystem';
 import { findStructure, isReleaseBurst } from './StructureSystem';
-import { hordeSpeedMultiplier, isFrenzyActive } from './ProgressionSystem';
+import { hordeSpeedMultiplier, isFrenzyActive, traitSpeedMultiplier } from './ProgressionSystem';
+import { canTarget } from './AwarenessSystem';
+import { findVehicle, isVehicleTargetable, vehicleOverlap } from './TrafficSystem';
+import { hordeNestCount } from './nests';
 
 interface Recovery { x: number; z: number; nudgeLeft: number; nx: number; nz: number }
 interface WalkPlan { path: Vec2[]; index: number; goal: Vec2; at: number; version: number; grid: INavigationGrid }
@@ -48,8 +51,19 @@ export function countFollowers(state: GameState): number {
   return count;
 }
 
+/** Nests that grow the horde cap: claimed walk-in nests + captured stronghold nests (systems/nests.ts). */
+export function unlockedNestCount(state: GameState, layout: DistrictLayout): number {
+  return hordeNestCount(state, layout);
+}
+
+/** Horde cap: open world = base + followersPerNest per unlocked nest; legacy district = horde.maxFollowers. */
+export function followerCapFor(state: GameState, layout: DistrictLayout): number {
+  if (layout.strongholds.length === 0) return BALANCE.horde.maxFollowers;
+  return BALANCE.openWorld.maxFollowers + BALANCE.openWorld.followersPerNest * unlockedNestCount(state, layout);
+}
+
 export function followerCap(ctx: SimContext): number {
-  return ctx.layout.strongholds.length > 0 ? BALANCE.openWorld.maxFollowers : BALANCE.horde.maxFollowers;
+  return followerCapFor(ctx.state, ctx.layout);
 }
 
 export function recruitZombie(ctx: SimContext, z: ZombieAgent, viaRally: boolean): boolean {
@@ -267,7 +281,24 @@ export function applyHordeCommands(ctx: SimContext, dt: number, input: SimInput)
   a.rushTimeLeft = Math.max(0, a.rushTimeLeft - dt);
   if (a.rushTimeLeft < 1e-9) a.rushTimeLeft = 0;
   if (wasRushing && a.rushTimeLeft === 0) ctx.emit({ type: 'rushEnd' });
-  const command = input.hordeCommand;
+  // EW vision gate (open world only): an order on a human the Alpha has not identified becomes a move order to its position.
+  const openWorld = ctx.layout.strongholds.length > 0;
+  const unidentifiedAt = (t: TargetRef | null | undefined): Vec2 | null => {
+    if (!openWorld || !t || t.kind !== 'guard' || canTarget(s, t.id)) return null;
+    const g = s.guards.find(x => x.id === t.id);
+    return g ? g.pos : null;
+  };
+  // Automatic successors (target died / shelter broke) obey the same gate: never auto-pick an unidentified human.
+  const targetable = (id: EntityId): boolean => !openWorld || canTarget(s, id);
+  let command = input.hordeCommand;
+  let gatedAttack: TargetRef | null | undefined = input.attackTarget;
+  if (command?.type === 'attack') {
+    const p = unidentifiedAt(command.target);
+    if (p) command = { type: 'move', point: { x: p.x, z: p.z } };
+  } else if (!command) {
+    const p = unidentifiedAt(input.attackTarget);
+    if (p) { command = { type: 'move', point: { x: p.x, z: p.z } }; gatedAttack = null; }
+  }
   const recall = input.recall || command?.type === 'follow' || command?.type === 'regroup';
   if (recall) {
     follow(ctx);
@@ -284,7 +315,8 @@ export function applyHordeCommands(ctx: SimContext, dt: number, input: SimInput)
     ctx.emit({ type: 'moveOrder', point: { ...point } });
   }
   if (!recall && s.leader.alive && command?.type === 'attack' &&
-      (command.target.kind === 'guard' || command.target.kind === 'gate' || command.target.kind === 'structure') &&
+      (command.target.kind === 'guard' || command.target.kind === 'gate' || command.target.kind === 'structure' ||
+        command.target.kind === 'vehicle') &&
       isTargetAlive(ctx, command.target)) {
     memory.recallGrace = 0;
     if (command.additive) toggleTarget(ctx, command.target);
@@ -294,22 +326,13 @@ export function applyHordeCommands(ctx: SimContext, dt: number, input: SimInput)
       ctx.emit({ type: 'orderChanged', order: s.order });
     }
   }
-  if (!recall && !command && s.leader.alive && input.attackTarget &&
-      (input.attackTarget.kind === 'guard' || input.attackTarget.kind === 'gate' || input.attackTarget.kind === 'structure') && isTargetAlive(ctx, input.attackTarget)) {
-    toggleTarget(ctx, input.attackTarget);
+  if (!recall && !command && s.leader.alive && gatedAttack &&
+      (gatedAttack.kind === 'guard' || gatedAttack.kind === 'gate' || gatedAttack.kind === 'structure' ||
+        gatedAttack.kind === 'vehicle') && isTargetAlive(ctx, gatedAttack)) {
+    toggleTarget(ctx, gatedAttack);
   }
-  if ((input.rally || command?.type === 'regroup') && a.rallyCooldown <= 1e-9 && s.leader.alive) {
-    const rising = countRising(s);
-    const radius = BALANCE.rally.radius * recruitRadiusMultiplier(s);
-    const cap = followerCap(ctx);
-    for (const z of s.zombies) {
-      if (z.state !== 'ambient' || z.dormant || z.heldBy !== 0 || distSq(z.pos, s.leader.pos) > radius ** 2) continue;
-      if (s.followerCount + rising >= cap) { noteCapacityRefusal(ctx); break; } // at cap: no LOS scan
-      if (!ctx.collision.segmentBlocked(s.leader.pos, z.pos, moveAccess)) recruitWithReservation(ctx, z, true, rising);
-    }
-    ctx.emit({ type: 'rally', pos: { ...s.leader.pos }, radius });
-    a.rallyCooldown = BALANCE.rally.cooldown;
-  }
+  // Rally was removed (walking near a walker already recruits it): `input.rally` is ignored and a legacy
+  // `regroup` command is just a recall (handled above).
   if (input.rush && a.rushCooldown <= 1e-9 && s.leader.alive) {
     a.rushTimeLeft = BALANCE.rush.duration; a.rushCooldown = BALANCE.rush.cooldown;
     ctx.emit({ type: 'rushStart' });
@@ -319,13 +342,13 @@ export function applyHordeCommands(ctx: SimContext, dt: number, input: SimInput)
   for (let i = s.squads.length - 1; i >= 0; i--) {
     const sq = s.squads[i];
     if (!isTargetAlive(ctx, sq.target)) {
-      const next = structureSuccessor(ctx, sq.target);
+      const next = structureSuccessor(ctx, sq.target, targetable);
       if (next && !isSelected(s, next)) sq.target = next; else s.squads.splice(i, 1);
       selectionChanged = true;
     }
   }
   if (s.order.type === 'attack' && !isTargetAlive(ctx, s.order.target)) {
-    const next = structureSuccessor(ctx, s.order.target);
+    const next = structureSuccessor(ctx, s.order.target, targetable);
     // A successor already chased by a squad is left to that squad; promoteSquad below takes over group 0.
     if (next && !isSelected(s, next)) { s.order = { type: 'attack', target: next }; selectionChanged = true; }
   }
@@ -336,7 +359,7 @@ export function applyHordeCommands(ctx: SimContext, dt: number, input: SimInput)
     // Death invalidates resolveTargetPos, but the target still owns its last position.
     const origin = old.kind === 'gate' ? s.gate.center : old.kind === 'guard'
       ? s.guards.find(g => g.id === old.id)?.pos : undefined;
-    const next = origin ? nearestReachableGuard(ctx, origin, 25) : null;
+    const next = origin ? nearestReachableGuard(ctx, origin, 25, targetable) : null;
     if (next) {
       s.order = { type: 'attack', target: next };
       ctx.emit({ type: 'orderChanged', order: s.order });
@@ -362,7 +385,7 @@ function isSelected(state: GameState, target: TargetRef): boolean {
   return false;
 }
 
-function structureSuccessor(ctx: SimContext, target: TargetRef): TargetRef | null {
+function structureSuccessor(ctx: SimContext, target: TargetRef, allow: (id: EntityId) => boolean): TargetRef | null {
   if (target.kind !== 'structure') return null;
   const s = findStructure(ctx.state, target.id);
   if (!s?.destroyed) return null;
@@ -371,7 +394,7 @@ function structureSuccessor(ctx: SimContext, target: TargetRef): TargetRef | nul
     let best = pass === 0 ? Infinity : (BALANCE.walker.autoEngageRadius * 2) ** 2;
     let next: TargetRef | null = null;
     for (const g of ctx.state.guards) {
-      if (g.state === 'DEAD' || g.hp <= 0 || g.dormant || (pass === 0 && g.shelter !== s.id)) continue;
+      if (g.state === 'DEAD' || g.hp <= 0 || g.dormant || (pass === 0 && g.shelter !== s.id) || !allow(g.id)) continue;
       const d = distSq(g.pos, s.center);
       if (d <= best) { best = d; next = { kind: 'guard', id: g.id }; }
     }
@@ -472,35 +495,13 @@ function selectEngagement(ctx: SimContext, z: ZombieAgent, s: Scratch): void {
       nearest = d; id = g.id;
     }
   }
-  if (id !== -1) z.engageTarget = { kind: 'guard', id };
-}
-
-/** Height of the crawlable obstacle (car roof, barrier) under this zombie's center; 0 on open ground. */
-function obstacleHeight(ctx: SimContext, z: ZombieAgent, s: Scratch): number {
-  const inset = z.radius * 0.5;
-  probe.minX = z.pos.x - inset; probe.maxX = z.pos.x + inset;
-  probe.minZ = z.pos.z - inset; probe.maxZ = z.pos.z + inset;
-  let height = 0;
-  for (const c of ctx.collision.queryAABB(probe, s.colliders)) {
-    if (c.blocksMove && isCrawlable(c) && z.pos.x > c.minX - inset && z.pos.x < c.maxX + inset &&
-        z.pos.z > c.minZ - inset && z.pos.z < c.maxZ + inset) height = Math.max(height, c.height);
+  if (id !== -1) { z.engageTarget = { kind: 'guard', id }; return; }
+  // A car right next to this zombie (stopped for a pedestrian, bogged down by the horde, ramming) gets mobbed.
+  for (const v of ctx.state.vehicles) {
+    if (isVehicleTargetable(v) && vehicleOverlap(v, z.pos, BALANCE.traffic.engageReach)) {
+      z.engageTarget = { kind: 'vehicle', id: v.id }; return;
+    }
   }
-  return height;
-}
-
-/** Enough packmates nearby to boost each other over a low obstacle. */
-function isGrouped(ctx: SimContext, z: ZombieAgent, s: Scratch): boolean {
-  const r = BALANCE.horde.crawlNeighborRadius;
-  s.neighbors.length = 0;
-  ctx.zombieHash.query(z.pos.x, z.pos.z, r, s.neighbors);
-  let count = 0;
-  for (const id of s.neighbors) {
-    if (id === z.id) continue;
-    const other = s.byId.get(id); // byId holds only living zombies
-    if (other && distSq(other.pos, z.pos) <= r * r &&
-        ++count >= BALANCE.horde.crawlMinNeighbors) return true;
-  }
-  return false;
 }
 
 function prepareMove(ctx: SimContext, s: Scratch, grid: INavigationGrid): void {
@@ -650,18 +651,26 @@ export function updateHorde(ctx: SimContext, dt: number, _input: SimInput): void
   for (const z of state.zombies) {
     if (z.state === 'ambient') { if (!z.dormant) wander(ctx, z, dt); continue; }
     if (z.state !== 'follower') continue;
-    const grid = z.brute ? ctx.navGrid : packGrid;
     z.stateTime += dt;
+    if (state.nestTravel) { z.engageTarget = null; continue; } // running into a nest: NestTravelSystem moves it
+    if (z.emergeTimer > 1e-9) { // still crawling out of the ground at a nest
+      z.emergeTimer = Math.max(0, z.emergeTimer - dt);
+      z.vel.x = z.vel.z = 0; z.engageTarget = null;
+      if (z.emergeTimer <= 1e-9) { z.emergeTimer = 0; z.anim = 'idle'; z.animTime = 0; }
+      continue;
+    }
+    const grid = z.brute ? ctx.navGrid : packGrid;
     selectEngagement(ctx, z, s);
     const distanceToLeader = Math.sqrt(distSq(z.pos, leader.pos));
     const buffed = frenzy && s.frenzyIds.has(z.id);
-    let speed = BALANCE.walker.speed * z.speedScale * speedMultiplier(state) *
+    const traitSpeed = traitSpeedMultiplier(state);
+    let speed = BALANCE.walker.speed * z.speedScale * speedMultiplier(state) * traitSpeed *
       (z.recruitFlash > 0 ? BALANCE.horde.recruitBoostMultiplier : 1) *
       (state.abilities.rushTimeLeft > 0 ? BALANCE.rush.speedMultiplier : 1);
     z.recruitFlash = Math.max(0, z.recruitFlash - dt);
     if (state.order.type !== 'move' && distanceToLeader > BALANCE.walker.catchUpDistance && !z.engageTarget) {
       speed = Math.max(speed * BALANCE.walker.catchUpMultiplier,
-        BALANCE.leader.walkSpeed * speedMultiplier(state) * BALANCE.walker.catchUpLeaderMargin);
+        BALANCE.leader.walkSpeed * speedMultiplier(state) * traitSpeed * BALANCE.walker.catchUpLeaderMargin);
     }
     if (buffed) speed *= hordeSpeedMultiplier(state);
     // Civilians outrun the horde unless this follower has Rush or Frenzy (todos #5).
@@ -676,10 +685,10 @@ export function updateHorde(ctx: SimContext, dt: number, _input: SimInput): void
           : Math.min(speed, flee * BALANCE.civilian.chaseSpeedFactor);
       }
     }
-    // Crawling: packed followers clamber over cars/barriers (slowly); stragglers path around.
-    const onObstacle = !z.brute && obstacleHeight(ctx, z, s) > 0;
-    if (onObstacle) speed *= BALANCE.horde.crawlSpeedMultiplier;
-    const canCrawl = !z.brute && (onObstacle || isGrouped(ctx, z, s));
+    // Climbing: every follower clambers over car-height obstacles (cars, barriers, short walls), slowly while on top.
+    // Brutes are too heavy and path around.
+    const canCrawl = !z.brute;
+    if (canCrawl && climbHeightAt(ctx.collision, z.pos, z.radius, s.colliders) > 0) speed *= BALANCE.horde.crawlSpeedMultiplier;
     const maxSpeed = speed;
     direction.x = direction.z = 0;
     let inRange = false;
@@ -703,6 +712,10 @@ export function updateHorde(ctx: SimContext, dt: number, _input: SimInput): void
         targetPos.z = Math.max(r.minZ, Math.min(r.maxZ, z.pos.z));
         inRange = distSq(z.pos, targetPos) <= reach * reach &&
           !ctx.collision.segmentBlocked(z.pos, targetPos, options);
+      } else if (z.engageTarget.kind === 'vehicle') {
+        // Claw at the nearest side of the moving car's footprint.
+        const v = findVehicle(state, z.engageTarget.id)!;
+        inRange = vehicleOverlap(v, z.pos, reach);
       } else if (z.engageTarget.kind === 'guard') {
         const id = z.engageTarget.id;
         const g = state.guards.find(g => g.id === id)!;
@@ -752,6 +765,15 @@ export function updateHorde(ctx: SimContext, dt: number, _input: SimInput): void
         if (d > 0.05) { direction.x = dx / d; direction.z = dz / d; }
         // Continuous arrival avoids an all-or-nothing ring boundary.
         speed *= Math.min(1, Math.max(0, (d - 0.15) / BALANCE.walker.followRingMin));
+        // Lightweight horde personality microbehaviors (docs/11_cityupgrade.md §2.7):
+        // idle followers in 'follow' mode occasionally shuffle/sniff around; any order or combat overrides immediately.
+        if (!move && !z.engageTarget && d < 1.0 && ctx.layout.strongholds.length > 0 &&
+            Math.hypot(leader.vel.x, leader.vel.z) < 0.3 && (z.id % 4) === 0) {
+          const sway = Math.sin(state.time * 1.4 + z.id * 1.7);
+          direction.x = Math.cos(sway);
+          direction.z = Math.sin(sway);
+          speed = BALANCE.walker.ambientSpeed * 0.45;
+        }
       } else if (needsWalkField || !field?.sample(z.pos, direction)) fallbackWalk(ctx, z, s, grid, anchor);
     }
     let vx = direction.x * speed, vz = direction.z * speed;
@@ -807,9 +829,9 @@ export function updateHorde(ctx: SimContext, dt: number, _input: SimInput): void
     z.vel.x = dt > 0 ? (z.pos.x - x) / dt : 0; z.vel.z = dt > 0 ? (z.pos.z - pz) / dt : 0;
     if (climbTop < 0) {
       // Off the tower: settle onto whatever low obstacle we're crawling across, or drop to the ground.
-      const rest = z.brute ? 0 : obstacleHeight(ctx, z, s);
+      const rest = z.brute ? 0 : climbHeightAt(ctx.collision, z.pos, z.radius, s.colliders);
       z.elevation = z.elevation < rest
-        ? Math.min(rest, z.elevation + 4 * dt)
+        ? Math.min(rest, z.elevation + BALANCE.horde.crawlClimbSpeed * dt)
         : Math.max(rest, z.elevation - BALANCE.guard.towerFallSpeed * dt);
     }
     const actualSpeed = Math.hypot(z.vel.x, z.vel.z);

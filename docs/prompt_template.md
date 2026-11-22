@@ -1,8 +1,8 @@
-@currentdesigdoc is docs/docs/todos.md 
+@currentdesigdoc is 13_hode_health.md
 
 Read @currentdesigndoc along with `AGENTS.md`, `CLAUDE.md`, and everything in `.agent-context/`.
 
-Act as the **Lead Orchestrator** to plan and implement `@currentdesigndoc` using our three subagents (`@agy-worker`, `@codex-worker`, and `@claude-worker`). Follow this exact execution loop:
+Act as the **Lead Orchestrator** to plan and implement `@currentdesigndoc` using our three subagents (`@agy-worker`, `@agy-architect` `@codex-worker`, and `@claude-worker`). Follow this exact execution loop:
 
 ### Phase 1: Contract & Task Board Setup (You)
 1. Analyze `@currentdesigndoc` and update `.agent-context/ARCHITECTURE.md` with the directory map, core data structures, and locked module interfaces.
@@ -28,7 +28,7 @@ Once approved, execute the tasks in dependency order:
 After all implementation tasks are `VERIFIED`:
 1. Run `@agy-worker` (read-only `plan` mode) to audit the codebase against `@currentdesigndoc` for missing requirements.
 2. Run `@codex-worker` (`read-only` mode) for an adversarial bug and edge-case review.
-3. Run `@claude-worker` to execute the full build and test suite and write `.agent-context/reports/FINAL-VERIFICATION.md`.
+3. Run `@claude-worker` and  to execute the full build and test suite and write `.agent-context/reports/FINAL-VERIFICATION.md`.
 4. Update `.agent-context/PROGRESS.md` to complete and give me a final summary of all reports and changes.
 
 Begin Phase 1 now.

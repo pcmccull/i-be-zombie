@@ -7,6 +7,7 @@
  * heavy sway, twitchy thin walker, fresh fast turn). All tuning for the animation controller lives here.
  */
 import { mulberry32 } from '../utils/rng';
+import type { BodyShapeId } from '../graphics/characters/characterTypes';
 
 /** Texture atlas tile ids (see visuals/zombieTextures.ts — the atlas is ATLAS_GRID × ATLAS_GRID tiles). */
 export const ATLAS_GRID = 5;
@@ -149,6 +150,8 @@ export interface ZombieProfile {
   width: number;
   /** 0 forward crumple, 1 twisting side fall, 2 backward collapse. */
   deathStyle: 0 | 1 | 2;
+  /** Skinned-mesh body shape (VP2): deterministic per id via its own salt; brutes are 'heavy', the Alpha 'alpha'. */
+  bodyShape: BodyShapeId;
 }
 
 export const ATTACK_STYLE = { swipeR: 0, swipeL: 1, grab: 2, bite: 3, overhead: 4 } as const;
@@ -208,6 +211,29 @@ function pickBody(r: () => number): BodyType {
     u -= w;
   }
   return 'regular';
+}
+
+/** Shape weights for bodies that don't constrain it (chosen so the whole crowd lands near 35/18/17/15/15 %). */
+const SHAPE_WEIGHTS: readonly [BodyShapeId, number][] = [
+  ['average', 0.468],
+  ['tallSkinny', 0.153],
+  ['shortRound', 0.147],
+  ['heavy', 0.119],
+  ['lanky', 0.113],
+];
+
+/** Deterministic body shape (salt 41 is new, so existing look / gait rolls per id are unchanged). */
+export function pickBodyShape(id: number, body: BodyType, brute: boolean): BodyShapeId {
+  if (brute) return 'heavy';
+  const u = hashId(id, 41) / 4294967296;
+  if (body === 'heavy') return u < 0.55 ? 'heavy' : 'shortRound';
+  if (body === 'thin') return u < 0.5 ? 'tallSkinny' : 'lanky';
+  let x = u;
+  for (const [shape, w] of SHAPE_WEIGHTS) {
+    if (x < w) return shape;
+    x -= w;
+  }
+  return 'average';
 }
 
 export interface ProfileFlags {
@@ -454,6 +480,7 @@ export function zombieProfile(id: number, flags: ProfileFlags = {}): ZombieProfi
     scale: bodyScaleFromId(id) * (flags.brute ? 1.5 : 1),
     width: widthBody * (flags.brute ? 1.2 : 1),
     deathStyle: (hashId(id, 13) % 3) as 0 | 1 | 2,
+    bodyShape: pickBodyShape(id, body, flags.brute === true),
   };
 }
 
@@ -506,5 +533,5 @@ export function alphaProfile(): ZombieProfile {
     accessories: [],
     tornLeg: -1,
   };
-  return { id: -1, seed: 0xa1fa, look, gait, scale: 1.22, width: 1.04, deathStyle: 0 };
+  return { id: -1, seed: 0xa1fa, look, gait, scale: 1.22, width: 1.04, deathStyle: 0, bodyShape: 'alpha' };
 }

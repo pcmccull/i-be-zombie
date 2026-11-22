@@ -3,15 +3,19 @@ import type { ICollisionWorld } from '../core/contracts';
 import type { GuardAgent, GuardSpawn } from '../core/types';
 
 export function createGuard(id: number, spawn: GuardSpawn, collision: ICollisionWorld): GuardAgent {
-  const tower = spawn.tower ? collision.findByTag('tower' + spawn.tower) : undefined;
-  const role = spawn.role ?? 'soldier';
+  const heavy = spawn.heavy;
+  // A tank crew sits inside its hull collider, handled like a tower footprint (melee/LOS ignore it) minus the climb.
+  const tower = spawn.tower ? collision.findByTag('tower' + spawn.tower)
+    : heavy === 'tank' && spawn.hullTag ? collision.findByTag(spawn.hullTag) : undefined;
+  const role = heavy ? 'soldier' : spawn.role ?? 'soldier';
   const civilian = role === 'civilian';
-  const maxHp = civilian ? BALANCE.civilian.maxHp : role === 'police' ? BALANCE.police.maxHp : BALANCE.guard.maxHp;
+  const maxHp = heavy ? BALANCE.heavy[heavy].maxHp
+    : civilian ? BALANCE.civilian.maxHp : role === 'police' ? BALANCE.police.maxHp : BALANCE.guard.maxHp;
   return {
     role, post: spawn.post ?? 'checkpoint', homeArea: spawn.homeArea ? { ...spawn.homeArea } : null,
     shelter: spawn.shelter ?? 0,
     id, pos: { ...spawn.pos }, prevPos: { ...spawn.pos }, vel: { x: 0, z: 0 },
-    facing: spawn.facing, prevFacing: spawn.facing, radius: civilian ? BALANCE.civilian.radius : BALANCE.guard.radius,
+    facing: spawn.facing, prevFacing: spawn.facing, radius: heavy === 'tank' ? BALANCE.heavy.tank.radius : civilian ? BALANCE.civilian.radius : BALANCE.guard.radius,
     hp: maxHp, maxHp, attackCooldown: 0,
     anim: 'idle', animTime: 0, hitFlash: 0, state: 'PATROL', stateTime: 0,
     tower: spawn.tower, towerColliderId: tower?.id ?? null, elevation: spawn.tower ? 4 : 0,
@@ -22,5 +26,7 @@ export function createGuard(id: number, spawn: GuardSpawn, collision: ICollision
     idleTimer: 0, perceptionTimer: 0, target: null, lostTargetTimer: 0,
     lastDamageSource: 'other', deathTime: null,
     strongholdId: spawn.strongholdId ?? null, dormant: false, staggerTime: 0, killedByAlpha: false,
+    ...(heavy ? { heavy, waypoints: [{ ...spawn.pos }] } : {}),
+    ...(heavy === 'tank' ? { hullFacing: spawn.facing } : {}),
   };
 }

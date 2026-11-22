@@ -69,7 +69,7 @@ describe('population radius activation', () => {
     expect(sim.drainEvents().filter(e => e.type === 'shot' && ids.has(e.guardId))).toHaveLength(0);
   });
 
-  it('uses the active captured nest while dead, falling back from inactive nests to the start nest', () => {
+  it('uses the active captured nest while dead, falling back to the beach start while no nest is active', () => {
     const sim = fixture(); sim.state.phase = 'respawning'; sim.state.leader.alive = false;
     sim.state.leader.pos = { x: 180, z: -140 };
     const nest = sim.ctx.layout.nests.find(n => n.strongholdId === 'police_station')!;
@@ -78,8 +78,8 @@ describe('population radius activation', () => {
     updatePopulation(sim.ctx, 0);
     for (const g of sim.state.guards) expect(g.dormant).toBe(Math.hypot(g.pos.x - nest.pos.x, g.pos.z - nest.pos.z) > BALANCE.population.activeRadius);
     sim.state.strongholds.find(s => s.id === 'police_station')!.captured = false;
-    advance(sim, 0.5); const start = sim.ctx.layout.nests.find(n => n.strongholdId === null)!;
-    for (const g of sim.state.guards) expect(g.dormant).toBe(Math.hypot(g.pos.x - start.pos.x, g.pos.z - start.pos.z) > BALANCE.population.activeRadius);
+    advance(sim, 0.5); const start = sim.ctx.layout.playerStart; // the walk-in nest by the bus is still unclaimed
+    for (const g of sim.state.guards) expect(g.dormant).toBe(Math.hypot(g.pos.x - start.x, g.pos.z - start.z) > BALANCE.population.activeRadius);
   });
 });
 

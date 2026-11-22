@@ -9,6 +9,9 @@ import { isNestActive, objectiveStatus, updateConquest } from '../src/systems/Co
 import { damageStructure, findStructure } from '../src/systems/StructureSystem';
 import { buildDistrictLayout } from '../src/world/districtLayout';
 import { getDistrictAt } from '../src/world/worldQueries';
+import { usePreBeachEconomy } from './support/preBeachEconomy';
+
+usePreBeachEconomy();
 
 let sim: Simulation;
 beforeEach(() => { sim = new Simulation(buildDistrictLayout()); });
@@ -95,7 +98,7 @@ describe('stronghold objectives and capture', () => {
     expect(events.filter(e => e.type === 'strongholdCaptured')).toHaveLength(1);
     expect(events.filter(e => e.type === 'abilityUnlocked')).toHaveLength(1);
     expect(events.filter(e => e.type === 'biomassGain' && e.reason === 'capture')).toEqual([
-      { type: 'biomassGain', amount: def.biomassReward, total: biomass, reason: 'capture' },
+      expect.objectContaining({ type: 'biomassGain', amount: def.biomassReward, total: biomass, reason: 'capture' }),
     ]);
     expect(events.filter(e => e.type === 'objectiveComplete')).toHaveLength(def.objectives.length);
     expect(events.filter(e => e.type === 'nestActivated')).toHaveLength(1);
@@ -241,6 +244,7 @@ describe('bounded reinforcements and nests', () => {
   });
 
   it('replenishes one free follower per interval to the target without recruitment stats or pulses', () => {
+    sim.state.leader.pos = { ...sim.ctx.layout.nests.find(n => n.id === 'nest_start')!.pos }; // the walk-in nest by the bus
     const initialStats = { ...sim.state.stats }, ids = new Set(sim.state.zombies.map(z => z.id));
     tick(BALANCE.nest.replenishInterval - 0.1); expect(sim.state.followerCount).toBe(5);
     tick(0.1); expect(sim.state.followerCount).toBe(6);

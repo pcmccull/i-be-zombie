@@ -6,9 +6,13 @@ import { createZombie, evolveToBrute } from '../src/entities/Zombie';
 import { createGuard } from '../src/entities/HumanGuard';
 import { Simulation } from '../src/sim/Simulation';
 import { applyHordeCommands, countFollowers, killZombie, recruitZombie, updateHorde } from '../src/systems/HordeSystem';
+import { canTarget } from '../src/systems/AwarenessSystem';
 import { updateNavigation } from '../src/systems/NavigationSystem';
 import { activateAbility, unlockAbility, updateProgression } from '../src/systems/ProgressionSystem';
 import { buildLegacyDistrictLayout } from '../src/world/legacyDistrictLayout';
+import { usePreBeachEconomy } from './support/preBeachEconomy';
+
+usePreBeachEconomy();
 
 const dt = BALANCE.sim.fixedDt;
 const stronghold: StrongholdDef = {
@@ -96,11 +100,11 @@ describe('open-world horde commands', () => {
 
   it('builds bounded move fields once per order, reuses them while moving, and invalidates on a nav rebuild', () => {
     const sim = fixture(); add(sim, -10);
-    const build = vi.spyOn(sim.ctx.navGrid, 'buildFlowField');
+    const build = vi.spyOn(sim.ctx.crawlNavGrid, 'buildFlowField');
     command(sim, { type: 'move', point: { x: 60, z: 0 } }); tick(sim, 60);
     const calls = () => build.mock.calls.filter(([goals]) => goals[0]?.x === 60);
     expect(calls()).toHaveLength(1); expect(calls()[0][2]).toBeGreaterThanOrEqual(BALANCE.nav.flowFieldMaxDistance);
-    sim.ctx.navGrid.rebuild(); tick(sim); expect(calls()).toHaveLength(2);
+    sim.ctx.crawlNavGrid.rebuild(); tick(sim); expect(calls()).toHaveLength(2);
     command(sim, { type: 'move', point: { x: 60, z: 0 } }); tick(sim);
     expect(calls()).toHaveLength(3);
     sim.state.time = sim.state.order.type === 'move' ? sim.state.order.expiresAt : -1;
@@ -150,15 +154,14 @@ describe('open-world horde commands', () => {
     expect(sim.state.order).toEqual({ type: 'attack', target: ref(a.id) }); expect(sim.state.squads).toHaveLength(0);
   });
 
-  it('regroups by recalling and rallying, respects the rally cooldown, and follows without rally', () => {
+  it('regroup (legacy) and follow both just recall the horde; neither rallies', () => {
     const sim = fixture(); const g = human(sim, 20), z = add(sim, 0);
     const ambient = add(sim, -36, 0, { state: 'ambient' });
     command(sim, { type: 'attack', target: ref(g.id), additive: false }); tick(sim);
     command(sim, { type: 'regroup' });
     expect(sim.state.order).toEqual({ type: 'follow' }); expect(z.engageTarget).toBeNull();
-    expect(ambient.state).toBe('follower'); expect(sim.state.abilities.rallyCooldown).toBe(BALANCE.rally.cooldown);
-    expect(sim.drainEvents().filter(e => e.type === 'rally')).toHaveLength(1);
-    command(sim, { type: 'regroup' }); expect(sim.drainEvents().filter(e => e.type === 'rally')).toHaveLength(0);
+    expect(ambient.state).toBe('ambient');
+    expect(sim.drainEvents().some(e => e.type === 'rally')).toBe(false);
     const unrecruited = add(sim, -36, 3, { state: 'ambient' });
     command(sim, { type: 'attack', target: ref(g.id), additive: false });
     command(sim, { type: 'follow' });
@@ -252,7 +255,7 @@ describe('Frenzy, population limits, and dormancy', () => {
 describe('bounded navigation and brute steering', () => {
   it('catches up beyond the follow-field bound without teleporting a visible follower and caches its path', () => {
     const sim = fixture([], false, true); sim.state.leader.pos = { x: 60, z: 0 };
-    const z = add(sim, -170); const path = vi.spyOn(sim.ctx.navGrid, 'findPath');
+    const z = add(sim, -170); const path = vi.spyOn(sim.ctx.crawlNavGrid, 'findPath');
     updateNavigation(sim.ctx, dt, emptyInput()); expect(sim.ctx.nav.followField!.distanceAt(z.pos)).toBe(Infinity);
     tick(sim, 50); expect(z.pos.x).toBeGreaterThan(-167); expect(z.pos.x).toBeLessThan(-160);
     expect(path).toHaveBeenCalledTimes(1); tick(sim, 20); expect(path).toHaveBeenCalledTimes(2);
@@ -264,7 +267,7 @@ describe('bounded navigation and brute steering', () => {
       height: 5, blocksMove: true, blocksSight: true, kind: 'wall' };
     const sim = fixture([wall]); sim.state.leader.pos = { x: 6, z: 0 };
     const pack = Array.from({ length: 5 }, (_, i) => add(sim, -5, i * 2));
-    const path = vi.spyOn(sim.ctx.navGrid, 'findPath');
+    const path = vi.spyOn(sim.ctx.crawlNavGrid, 'findPath');
     updateNavigation(sim.ctx, dt, emptyInput());
     expect(sim.ctx.nav.followField!.distanceAt(pack[0].pos)).toBe(Infinity);
     tick(sim); expect(path).toHaveBeenCalledTimes(2);
@@ -334,5 +337,68 @@ describe('bounded navigation and brute steering', () => {
     expect(roof).toBeGreaterThan(0.5); expect(detour).toBe(true); expect(brute.pos.x).toBeGreaterThan(5);
     expect(brute.radius).toBe(BALANCE.brute.radius);
     expect(brute.speedScale).toBe(BALANCE.brute.speedMultiplier);
+  });
+});
+
+describe('EW vision order gate (open world only)', () => {
+  const identify = (sim: Simulation, id: number): void => { sim.state.vision.identified.push(id); sim.state.vision.identified.sort((a, b) => a - b); };
+
+  it('turns an attack on an unidentified human into a move to its position', () => {
+    const sim = fixture([], true);
+    const g = human(sim, 70, 0);
+    expect(canTarget(sim.state, g.id)).toBe(false);
+    command(sim, { type: 'attack', target: ref(g.id), additive: false });
+    expect(sim.state.order.type).toBe('move');
+    if (sim.state.order.type === 'move') expect(Math.hypot(sim.state.order.point.x - 70, sim.state.order.point.z)).toBeLessThan(3);
+    expect(sim.state.squads).toHaveLength(0);
+  });
+
+  it('attacks an identified human, and split-target adds follow the same rule', () => {
+    const sim = fixture([], true);
+    const a = human(sim, 70, 0), b = human(sim, 70, 15);
+    identify(sim, a.id);
+    command(sim, { type: 'attack', target: ref(a.id), additive: false });
+    expect(sim.state.order).toEqual({ type: 'attack', target: ref(a.id) });
+    command(sim, { type: 'attack', target: ref(b.id), additive: true }); // unidentified: becomes a move, no squad added
+    expect(sim.state.squads).toHaveLength(0);
+    expect(sim.state.order.type).toBe('move');
+    identify(sim, a.id);
+    command(sim, { type: 'attack', target: ref(a.id), additive: false });
+    identify(sim, b.id);
+    command(sim, { type: 'attack', target: ref(b.id), additive: true });
+    expect(sim.state.squads.length + (sim.state.order.type === 'attack' ? 1 : 0)).toBe(2);
+  });
+
+  it('never auto-picks an unidentified human as the successor when the ordered target dies', () => {
+    const sim = fixture([], true);
+    add(sim, 60, 0);
+    const a = human(sim, 70, 0), b = human(sim, 74, 0);
+    identify(sim, a.id);
+    command(sim, { type: 'attack', target: ref(a.id), additive: false });
+    a.hp = 0; a.state = 'DEAD';
+    applyHordeCommands(sim.ctx, dt, emptyInput());
+    expect(sim.state.order).not.toEqual({ type: 'attack', target: ref(b.id) });
+    expect(sim.state.order.type).toBe('follow');
+    // Once identified, the same successor is allowed.
+    const c = human(sim, 78, 0); identify(sim, c.id);
+    const d = human(sim, 82, 0); identify(sim, d.id);
+    command(sim, { type: 'attack', target: ref(c.id), additive: false });
+    c.hp = 0; c.state = 'DEAD';
+    applyHordeCommands(sim.ctx, dt, emptyInput());
+    expect(sim.state.order).toEqual({ type: 'attack', target: ref(d.id) });
+  });
+
+  it('gates the left-click toggle path too', () => {
+    const sim = fixture([], true);
+    const g = human(sim, 70, 0);
+    applyHordeCommands(sim.ctx, dt, { ...emptyInput(), attackTarget: ref(g.id) });
+    expect(sim.state.order.type).toBe('move');
+  });
+
+  it('leaves the legacy layout unchanged', () => {
+    const sim = fixture([], false);
+    const g = human(sim, 70, 0);
+    command(sim, { type: 'attack', target: ref(g.id), additive: false });
+    expect(sim.state.order).toEqual({ type: 'attack', target: ref(g.id) });
   });
 });

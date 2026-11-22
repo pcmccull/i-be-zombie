@@ -9,6 +9,9 @@ import { applySave, createSave } from '../src/persistence/saveSchema';
 import { strongholdMeta } from '../src/content/strongholds';
 import { unlockAbility } from '../src/systems/ProgressionSystem';
 import { buildDistrictLayout } from '../src/world/districtLayout';
+import { usePreBeachEconomy } from './support/preBeachEconomy';
+
+usePreBeachEconomy();
 
 const layout = buildDistrictLayout();
 const dt = BALANCE.sim.fixedDt;
@@ -49,12 +52,16 @@ describe('Rush (first unlock)', () => {
     expect(ended).toBe(1);
     for (let t = 0; t < BALANCE.rush.cooldown; t += dt) step(sim);
     expect(step(sim, { ...emptyInput(), abilitySlot: 0 }).some(e => e.type === 'rushStart')).toBe(true);
-  });
+  }, 30_000); // ~3 s alone; the 5 s default timed out under parallel-suite load
 
   it('boosts follower speed while active', () => {
     const sim = new Simulation(layout, 7);
     const s = sim.state;
     unlockAbility(sim.ctx, 'rush');
+    // Open ground (the pre-beach start pose): from the beach start the Alpha soon walks into the promenade tree/bench.
+    const from = { x: -150, z: 115 }, dx = s.leader.pos.x - from.x, dz = s.leader.pos.z - from.z;
+    s.leader.pos = { ...from }; s.leader.prevPos = { ...from }; s.leader.facing = s.leader.prevFacing = Math.atan2(74, -14);
+    for (const z of s.zombies) if (z.state === 'follower') { z.pos = { x: z.pos.x - dx, z: z.pos.z - dz }; z.prevPos = { ...z.pos }; }
     const fastest = (): number => Math.max(...s.zombies.filter(z => z.state === 'follower').map(z => Math.hypot(z.vel.x, z.vel.z)));
     const walk = { ...emptyInput(), moveForward: 1 };
     let base = 0;
@@ -69,7 +76,6 @@ describe('Rush (first unlock)', () => {
     const sim = new Simulation(layout, 7);
     unlockAbility(sim.ctx, 'rush');
     sim.state.leader.alive = false;
-    sim.state.leader.hp = 0;
     expect(step(sim, { ...emptyInput(), abilitySlot: 0 }).some(e => e.type === 'rushStart')).toBe(false);
     expect(sim.state.abilities.rushTimeLeft).toBe(0);
   });

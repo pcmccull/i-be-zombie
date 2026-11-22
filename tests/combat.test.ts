@@ -5,7 +5,7 @@ import type { TargetRef, Vec2 } from '../src/core/types';
 import { createZombie } from '../src/entities/Zombie';
 import { updateLeader } from '../src/entities/ZombieLeader';
 import { Simulation } from '../src/sim/Simulation';
-import { canMelee, damageGate, damageGuard, damageLeader, damageZombie, updateCombat } from '../src/systems/CombatSystem';
+import { canMelee, damageGate, damageGuard, damageLeader, damageZombie, killLeader, updateCombat } from '../src/systems/CombatSystem';
 import { countFollowers, recruitZombie } from '../src/systems/HordeSystem';
 
 const dt = BALANCE.sim.fixedDt;
@@ -46,9 +46,9 @@ describe('combat: design §15.7–8', () => {
       z.engageTarget = friendly; updateCombat(sim.ctx, dt, input);
       expect(canMelee(sim.ctx, z.pos, 10, friendly)).toBe(false);
     }
-    expect(friend.hp).toBe(40); expect(sim.state.leader.hp).toBe(100);
+    expect(friend.hp).toBe(40); expect(sim.state.horde.alphaDamageTaken).toBe(0);
     z.engageTarget = target; damageZombie(sim.ctx, z, 40); damageZombie(sim.ctx, z, 10);
-    damageLeader(sim.ctx, 100); damageLeader(sim.ctx, 100);
+    killLeader(sim.ctx); killLeader(sim.ctx);
     sim.state.leader.pos = { ...g.pos };
     updateCombat(sim.ctx, dt, input); expect(g.hp).toBe(50);
     expect(countFollowers(sim.state)).toBe(sim.state.followerCount);

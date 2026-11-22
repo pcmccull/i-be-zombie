@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { BALANCE } from '../config/balance';
-import type { GameEvent, ZombieAgent } from '../core/types';
+import { diveProgress, diveStartTime } from '../systems/NestTravelSystem';
+import type { GameEvent, ZombieAgent, NestTravel } from '../core/types';
 import {
   animateZombie,
   createAnimInput,
@@ -9,9 +10,12 @@ import {
 } from './zombieAnimation';
 import {
   ACCESSORY_BONE,
+  ACCESSORY_HB,
+  BODY_FLAG,
   BONE,
   composeBones,
   createBoneMatrices,
+  createZombieBodyMaterial,
   createZombieMaterial,
   getAccessoryGeometries,
   getHordePartGeometries,
@@ -20,10 +24,34 @@ import {
   SILHOUETTE_ACCESSORIES,
   type HordePart,
 } from './zombieModel';
+import { BONE_ROW_FLOATS, BoneTexture } from '../graphics/characters/InstancedSkinning';
+import { bodyGeometry } from '../graphics/characters/CharacterFactory';
+import { HB, HUMANOID_BONE_COUNT, ZOMBIE_BODY_SHAPES, type BodyShapeId } from '../graphics/characters/characterTypes';
+import { BODY_SHAPES, bindInverses, poseToBoneMatrices, type BodyShape } from '../graphics/characters/humanoidRig';
+import { QUALITY_PRESETS, type QualityProfile } from '../graphics/performance/GraphicsQuality';
 import { ACCESSORY_KINDS, TILE, zombieProfile, type AccessoryKind, type ZombieProfile } from './zombieProfiles';
 import { createPose, type ZombiePose } from './zombieRig';
+import { asGroundDecal, DECAL_STEP, DECAL_Y } from '../world/groundLevels';
 
 const TWO_PI = Math.PI * 2;
+
+/**
+ * Feature flag (VP2-T009 -> T014 sign-off): true = one skinned body mesh per (shape x LOD); false = the old 15 rigid
+ * parts per zombie (kept compiling as the fallback; the constructor option `{ skinned }` overrides per instance).
+ */
+export const USE_SKINNED_HORDE = true;
+
+/** Cache layout per zombie (floats): skin matrices | head matrix (scaled) | chest matrix (scaled), all character space. */
+const CACHE_HEAD = BONE_ROW_FLOATS;
+const CACHE_CHEST = BONE_ROW_FLOATS + 16;
+const CACHE_FLOATS = BONE_ROW_FLOATS + 32;
+/** Head accessories / hats were authored for the old (smaller) head: scale them with the new head. */
+const HEAD_ACC_SCALE = 1.12;
+/** Seconds a stronghold-capture celebration lasts, and how far from the Alpha followers join in. */
+const CELEBRATE_SECONDS = 4.5;
+const CELEBRATE_RADIUS = 32;
+const SHAPE_INDEX: Record<BodyShapeId, number> = { average: 0, tallSkinny: 1, shortRound: 2, heavy: 3, lanky: 4, alpha: 0 };
+const IDENTITY16 = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 
 /** Camera distance (m) below which zombies get full detail / medium detail; beyond = far LOD. */
 const LOD_NEAR = 22;
@@ -45,6 +73,37 @@ function wrapAngle(a: number): number {
   return a - Math.PI;
 }
 
+/** Marks the first `n` instances of a per-instance attribute for upload. */
+function touch(a: THREE.InstancedBufferAttribute, n: number): void {
+  a.clearUpdateRanges();
+  a.addUpdateRange(0, n * a.itemSize);
+  a.needsUpdate = true;
+}
+
+/** out[16] = a[16] * b[16] (column-major 4x4, alloc-free). */
+function mul4(a: Float32Array, ao: number, b: Float32Array, bo: number, out: Float32Array, oo: number): void {
+  for (let c = 0; c < 4; c++) {
+    const b0 = b[bo + c * 4], b1 = b[bo + c * 4 + 1], b2 = b[bo + c * 4 + 2], b3 = b[bo + c * 4 + 3];
+    for (let r = 0; r < 4; r++) {
+      out[oo + c * 4 + r] = a[ao + r] * b0 + a[ao + 4 + r] * b1 + a[ao + 8 + r] * b2 + a[ao + 12 + r] * b3;
+    }
+  }
+}
+
+/** skin[i] = world[i] * bindInverse[i] for all 21 bones. */
+function skinMatrices(world: Float32Array, bindInv: Float32Array, out: Float32Array): void {
+  for (let i = 0; i < HUMANOID_BONE_COUNT; i++) mul4(world, i * 16, bindInv, i * 16, out, i * 16);
+}
+
+/** dst = src with columns 0/1/2 scaled (a scale applied in the bone's local frame). */
+function copyScaled(src: Float32Array, so: number, dst: Float32Array, dof: number, sx: number, sy: number, sz: number): void {
+  for (let k = 0; k < 3; k++) {
+    dst[dof + k] = src[so + k] * sx; dst[dof + 4 + k] = src[so + 4 + k] * sy; dst[dof + 8 + k] = src[so + 8 + k] * sz;
+  }
+  dst[dof + 3] = dst[dof + 7] = dst[dof + 11] = 0;
+  dst[dof + 12] = src[so + 12]; dst[dof + 13] = src[so + 13]; dst[dof + 14] = src[so + 14]; dst[dof + 15] = 1;
+}
+
 /** Renderer-side per-zombie record (profile + animation state); never part of GameState. */
 interface Entry {
   profile: ZombieProfile;
@@ -52,16 +111,40 @@ interface Entry {
   brute: boolean;
   converted: boolean;
   lastHitFlash: number;
+  /** Sim time this follower started its nest-teleport dive; -1 = not diving. */
+  diveAt: number;
   hitFromX: number;
   hitFromZ: number;
   seenFrame: number;
   accTints: number[];
+  /** Skinned path: body LOD with hysteresis, cached character-space matrices, deferred animation ticks. */
+  lod: 0 | 1;
+  cache: Float32Array | null;
+  cacheOk: boolean;
+  pendingDt: number;
+  pendingHit: boolean;
+  pendHitX: number;
+  pendHitZ: number;
 }
 
 interface PartMesh {
   mesh: THREE.InstancedMesh;
   tile: THREE.InstancedBufferAttribute;
   skin: THREE.InstancedBufferAttribute;
+  count: number;
+}
+
+/** One skinned body draw (shape x LOD): a Mesh over an InstancedBufferGeometry (see InstancedSkinning.ts). */
+interface BodyMesh {
+  mesh: THREE.Mesh;
+  geo: THREE.InstancedBufferGeometry;
+  row: THREE.InstancedBufferAttribute;
+  root: THREE.InstancedBufferAttribute;
+  look: THREE.InstancedBufferAttribute;
+  skin: THREE.InstancedBufferAttribute;
+  shirt: THREE.InstancedBufferAttribute;
+  pants: THREE.InstancedBufferAttribute;
+  shoe: THREE.InstancedBufferAttribute;
   count: number;
 }
 
@@ -74,9 +157,14 @@ export class HordeRenderer {
   readonly group: THREE.Group;
 
   private readonly maxInstances: number;
-  private readonly parts: Record<HordePart, PartMesh>;
+  private readonly skinned: boolean;
+  private readonly parts: Record<HordePart, PartMesh> | null;
+  private readonly bodies: Map<string, BodyMesh> = new Map();
+  private readonly bodyList: BodyMesh[] = [];
+  private readonly boneTex: BoneTexture | null;
+  private readonly bodyMaterial: THREE.MeshStandardMaterial | null;
   private readonly accessories: Record<AccessoryKind, AccMesh>;
-  private readonly partMaterial: THREE.MeshStandardMaterial;
+  private readonly partMaterial: THREE.MeshStandardMaterial | null;
   private readonly accMaterial: THREE.MeshStandardMaterial;
   private readonly shadowMesh: THREE.InstancedMesh;
   private readonly shadowGeo: THREE.BufferGeometry;
@@ -95,6 +183,15 @@ export class HordeRenderer {
   private readonly unitScale = new THREE.Vector3(1, 1, 1);
   private readonly discScale = new THREE.Vector3(1, 1, 1);
   private readonly pose: ZombiePose = createPose();
+  // Skinned path scratch (alloc-free): world bone matrices, per-shape mutable BodyShape copies + bind inverses.
+  private readonly worldScratch = new Float32Array(BONE_ROW_FLOATS);
+  private readonly shapes = {} as Record<BodyShapeId, BodyShape>;
+  private readonly bindInv = {} as Record<BodyShapeId, Float32Array>;
+  private readonly matA = new THREE.Matrix4();
+  private readonly matB = new THREE.Matrix4();
+  private quality: Pick<QualityProfile, 'characterLod0Distance' | 'boneUpdateTiers'> = QUALITY_PRESETS.high;
+  private clock = 0;
+  private celebrateStart = -1;
   private readonly animInput = createAnimInput();
 
   private readonly colorSkin = new THREE.Color();
@@ -117,6 +214,7 @@ export class HordeRenderer {
 
   private readonly table = new Map<number, Entry>();
   private frame = 0;
+  private nestTravel: NestTravel | null = null;
   private lastSimTime = -1;
   private stalled = 0;
 
@@ -142,30 +240,44 @@ export class HordeRenderer {
   drawnCount = 0;
   /** Zombies per LOD tier last update (near, mid, far). */
   readonly lodCounts: [number, number, number] = [0, 0, 0];
+  /** Skinned bodies drawn at body LOD0 / LOD1 last update. */
+  readonly bodyLodCounts: [number, number] = [0, 0];
+  /** Zombies whose bones were recomputed last update (rest reused their cached matrices). */
+  boneUpdates = 0;
+  /** Draw calls this renderer issues (skinned bodies + accessories + shadow + marker), as of the last update. */
+  bodyDraws = 0;
   /** CPU time of the last update() (ms), exponentially smoothed. */
   updateMs = 0;
+  /** World head-bone matrices of the zombies drawn last update (slot per drawn zombie, looked up by id). */
+  private readonly headMats: Float32Array;
+  private readonly headSlot = new Map<number, number>();
 
-  constructor(maxInstances = 220) {
+  constructor(maxInstances = 220, options: { skinned?: boolean } = {}) {
     this.maxInstances = maxInstances;
+    this.skinned = options.skinned ?? USE_SKINNED_HORDE;
+    this.headMats = new Float32Array(maxInstances * 16);
     this.group = new THREE.Group();
     this.group.name = 'HordeRenderer';
 
-    this.partMaterial = createZombieMaterial({ instanced: true });
     this.accMaterial = createZombieMaterial({ instanced: true });
+    this.partMaterial = this.skinned ? null : createZombieMaterial({ instanced: true });
+    this.boneTex = this.skinned ? new BoneTexture(maxInstances) : null;
+    this.bodyMaterial = this.boneTex ? createZombieBodyMaterial(this.boneTex) : null;
+    if (this.boneTex) this.createBodies(maxInstances);
 
-    const partGeos = getHordePartGeometries();
     const parts = {} as Record<HordePart, PartMesh>;
-    for (const part of HORDE_PARTS) {
+    const partGeos = this.skinned ? null : getHordePartGeometries();
+    for (const part of this.skinned ? [] : HORDE_PARTS) {
       const cap = PAIRED_PARTS.has(part) ? maxInstances * 2 : maxInstances;
       // Each InstancedMesh needs its own geometry object for the per-instance attributes.
-      const geo = partGeos[part].clone();
+      const geo = partGeos![part].clone();
       const tile = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1);
       const skin = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3);
       tile.setUsage(THREE.DynamicDrawUsage);
       skin.setUsage(THREE.DynamicDrawUsage);
       geo.setAttribute('aTile', tile);
       geo.setAttribute('aSkin', skin);
-      const m = new THREE.InstancedMesh(geo, this.partMaterial, cap);
+      const m = new THREE.InstancedMesh(geo, this.partMaterial!, cap);
       m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       m.frustumCulled = false;
       m.castShadow = false;
@@ -176,7 +288,7 @@ export class HordeRenderer {
       this.group.add(m);
       parts[part] = { mesh: m, tile, skin, count: 0 };
     }
-    this.parts = parts;
+    this.parts = this.skinned ? null : parts;
 
     const accGeos = getAccessoryGeometries();
     const acc = {} as Record<AccessoryKind, AccMesh>;
@@ -203,6 +315,7 @@ export class HordeRenderer {
       opacity: 0.42,
       depthWrite: false,
     });
+    asGroundDecal(this.shadowMat);
     this.shadowMesh = new THREE.InstancedMesh(this.shadowGeo, this.shadowMat, maxInstances);
     this.shadowMesh.frustumCulled = false;
     this.shadowMesh.count = 0;
@@ -219,6 +332,7 @@ export class HordeRenderer {
       depthWrite: false,
       side: THREE.DoubleSide,
     });
+    asGroundDecal(this.markerMat);
     this.markerMesh = new THREE.InstancedMesh(this.markerGeo, this.markerMat, maxInstances);
     this.markerMesh.frustumCulled = false;
     this.markerMesh.count = 0;
@@ -226,6 +340,47 @@ export class HordeRenderer {
     this.markerMesh.name = 'HordeFollowerMarkers';
     this.group.add(this.markerMesh);
   }
+
+  /** Creates the shape x LOD skinned draws (<= 10 body draw calls). */
+  private createBodies(maxInstances: number): void {
+    for (const shape of ZOMBIE_BODY_SHAPES) {
+      this.shapes[shape] = { ...BODY_SHAPES[shape] };
+      this.bindInv[shape] = bindInverses(BODY_SHAPES[shape]);
+      for (const lod of [0, 1] as const) {
+        const base = bodyGeometry(shape, lod);
+        const geo = new THREE.InstancedBufferGeometry();
+        geo.index = base.index;
+        for (const name of Object.keys(base.attributes)) geo.setAttribute(name, base.getAttribute(name));
+        const inst = (size: number): THREE.InstancedBufferAttribute => {
+          const a = new THREE.InstancedBufferAttribute(new Float32Array(maxInstances * size), size);
+          a.setUsage(THREE.DynamicDrawUsage);
+          return a;
+        };
+        const row = inst(1), root = inst(4), look = inst(4), skin = inst(3), shirt = inst(3), pants = inst(3), shoe = inst(3);
+        geo.setAttribute('aBoneRow', row);
+        geo.setAttribute('aRoot', root);
+        geo.setAttribute('aLook', look);
+        geo.setAttribute('aSkin', skin);
+        geo.setAttribute('aShirt', shirt);
+        geo.setAttribute('aPants', pants);
+        geo.setAttribute('aShoe', shoe);
+        geo.instanceCount = 0;
+        const mesh = new THREE.Mesh(geo, this.bodyMaterial!);
+        mesh.frustumCulled = false;
+        mesh.castShadow = false; // skinned bodies use blob shadows (no skinned depth material); see InstancedSkinning.ts
+        mesh.receiveShadow = true;
+        mesh.visible = false;
+        mesh.name = `HordeBody_${shape}_${lod}`;
+        this.group.add(mesh);
+        const bm: BodyMesh = { mesh, geo, row, root, look, skin, shirt, pants, shoe, count: 0 };
+        this.bodies.set(`${shape}:${lod}`, bm);
+        this.bodyList.push(bm);
+      }
+    }
+  }
+
+  /** Graphics quality profile for body LOD distance + bone-update tiers (Game calls this when it changes presets). */
+  setQuality(q: Pick<QualityProfile, 'characterLod0Distance' | 'boneUpdateTiers'>): void { this.quality = q; }
 
   /**
    * Per-frame view context (call before update). Zombies farther than `radius` (default
@@ -247,6 +402,17 @@ export class HordeRenderer {
     this.camX = x;
     this.camY = y;
     this.camZ = z;
+  }
+
+  /**
+   * World matrix of zombie `id`'s animated head bone from the last update() (scale included), written into `out`.
+   * False when that zombie was not drawn. Lets overlays (companion hats) ride the head like built-in accessories.
+   */
+  headMatrixOf(id: number, out: THREE.Matrix4): boolean {
+    const slot = this.headSlot.get(id);
+    if (slot === undefined) return false;
+    out.fromArray(this.headMats, slot * 16);
+    return true;
   }
 
   /** Followers glance at the Alpha now and then (restless crowd awareness). */
@@ -279,6 +445,8 @@ export class HordeRenderer {
           const dz = z.pos.z - ev.pos.z;
           if (dx * dx + dz * dz <= r2) this.frenzyCohort.add(z.id);
         }
+      } else if (ev.type === 'strongholdCaptured') {
+        this.celebrateStart = this.clock;
       } else if (ev.type === 'frenzyEnd') {
         this.frenzyCohort.clear();
       } else if (ev.type === 'shot' && ev.hit && this.shots.length < 32) {
@@ -310,10 +478,18 @@ export class HordeRenderer {
         brute,
         converted: z.isConverted,
         lastHitFlash: z.hitFlash,
+        diveAt: -1,
         hitFromX: 0,
         hitFromZ: 0,
         seenFrame: this.frame,
         accTints: [],
+        lod: 0,
+        cache: null,
+        cacheOk: false,
+        pendingDt: 0,
+        pendingHit: false,
+        pendHitX: 0,
+        pendHitZ: 0,
       };
       this.fillAccTints(e);
       this.table.set(z.id, e);
@@ -322,6 +498,7 @@ export class HordeRenderer {
       e.profile = zombieProfile(z.id, { isConverted: z.isConverted, brute, variant: z.variant });
       e.brute = brute;
       e.converted = z.isConverted;
+      e.cacheOk = false;
       this.fillAccTints(e);
     }
     e.seenFrame = this.frame;
@@ -347,7 +524,7 @@ export class HordeRenderer {
   }
 
   private pushPart(part: HordePart, bone: number, tile: number, tint: THREE.Color, skin: THREE.Color): void {
-    const pm = this.parts[part];
+    const pm = this.parts![part];
     const i = pm.count++;
     pm.mesh.setMatrixAt(i, this.bones[bone]);
     pm.mesh.setColorAt(i, tint);
@@ -358,6 +535,9 @@ export class HordeRenderer {
   /**
    * @param time sim time (s); @param dt real frame delta (s) for animation (defaults to the sim-time delta).
    */
+  /** Nest teleport in progress (GameState.nestTravel): followers play their dive into the hole. */
+  setNestTravel(travel: NestTravel | null): void { this.nestTravel = travel; }
+
   update(
     zombies: readonly ZombieAgent[],
     alpha: number,
@@ -373,9 +553,19 @@ export class HordeRenderer {
     if (simDelta > 1e-6) this.stalled = 0; else this.stalled += frameDt;
     this.lastSimTime = time;
     const animDt = this.stalled > 0.1 ? 0 : frameDt;
+    this.clock += animDt;
+    const skinned = this.skinned;
+    const celebrating = skinned && this.celebrateStart >= 0 && this.clock - this.celebrateStart < CELEBRATE_SECONDS;
+    if (!celebrating) this.celebrateStart = -1;
+    const [boneT0, boneT1] = this.quality.boneUpdateTiers;
+    const lod0Dist = this.quality.characterLod0Distance;
+    this.boneUpdates = 0;
+    this.bodyLodCounts[0] = this.bodyLodCounts[1] = 0;
 
-    for (const p of HORDE_PARTS) this.parts[p].count = 0;
+    if (this.parts) for (const p of HORDE_PARTS) this.parts[p].count = 0;
+    for (let i = 0; i < this.bodyList.length; i++) this.bodyList[i].count = 0;
     for (const k of ACCESSORY_KINDS) this.accessories[k].count = 0;
+    this.headSlot.clear();
 
     let count = 0;
     let shadowIdx = 0;
@@ -415,9 +605,13 @@ export class HordeRenderer {
 
       // LOD tier from camera distance.
       let detail: 0 | 1 | 2 = 0;
+      let dist = 0;
       if (this.hasCamera) {
         const d2 = (ix - this.camX) ** 2 + this.camY * this.camY * 0.25 + (iz - this.camZ) ** 2;
         detail = d2 < LOD_NEAR * LOD_NEAR ? 0 : d2 < LOD_MID * LOD_MID ? 1 : 2;
+        dist = Math.sqrt(d2);
+      } else if (this.hasFocus) {
+        dist = Math.hypot(ix - this.focusX, iz - this.focusZ);
       }
       this.lodCounts[detail]++;
 
@@ -430,6 +624,8 @@ export class HordeRenderer {
       inp.animTime = z.animTime;
       inp.deadTime = 0;
       inp.riseT = 0;
+      inp.emerge = false;
+      inp.dive = -1;
       if (z.state === 'dead') {
         inp.anim = 'dead';
         inp.deadTime = z.stateTime;
@@ -440,7 +636,17 @@ export class HordeRenderer {
       } else if (z.state === 'rising') {
         inp.anim = 'rise';
         inp.riseT = z.stateTime / riseDur;
+      } else if (z.emergeTimer > 1e-9) {
+        // Nest spawn crawling up out of the ground (extra stagger time = still buried).
+        inp.anim = 'rise';
+        inp.emerge = true;
+        inp.riseT = Math.max(0, 1 - z.emergeTimer / Math.max(0.01, BALANCE.respawn.emergeTime));
       }
+      const travel = this.nestTravel;
+      if (travel && z.state === 'follower' && z.hp > 0) {
+        entry.diveAt = diveStartTime(travel, z.pos, entry.diveAt, time);
+        inp.dive = diveProgress(entry.diveAt, time);
+      } else entry.diveAt = -1;
       inp.mode = z.state === 'follower' ? (z.engageTarget ? 'attack' : 'follow') : 'ambient';
       inp.engaged = z.state === 'follower' && z.engageTarget !== null;
       inp.cooldown = z.attackCooldown;
@@ -449,6 +655,12 @@ export class HordeRenderer {
       inp.attackStyle = -1;
       inp.stun = 0;
       inp.detail = detail;
+      inp.celebrate = -1;
+      if (celebrating && z.state === 'follower' && this.leaderAlive) {
+        const cdx = ix - this.leaderX;
+        const cdz = iz - this.leaderZ;
+        if (cdx * cdx + cdz * cdz < CELEBRATE_RADIUS * CELEBRATE_RADIUS) inp.celebrate = this.clock - this.celebrateStart;
+      }
       const hitEdge = z.hitFlash > entry.lastHitFlash + 1e-4;
       entry.lastHitFlash = z.hitFlash;
       inp.hitImpulse = hitEdge && z.state !== 'dead';
@@ -464,14 +676,66 @@ export class HordeRenderer {
       if (z.state === 'follower' && this.leaderAlive) {
         inp.lookYaw = wrapAngle(Math.atan2(this.leaderX - ix, this.leaderZ - iz) - facing);
       }
-      animateZombie(entry.anim, prof, inp, this.pose);
 
       // --- Skeleton ----------------------------------------------------------
       this.posVec.set(ix, sinkY + z.elevation, iz);
       this.euler.set(0, facing, 0, 'XYZ');
       this.quat.setFromEuler(this.euler);
       this.rootMatrix.compose(this.posVec, this.quat, this.unitScale);
-      composeBones(this.pose, this.rootMatrix, prof.scale, prof.width, this.bones);
+      let body: BodyMesh | null = null;
+      let bodyIdx = 0;
+      if (skinned) {
+        // Body LOD (hysteresis +-8 %) and bone-update tier (stagger by id). The root (position / yaw) is applied in
+        // the shader from aRoot every frame, so zombies whose bones are reused still move smoothly.
+        const shapeId: BodyShapeId = prof.bodyShape === 'alpha' ? 'average' : prof.bodyShape;
+        const lodNow = entry.lod;
+        if (lodNow === 0 && dist > lod0Dist * 1.08) entry.lod = 1;
+        else if (lodNow === 1 && dist < lod0Dist * 0.92) entry.lod = 0;
+        this.bodyLodCounts[entry.lod]++;
+        const period = dist < boneT0 ? 1 : dist < boneT1 ? 2 : 4;
+        const tick = period === 1 || !entry.cacheOk || (this.frame + z.id) % period === 0;
+        if (!entry.cache) entry.cache = new Float32Array(CACHE_FLOATS);
+        const cache = entry.cache;
+        if (tick) {
+          inp.dt = animDt + entry.pendingDt;
+          if (entry.pendingHit) {
+            if (!inp.hitImpulse) { inp.hitFromX = entry.pendHitX; inp.hitFromZ = entry.pendHitZ; }
+            inp.hitImpulse = true;
+          }
+          entry.pendingDt = 0;
+          entry.pendingHit = false;
+          animateZombie(entry.anim, prof, inp, this.pose);
+          const bs = this.shapes[shapeId];
+          const base = BODY_SHAPES[shapeId];
+          bs.scale = entry.brute ? prof.scale : prof.scale * base.scale;
+          bs.width = prof.width * base.width;
+          poseToBoneMatrices(this.pose, bs, IDENTITY16, this.worldScratch, 0);
+          skinMatrices(this.worldScratch, this.bindInv[shapeId], cache);
+          // Head / chest frames (accessories, companion hats) with the shape's head / torso scale baked in.
+          const hsc = HEAD_ACC_SCALE * base.headScale;
+          copyScaled(this.worldScratch, HB.head * 16, cache, CACHE_HEAD, hsc, hsc, hsc);
+          copyScaled(this.worldScratch, HB.chest * 16, cache, CACHE_CHEST, base.torsoWidth * 1.1, 1, base.torsoDepth * 1.1);
+          entry.cacheOk = true;
+          this.boneUpdates++;
+        } else {
+          entry.pendingDt += animDt;
+          if (hitEdge) { entry.pendingHit = true; entry.pendHitX = inp.hitFromX; entry.pendHitZ = inp.hitFromZ; }
+        }
+        body = this.bodyList[SHAPE_INDEX[shapeId] * 2 + entry.lod];
+        bodyIdx = body.count++;
+        const row = count - 1;
+        this.boneTex!.data.set(cache.subarray(0, BONE_ROW_FLOATS), row * BONE_ROW_FLOATS);
+        this.matA.fromArray(cache, CACHE_HEAD);
+        this.matB.multiplyMatrices(this.rootMatrix, this.matA);
+        this.matB.toArray(this.headMats, row * 16);
+        body.row.setX(bodyIdx, row);
+        body.root.setXYZW(bodyIdx, ix, sinkY + z.elevation, iz, facing);
+      } else {
+        animateZombie(entry.anim, prof, inp, this.pose);
+        composeBones(this.pose, this.rootMatrix, prof.scale, prof.width, this.bones);
+        this.bones[BONE.head].toArray(this.headMats, (count - 1) * 16);
+      }
+      this.headSlot.set(z.id, count - 1);
 
       // --- Colours (part tints) & state tinting ---------------------------------
       this.colorSkin.setHex(look.skin);
@@ -537,6 +801,16 @@ export class HordeRenderer {
       // --- Instances -------------------------------------------------------------
       const skin = this.colorSkin;
       const longSleeves = look.sleeves === 'long';
+      if (body) {
+        const flags = (look.shorts ? BODY_FLAG.shorts : 0) | (look.tornLeg === 1 ? BODY_FLAG.tornL : 0)
+          | (look.tornLeg === -1 ? BODY_FLAG.tornR : 0) | (longSleeves ? BODY_FLAG.longSleeves : 0)
+          | (look.sleeves === 'none' ? BODY_FLAG.noSleeves : 0);
+        body.look.setXYZW(bodyIdx, look.torsoTile, look.pantsTile, look.skinTile, flags);
+        body.skin.setXYZ(bodyIdx, skin.r, skin.g, skin.b);
+        body.shirt.setXYZ(bodyIdx, this.colorShirt.r, this.colorShirt.g, this.colorShirt.b);
+        body.pants.setXYZ(bodyIdx, this.colorPants.r, this.colorPants.g, this.colorPants.b);
+        body.shoe.setXYZ(bodyIdx, this.colorShoe.r, this.colorShoe.g, this.colorShoe.b);
+      } else {
       this.pushPart('head', BONE.head, look.skinTile, skin, skin);
       if (detail < 2) this.pushPart('jaw', BONE.jaw, look.skinTile, skin, skin);
       this.pushPart('torso', BONE.spine, look.torsoTile, this.colorShirt, skin);
@@ -560,12 +834,17 @@ export class HordeRenderer {
         else this.pushPart('shin', sh, look.pantsTile, this.colorPants, skin);
         this.pushPart('foot', ft, TILE.leather, this.colorShoe, skin);
       }
+      }
       for (let a = 0; a < look.accessories.length; a++) {
         const kind = look.accessories[a];
         if (detail === 2 && !SILHOUETTE_ACCESSORIES.has(kind)) continue;
         const am = this.accessories[kind];
         const i = am.count++;
-        am.mesh.setMatrixAt(i, this.bones[ACCESSORY_BONE[kind]]);
+        if (body) {
+          this.matA.fromArray(entry.cache!, ACCESSORY_HB[kind] === HB.head ? CACHE_HEAD : CACHE_CHEST);
+          this.matB.multiplyMatrices(this.rootMatrix, this.matA);
+          am.mesh.setMatrixAt(i, this.matB);
+        } else am.mesh.setMatrixAt(i, this.bones[ACCESSORY_BONE[kind]]);
         this.colorAcc.setHex(entry.accTints[a] ?? 0xffffff);
         if (z.hitFlash > 0) this.colorAcc.lerp(this.colorWhite, Math.min(1, z.hitFlash * 7.5));
         if (flashBoost > 0) this.colorAcc.multiplyScalar(1 + flashBoost);
@@ -574,8 +853,8 @@ export class HordeRenderer {
 
       // Blob shadow under every non-dead zombie
       const scale = prof.scale;
-      if (z.state !== 'dead') {
-        this.posVec.set(ix, 0.018, iz);
+      if (z.state !== 'dead' && inp.dive < 0.7) { // a zombie that dove into a nest is underground: no shadow
+        this.posVec.set(ix, DECAL_Y, iz);
         this.quat.identity();
         this.discScale.setScalar(scale * prof.width);
         this.discMatrix.compose(this.posVec, this.quat, this.discScale);
@@ -584,7 +863,7 @@ export class HordeRenderer {
 
       // Pale-green (or rush orange-red) ground marker ring under follower zombies
       if (z.state === 'follower') {
-        this.posVec.set(ix, 0.026, iz);
+        this.posVec.set(ix, DECAL_Y + DECAL_STEP, iz);
         this.quat.identity();
         const frenzied = frenzyOn && this.frenzyCohort.has(z.id);
         const ringScale = rushActive || frenzied ? scale * (1.08 + 0.1 * Math.sin(time * 12 + phase)) : scale;
@@ -598,7 +877,19 @@ export class HordeRenderer {
     }
 
     this.drawnCount = count;
-    for (const p of HORDE_PARTS) {
+    let draws = 0;
+    for (let bi = 0; bi < this.bodyList.length; bi++) {
+      const b = this.bodyList[bi];
+      const n = b.count;
+      b.geo.instanceCount = n;
+      b.mesh.visible = n > 0;
+      if (n === 0) continue;
+      draws++;
+      touch(b.row, n); touch(b.root, n); touch(b.look, n); touch(b.skin, n);
+      touch(b.shirt, n); touch(b.pants, n); touch(b.shoe, n);
+    }
+    if (this.boneTex) this.boneTex.markRows(count);
+    if (this.parts) for (const p of HORDE_PARTS) {
       const pm = this.parts[p];
       pm.mesh.count = pm.count;
       pm.mesh.instanceMatrix.needsUpdate = true;
@@ -613,6 +904,8 @@ export class HordeRenderer {
       if (am.mesh.instanceColor) am.mesh.instanceColor.needsUpdate = true;
     }
 
+    for (const k of ACCESSORY_KINDS) if (this.accessories[k].count > 0) draws++;
+    this.bodyDraws = draws + (shadowIdx > 0 ? 1 : 0) + (markerIdx > 0 ? 1 : 0);
     this.shadowMesh.count = shadowIdx;
     this.shadowMesh.instanceMatrix.needsUpdate = true;
 
@@ -630,16 +923,23 @@ export class HordeRenderer {
   }
 
   dispose(): void {
-    this.partMaterial.dispose();
+    this.partMaterial?.dispose();
+    this.bodyMaterial?.dispose();
+    this.boneTex?.dispose();
     this.accMaterial.dispose();
     this.shadowGeo.dispose();
     this.shadowMat.dispose();
     this.markerGeo.dispose();
     this.markerMat.dispose();
-    for (const part of HORDE_PARTS) {
-      this.parts[part].mesh.geometry.dispose();
-      this.parts[part].mesh.dispose();
+    if (this.parts) {
+      for (const part of HORDE_PARTS) {
+        this.parts[part].mesh.geometry.dispose();
+        this.parts[part].mesh.dispose();
+      }
     }
+    for (const b of this.bodyList) b.geo.dispose();
+    this.bodies.clear();
+    this.bodyList.length = 0;
     for (const k of ACCESSORY_KINDS) this.accessories[k].mesh.dispose();
     this.shadowMesh.dispose();
     this.markerMesh.dispose();

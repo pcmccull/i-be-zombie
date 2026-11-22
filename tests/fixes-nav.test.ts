@@ -95,7 +95,7 @@ describe('bounded navigation planning regressions', () => {
     const target = { kind: 'guard' as const, id: guard.id };
     sim.state.order = { type: 'attack', target };
     sim.state.squads = [{ id: 1, target }];
-    const build = vi.spyOn(sim.ctx.navGrid, 'buildFlowField');
+    const build = vi.spyOn(sim.ctx.crawlNavGrid, 'buildFlowField');
     updateNavigation(sim.ctx, BALANCE.sim.fixedDt, emptyInput());
     const bound = Math.hypot(guard.pos.x - sim.state.leader.pos.x, guard.pos.z - sim.state.leader.pos.z) + 60;
     expect(build.mock.calls.map(args => args[2])).toEqual([BALANCE.nav.flowFieldMaxDistance, bound, bound]);
@@ -111,7 +111,7 @@ describe('bounded navigation planning regressions', () => {
     const def = sim.ctx.layout.structures.find(d => d.id === structure.id)!;
     structure.center = { x: 150.625, z: -0.625 };
     def.approachOutside = [{ x: 148.125, z: -0.625 }];
-    const build = vi.spyOn(sim.ctx.navGrid, 'buildFlowField');
+    const build = vi.spyOn(sim.ctx.crawlNavGrid, 'buildFlowField');
     sim.state.order = { type: 'attack', target: { kind: 'structure', id: structure.id } };
     updateNavigation(sim.ctx, BALANCE.sim.fixedDt, emptyInput());
     expect(build.mock.calls.at(-1)![2]).toBe(361.25);
@@ -133,7 +133,7 @@ describe('bounded navigation planning regressions', () => {
     sim.state.gate.destroyed = false;
     sim.state.gate.center = { x: 140.5, z: 0 };
     sim.state.order = { type: 'attack', target: { kind: 'guard', id: guard.id } };
-    const build = vi.spyOn(sim.ctx.navGrid, 'buildFlowField');
+    const build = vi.spyOn(sim.ctx.crawlNavGrid, 'buildFlowField');
     updateNavigation(sim.ctx, BALANCE.sim.fixedDt, emptyInput());
     expect(sim.ctx.nav.followField!.distanceAt(cp.gateApproachOutside[0])).toBe(Infinity);
     expect(sim.ctx.nav.effectiveTarget).toEqual({ kind: 'gate' });

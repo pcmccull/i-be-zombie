@@ -31,7 +31,9 @@ describe('discovery independent of conquest', () => {
   it('reveals neighboring districts across seams without conquering any territory', () => {
     expect(new Set(revealAround(sim.state, sim.ctx.layout, { x: 0, z: 0 }, 45))).toEqual(
       new Set(['suburbs', 'police', 'shopping', 'industrial']));
-    expect(Object.values(sim.state.districts).every(d => d.discovered && d.status === 'human' && d.infection === 0)).toBe(true);
+    const seam = ['suburbs', 'police', 'shopping', 'industrial'] as const;
+    expect(seam.every(id => { const d = sim.state.districts[id]; return d.discovered && d.status === 'human' && d.infection === 0; })).toBe(true);
+    expect(Object.values(sim.state.districts).filter(d => d.discovered)).toHaveLength(4);
     expect(sim.state.progression.biomass).toBe(0);
     expect(sim.state.strongholds.every(s => !s.captured && s.objectivesDone.length === 0)).toBe(true);
   });

@@ -1,17 +1,26 @@
 import * as THREE from 'three';
 import { AudioSystem } from '../audio/AudioSystem';
 import { IntroAudio } from '../audio/IntroAudio';
+import { TouristVoices } from '../audio/TouristVoices';
 import { buildIntroScript, FIRST_OBJECTIVE, type IntroScript } from '../content/intro';
 import { BALANCE } from '../config/balance';
 import { createSave } from '../persistence/saveSchema';
 import { SaveStore } from '../persistence/SaveStore';
 import { Simulation } from '../sim/Simulation';
 import { CinematicOverlay } from '../ui/CinematicOverlay';
+import { enterFullscreen } from '../ui/fullscreen';
 import { HUD, structureHudLabel } from '../ui/HUD';
 import { TouchControls, type TouchSlotView } from '../ui/TouchControls';
 import { abilitySlotView, visibleSlotCount } from '../ui/uiHelpers';
 import { Effects } from '../visuals/Effects';
+import { CityVisuals } from '../visuals/CityVisuals';
+import { interactPrompt } from '../ui/hudModel';
+import { InteractableProps } from '../visuals/InteractableProps';
+import { CityEventProps } from '../visuals/CityEventProps';
 import { EntityRenderer } from '../visuals/EntityRenderer';
+import { spawnCityEvent, setDistrictAlert } from '../systems/CityActivityDirector';
+import { addBrains, grantReward } from '../systems/RewardSystem';
+import type { DistrictAlert, DistrictId, DynamicEventKind } from './types';
 import { HordeRenderer } from '../visuals/HordeRenderer';
 import { HealthBars } from '../visuals/HealthBars';
 import { CheckpointVisual } from '../world/Checkpoint';
@@ -19,10 +28,33 @@ import { CityDistrict } from '../world/CityDistrict';
 import { Landmarks } from '../world/Landmarks';
 import { NestMarkers } from '../world/NestMarkers';
 import { TropicalScenery } from '../world/TropicalScenery';
+import { ShopScenery } from '../world/ShopScenery';
+import { VehicleRenderer } from '../visuals/VehicleRenderer';
+import { TrafficSignals } from '../world/TrafficSignals';
+import { setTrafficEnabled } from '../systems/TrafficSystem';
+import { BoundaryScenery } from '../world/BoundaryScenery';
+import { VisionFog, type VisionFogQuality } from '../visuals/VisionFog';
+import { LightingController } from '../graphics/lighting/LightingController';
+import { BrainPickups } from '../visuals/BrainPickups';
+import { VFXManager } from '../graphics/vfx/VFXManager';
+import { PostProcessingPipeline } from '../graphics/postfx/PostProcessingPipeline';
+import { GraphicsDiagnostics } from '../graphics/performance/GraphicsDiagnostics';
+import {
+  QUALITY_PRESETS, defaultGraphicsSettings, loadGraphicsSettings, nextQuality, saveGraphicsSettings, shakeScale,
+  type GraphicsSettings, type QualityProfile,
+} from '../graphics/performance/GraphicsQuality';
+import { parseBenchmarkParam, spawnBenchmark, type BenchmarkKind } from '../graphics/performance/benchmark';
+import {
+  disposeSurfaceDetail, setFoliageWind, setSurfaceDetailCamera, setSurfaceDetailEnabled,
+} from '../graphics/materials/SurfaceDetail';
+import { mulberry32 } from '../utils/rng';
+import { SenseIndicators } from '../ui/SenseIndicators';
+import { canTarget } from '../systems/AwarenessSystem';
 import { buildDistrictLayout } from '../world/districtLayout';
 import { chunkIdAt } from '../world/worldQueries';
 import { CinematicController } from './CinematicController';
 import { activeCue, advanceScriptClock, createPose, narrationTimeScale } from './cinematicMath';
+import { beginLeaderEmerge } from '../entities/ZombieLeader';
 import { cinematicInputLock, shouldPlayIntro, transitionFlow, type GameFlowState } from './gameFlow';
 import { InputController } from './InputController';
 import { ThirdPersonCamera } from './ThirdPersonCamera';
@@ -55,17 +87,27 @@ function browserStorage(): StorageLike | null {
 
 interface OccluderEntry { object: THREE.Object3D; chunk: number }
 
+/** Default far plane (intro cinematic / no vision limit). */
+const CAMERA_FAR = 520;
+/** 0.5 m (was 0.25): doubles depth precision against ground-layer z-fighting; the boom never gets closer than 4 m. */
+const CAMERA_NEAR = 0.5;
+/** Extra far-plane slack (m) for tall geometry (skyline, palms) whose base is just inside the vision limit. */
+const FAR_PLANE_MARGIN = 40;
+
 export class Game {
   public readonly sim: Simulation;
   public readonly renderer: THREE.WebGLRenderer;
   public readonly cameraRig: ThirdPersonCamera;
   private readonly scene = new THREE.Scene();
-  private readonly camera = new THREE.PerspectiveCamera(55, 1, 0.25, 520);
+  private readonly camera = new THREE.PerspectiveCamera(55, 1, CAMERA_NEAR, CAMERA_FAR);
   private readonly city: CityDistrict;
   private readonly checkpoint: CheckpointVisual;
   private readonly landmarks: Landmarks;
   private readonly nests: NestMarkers;
   private readonly entities: EntityRenderer;
+  private readonly cityVisuals: CityVisuals;
+  private readonly interactableProps: InteractableProps;
+  private readonly cityEventProps: CityEventProps;
   private readonly horde: HordeRenderer;
   private readonly healthBars = new HealthBars();
   private readonly effects: Effects;
@@ -73,7 +115,16 @@ export class Game {
   private readonly hud: HUD;
   private readonly input: InputController;
   private readonly store = new SaveStore(browserStorage());
-  private readonly sun: THREE.DirectionalLight;
+  // --- visual polish (docs/8_visual_polish.md): lighting, post, quality presets, diagnostics, benchmark ---
+  private readonly lighting: LightingController;
+  private readonly vfx: VFXManager;
+  private readonly brains: BrainPickups;
+  private readonly post: PostProcessingPipeline;
+  private readonly gfxDiag: GraphicsDiagnostics;
+  private graphics: GraphicsSettings;
+  private quality: QualityProfile;
+  private readonly benchmark: BenchmarkKind;
+  private windClock = 0;
   private readonly extraOccluders = new THREE.Group();
   /** Live occluder list shared with camera + picking: only entries whose chunk is currently loaded. */
   private readonly occluders: THREE.Object3D[] = [];
@@ -102,6 +153,7 @@ export class Game {
   private accumulator = 0;
   private smoothFps = 60;
   private frameMs = 16;
+  private lastFrameMs = 0;
   private showDebug = false;
   private suspended = false;
   private seed: number;
@@ -112,9 +164,21 @@ export class Game {
   /** Central flow state: gameplay input is enabled only in PLAYING. */
   private flow: GameFlowState = 'LOADING';
   private readonly scenery: TropicalScenery;
+  // todos #10b/#12: simulated traffic + corner shops (render-only mirrors of state.vehicles / pickups)
+  private readonly vehicles: VehicleRenderer;
+  /** Traffic lights / stop signs / stop lines (bulbs follow the sim's signal clock). */
+  private readonly signals: TrafficSignals;
+  private readonly shops: ShopScenery;
+  // --- expanded world: boundary scenery, zombie-vision haze, sense cues (docs/5_expand_world.md) ---
+  private readonly boundaryScenery: BoundaryScenery | null;
+  private readonly visionFog: VisionFog;
+  private visionQuality: VisionFogQuality = 'high';
+  private senseIndicators!: SenseIndicators;
+  private visionPatchFrame = 0;
   private readonly cinematic: CinematicController;
   private readonly cineOverlay: CinematicOverlay;
   private readonly introAudio = new IntroAudio();
+  private readonly touristVoices = new TouristVoices();
   private readonly intro: IntroScript;
   private introClock = 0;
   private introExiting = false;
@@ -124,12 +188,19 @@ export class Game {
   private autoBeginIntro = false;
   /** In-memory conquest to restore after a replayed intro (null = the intro starts a new game). */
   private replayRestore: WorldSave | null = null;
+  /** Start the Alpha's climb out of the ground on the next player gesture (continued save). */
+  private emergePending = false;
   private restoreFade = 0;
   private objectiveWatch = false;
   private gameplayMusicOn = false;
 
   constructor(private readonly container: HTMLElement, private readonly hudRoot: HTMLElement) {
     this.touchActive = typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
+    const prefersReducedMotion = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    this.graphics = loadGraphicsSettings(browserStorage(),
+      defaultGraphicsSettings(this.touchActive, window.devicePixelRatio || 1, prefersReducedMotion));
+    this.quality = QUALITY_PRESETS[this.graphics.quality];
+    this.benchmark = parseBenchmarkParam(window.location.search);
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setPixelRatio(this.pixelRatio());
     this.renderer.shadowMap.enabled = true;
@@ -142,40 +213,56 @@ export class Game {
     this.scene.background = new THREE.Color(sky);
     // Fog hides the chunk load edge (chunks load within BALANCE.chunks.loadRadius = 150 m of the leader).
     this.scene.fog = new THREE.Fog(sky, 120, 330);
-    const hemisphere = new THREE.HemisphereLight(0xe4f4ff, 0x6a6150, 0.8);
-    hemisphere.position.set(0, 80, 0);
-    this.scene.add(hemisphere);
-    this.sun = new THREE.DirectionalLight(0xfff1d6, 1.45);
-    this.sun.position.set(-70, 115, 65);
-    this.sun.castShadow = true;
-    this.sun.shadow.mapSize.set(2048, 2048);
-    Object.assign(this.sun.shadow.camera, { near: 10, far: 310, left: -135, right: 135, top: 115, bottom: -115 });
-    this.sun.shadow.camera.updateProjectionMatrix();
-    this.sun.shadow.bias = -0.0005;
-    this.scene.add(this.sun, this.sun.target);
+    this.lighting = new LightingController(this.scene);
+    this.post = new PostProcessingPipeline(this.renderer, this.scene, this.camera);
 
     // Boot: whole open world as data, optional save.
     const layout = buildDistrictLayout();
     const save = this.store.load();
     this.seed = save?.seed ?? BALANCE.sim.seed;
     this.sim = new Simulation(layout, this.seed, save);
-    this.city = new CityDistrict(layout);
+    // ?bench=1|2: reproducible benchmark population around the Alpha (debug only; never autosaved).
+    if (this.benchmark) spawnBenchmark(this.sim.state, this.sim.ctx.collision, mulberry32(0xbe7c4), this.benchmark,
+      layout.strongholds.length > 0);
+    // The old decorative one-corner traffic light props are replaced by TrafficSignals in the open world.
+    this.city = new CityDistrict(layout.strongholds.length > 0
+      ? { ...layout, props: layout.props.filter(p => p.kind !== 'trafficLight') } : layout);
     this.checkpoint = new CheckpointVisual(layout);
     this.landmarks = new Landmarks(layout);
     this.nests = new NestMarkers(null, layout);
     this.entities = new EntityRenderer(this.scene);
+    this.cityVisuals = new CityVisuals(this.scene, layout);
+    this.cityEventProps = new CityEventProps(this.scene);
+    this.interactableProps = new InteractableProps(this.scene, this.sim.state);
     this.horde = new HordeRenderer();
+    // Companion hats ride the animated head bone (horde.update runs before cityVisuals.update each frame).
+    this.cityVisuals.setHeadLookup((id, out) => this.horde.headMatrixOf(id, out));
     this.scenery = new TropicalScenery(layout);
+    this.vehicles = new VehicleRenderer();
+    this.signals = new TrafficSignals(layout);
+    this.shops = new ShopScenery(layout);
+    const openWorld = layout.strongholds.length > 0;
+    this.boundaryScenery = openWorld ? new BoundaryScenery(this.scene, layout) : null;
+    this.visionQuality = this.touchActive || (window.devicePixelRatio || 1) <= 1 ? 'low' : 'high';
+    this.visionFog = new VisionFog(this.visionQuality);
+    this.entities.setVisionGating(openWorld);
+    this.healthBars.setVisionGating(openWorld);
     this.intro = buildIntroScript(layout);
     this.scene.add(this.city.group, this.checkpoint.group, this.landmarks.group, this.nests.group, this.horde.group,
       this.healthBars.group, this.extraOccluders, this.scenery.group);
+    this.scene.add(this.vehicles.group, this.shops.group, this.signals.group);
     this.effects = new Effects(this.scene);
     this.effects.setWorld(layout);
+    this.vfx = new VFXManager(this.scene, this.quality, this.graphics);
+    this.brains = new BrainPickups(this.scene, this.vfx);
+    this.vfx.setWorld(layout);
     this.hud = new HUD(hudRoot);
+    this.gfxDiag = new GraphicsDiagnostics(hudRoot); // after HUD: it rebuilds hudRoot
     // HUD has no pass-through option. Its restart buttons explicitly enable pointer
     // events, so leave them clickable while the overlays allow canvas interaction.
     for (const overlay of hudRoot.querySelectorAll<HTMLElement>('.ibz-overlay')) overlay.style.pointerEvents = 'none';
     this.hud.setWorld(layout, { firstRun: !save });
+    this.senseIndicators = new SenseIndicators(this.hud.senseRoot);
     this.hud.showIntro();
     this.hud.setMuted(this.audio.muted);
 
@@ -232,7 +319,8 @@ export class Game {
     this.cameraRig.setBounds(layout.bounds);
     this.input = new InputController(this.renderer.domElement, {
       camera: this.camera,
-      pickables: () => [...this.entities.pickables, this.checkpoint.gatePickMesh, ...this.landmarks.pickMeshes],
+      pickables: () => [...this.entities.pickables, this.checkpoint.gatePickMesh, ...this.landmarks.pickMeshes,
+        ...this.vehicles.pickables],
       occluders: this.occluders,
       onOrbit: (dx, dy) => this.cameraRig.addOrbit(dx, dy),
       onZoom: delta => this.cameraRig.addZoom(delta),
@@ -246,6 +334,16 @@ export class Game {
       onFirstGesture: () => this.onGesture(),
       inputLocked: () => cinematicInputLock(this.flow),
       onLockedKey: code => this.onIntroKey(code),
+      // EW vision gate: unidentified humans are neither hoverable nor pickable (the sim also converts such orders to moves).
+      targetAllowed: t => {
+        if (t.kind === 'vehicle') {
+          // A car past the vision limit is hidden in the haze: not pickable either.
+          const v = this.sim.state.vehicles.find(c => c.id === t.id), lead = this.sim.state.leader.pos;
+          const limit = this.visionFog.hiddenBeyond;
+          return !!v && (!Number.isFinite(limit) || (v.pos.x - lead.x) ** 2 + (v.pos.z - lead.z) ** 2 < limit * limit);
+        }
+        return !this.sim.ctx.layout.strongholds.length || t.kind !== 'guard' || canTarget(this.sim.state, t.id);
+      },
       canLock: () =>
         this.flow === 'PLAYING' && shouldRequestLock({
           isLocked: this.input.isLocked,
@@ -257,14 +355,18 @@ export class Game {
     // The cursor stays free so the horde can be directed by pointing and clicking; drag (or Z/X) orbits the camera.
     this.hud.onRestart(() => this.restart());
     this.hud.onWaypoint(p => { this.waypoint = p; });
+    // Nest teleport pick: close the map first (it clears input), then queue the one-step sim edge.
+    this.hud.onNestTeleport(id => { this.hud.hideMap(); this.input.queueNestTeleport(id); });
     this.hud.onEquip((slot, ability) => { this.pendingEquip = { slot, ability }; });
     this.hud.onBuySlot(() => { this.pendingBuySlot = true; });
+    this.hud.onBuyVision(() => this.input.queueBuyVision());
+    this.hud.onBuyTrait((id) => this.input.queueBuyTrait(id));
     // Touch overlay: created once, shown on coarse-pointer devices or after the first touch.
     this.touch = new TouchControls(hudRoot);
     this.input.setTouchSource(this.touch);
     this.touch.onAttack(() => this.input.queueAttack());
-    this.touch.onRegroup(() => this.input.queueCommand({ type: 'regroup' }));
     this.touch.onFollow(() => this.input.queueCommand({ type: 'follow' }));
+    this.touch.onUse(() => this.input.queueInteract());
     this.touch.onAbility(slot => this.input.queueAbility(slot));
     this.touch.onMap(() => this.handleKeyAction('map'));
     this.touch.onPause(() => this.handleKeyAction('pause'));
@@ -277,16 +379,39 @@ export class Game {
       onResetSave: () => this.resetSave(),
       onToggleMute: () => this.toggleMute(),
       onReplayIntro: () => this.replayIntro(),
+      getVisionQuality: () => this.visionQuality,
+      onToggleVisionQuality: () => {
+        this.visionQuality = this.visionQuality === 'high' ? 'low' : 'high';
+        this.visionFog.setQuality(this.visionQuality);
+      },
+      getGraphics: () => this.graphics,
+      onCycleGraphicsQuality: () => this.setGraphics({ ...this.graphics, quality: nextQuality(this.graphics.quality) }),
+      onToggleReducedMotion: () => this.setGraphics({ ...this.graphics, reducedMotion: !this.graphics.reducedMotion }),
     });
+    this.hud.setCollectionCallbacks({
+      onEquipCosmetic: (slot, rewardId) => this.input.queueEquipCosmetic(slot, rewardId),
+      onBuyReward: rewardId => this.input.queueBuyReward(rewardId),
+      onToggleCompanion: id => this.input.queueToggleCompanion(id),
+      onSummonVehicle: kind => this.input.queueSummonVehicle(kind),
+      onFastTravelHideout: id => this.input.queueFastTravelHideout(id),
+    });
+    window.addEventListener('keydown', this.onCollectionKey);
+    this.applyGraphics();
     window.addEventListener('resize', this.onResize);
     window.addEventListener('blur', this.onBlur);
     window.addEventListener('focus', this.onFocus);
     document.addEventListener('visibilitychange', this.onVisibility);
     this.onResize();
     this.scene.updateMatrixWorld(true);
+    this.visionFog.patchScene(this.scene);
     this.resetCamera();
     if (shouldPlayIntro({ hasSave: save !== null })) this.enterIntroLoading(null);
-    else this.flow = transitionFlow(this.flow, 'PLAYING');
+    else {
+      this.flow = transitionFlow(this.flow, 'PLAYING');
+      // Returning player: the Alpha waits underground at its last nest and climbs out once the player takes control.
+      this.emergePending = true;
+      this.entities.setLeaderBuried(true);
+    }
     this.syncVisuals(0, 0);
     this.updateHud();
     (window as unknown as { __game?: Game }).__game = this;
@@ -306,9 +431,13 @@ export class Game {
     if (this.disposed) return;
     this.seed = BALANCE.sim.seed;
     this.sim.reset(this.seed, null);
+    this.emergePending = false;
     this.effects.reset();
+    this.vfx.reset();
+    this.brains.reset();
     this.entities.reset();
     this.audio.reset();
+    this.touristVoices.reset(this.sim.state.time);
     this.hud.reset();
     this.hud.setWorld(this.sim.ctx.layout, { firstRun: true });
     this.hud.setMuted(this.audio.muted);
@@ -340,6 +469,7 @@ export class Game {
     if (this.frameId !== null) cancelAnimationFrame(this.frameId);
     this.frameId = null;
     window.removeEventListener('pointerdown', this.onTouchProbe, { capture: true });
+    window.removeEventListener('keydown', this.onCollectionKey);
     window.removeEventListener('resize', this.onResize);
     window.removeEventListener('blur', this.onBlur);
     window.removeEventListener('focus', this.onFocus);
@@ -349,6 +479,7 @@ export class Game {
     this.hud.dispose();
     this.cineOverlay.dispose();
     this.introAudio.dispose();
+    this.touristVoices.dispose();
     this.audio.dispose();
     // The provided renderers do not release character part geometries.
     const characterGeometry = new Set<THREE.BufferGeometry>();
@@ -360,21 +491,35 @@ export class Game {
       } else if (object instanceof THREE.Mesh && object.name.startsWith('HordePart_')) characterGeometry.add(object.geometry);
     });
     this.effects.dispose();
+    this.vfx.dispose();
+    this.brains.dispose();
     this.city.dispose();
     this.checkpoint.dispose();
     this.landmarks.dispose();
     this.nests.dispose();
     this.entities.dispose();
+    this.cityVisuals.dispose();
+    this.interactableProps.dispose();
+    this.cityEventProps.dispose();
     this.horde.dispose();
     this.healthBars.dispose();
     this.scenery.dispose();
+    this.vehicles.dispose();
+    this.signals.dispose();
+    this.shops.dispose();
+    this.boundaryScenery?.dispose();
+    this.visionFog.dispose();
+    this.senseIndicators.dispose();
     for (const geometry of characterGeometry) geometry.dispose();
     this.gateOccluder.geometry.dispose();
     (this.gateOccluder.material as THREE.Material).dispose();
     this.waypointMarker.geometry.dispose();
     (this.waypointMarker.material as THREE.Material).dispose();
     this.extraOccluders.clear();
-    this.sun.shadow.dispose();
+    this.lighting.dispose();
+    this.post.dispose();
+    this.gfxDiag.dispose();
+    disposeSurfaceDetail();
     this.scene.clear();
     this.renderer.dispose();
     this.renderer.domElement.remove();
@@ -385,7 +530,26 @@ export class Game {
   // --- menus / persistence -------------------------------------------------------------------
 
   private pixelRatio(): number {
-    return Math.min(window.devicePixelRatio || 1, this.touchActive ? BALANCE.touch.lowDpr : 1.5);
+    const cap = Math.min(this.quality.pixelRatioCap, 1.5);
+    return Math.min(window.devicePixelRatio || 1, this.touchActive ? Math.min(BALANCE.touch.lowDpr, cap) : cap);
+  }
+
+  /** Apply + persist new graphics settings (pause menu). Render-only; never touches the simulation. */
+  private setGraphics(next: GraphicsSettings): void {
+    this.graphics = next;
+    this.quality = QUALITY_PRESETS[next.quality];
+    saveGraphicsSettings(browserStorage(), next);
+    this.applyGraphics();
+  }
+
+  private applyGraphics(): void {
+    this.lighting.setQuality(this.quality);
+    this.vfx.setQuality(this.quality, this.graphics);
+    this.post.setQuality(this.quality, this.graphics);
+    setSurfaceDetailEnabled(this.quality.surfaceDetail);
+    this.hud.setReducedMotion(this.graphics.reducedMotion);
+    this.entities.setReducedMotion(this.graphics.reducedMotion);
+    this.onResize();
   }
 
   private handleKeyAction(action: 'recenter' | 'help' | 'debug' | 'mute' | 'map' | 'pause'): void {
@@ -454,6 +618,13 @@ export class Game {
     if (this.hud.isMapVisible) { this.input.exitPointerLock(); this.input.clear(); }
   }
 
+  /** V at an active nest (sim `nestTravelMenu`): pick a destination nest on the world map. */
+  private openNestTeleportMap(nestId: string): void {
+    if (this.flow !== 'PLAYING' || this.hud.isPauseVisible || this.hud.isMapVisible) return;
+    this.hud.showTeleportMap(nestId);
+    if (this.hud.isMapVisible) { this.input.exitPointerLock(); this.input.clear(); }
+  }
+
   private toggleMute(): void {
     this.audio.setMuted(!this.audio.muted);
     this.hud.setMuted(this.audio.muted);
@@ -461,6 +632,7 @@ export class Game {
 
   /** Writes the current state to localStorage. Returns false when storage is unavailable or rejects the save. */
   private saveNow(): boolean {
+    if (this.benchmark) return false; // benchmark populations are never persisted
     const save: WorldSave = createSave(this.sim.state, this.seed, Date.now());
     const ok = this.store.save(save);
     if (ok) { this.lastSaveAt = performance.now(); this.savePending = false; }
@@ -497,7 +669,12 @@ export class Game {
   private onGesture(): void {
     this.audio.unlock();
     this.introAudio.bind(this.audio.context, this.audio.output);
+    this.touristVoices.bind(this.audio.context, this.audio.output);
     this.hud.hideIntro();
+    if (this.emergePending && this.flow === 'PLAYING') {
+      this.emergePending = false;
+      beginLeaderEmerge(this.sim.ctx);
+    }
     // Returning players get the gameplay music as soon as audio is allowed.
     if (this.flow === 'PLAYING' && !this.gameplayMusicOn) {
       this.gameplayMusicOn = true;
@@ -525,6 +702,8 @@ export class Game {
     this.gameplayMusicOn = false;
     this.introAudio.preload();
     this.scenery.resetTraffic();
+    // The opening shows the render-only flyover traffic; simulated cars start when the player takes control.
+    if (this.sim) setTrafficEnabled(this.sim.ctx, false);
     this.loadingSince = performance.now();
     // An earlier gesture (Reset Save / Replay Intro click) already unlocked audio: begin once loaded.
     this.autoBeginIntro = this.audio.context?.state === 'running';
@@ -541,8 +720,11 @@ export class Game {
 
   private tryBeginIntro(): void {
     if (this.flow !== 'LOADING' || !this.introReady()) return;
+    // Still inside the click / key gesture that started the game, so the browser allows it.
+    if (this.cineOverlay.startFullscreen) void enterFullscreen();
     this.audio.unlock();
     this.introAudio.bind(this.audio.context, this.audio.output);
+    this.touristVoices.bind(this.audio.context, this.audio.output);
     this.introAudio.setMuted(this.audio.muted);
     this.flow = transitionFlow(this.flow, 'INTRO_CINEMATIC');
     this.input.clear();
@@ -554,7 +736,11 @@ export class Game {
   }
 
   private onIntroKey(code: string): void {
-    if (this.flow === 'LOADING') { this.tryBeginIntro(); return; }
+    if (this.flow === 'LOADING') {
+      if (code === 'KeyF') { this.cineOverlay.toggleFullscreenPref(); return; }
+      this.tryBeginIntro();
+      return;
+    }
     if (this.flow === 'INTRO_CINEMATIC' && (code === 'Escape' || code === 'Enter')) this.skipIntro();
   }
 
@@ -631,6 +817,7 @@ export class Game {
     this.cineOverlay.setFade(0);
     this.horde.setAmbientMask(null);
     this.scenery.retireTraffic();
+    setTrafficEnabled(this.sim.ctx, true);
     const restore = this.replayRestore;
     this.replayRestore = null;
     if (restore) {
@@ -638,6 +825,8 @@ export class Game {
       this.sim.reset(restore.seed, restore);
       this.seed = restore.seed;
       this.effects.reset();
+      this.vfx.reset();
+    this.brains.reset();
       this.entities.reset();
       this.hud.reset();
       this.hud.setWorld(this.sim.ctx.layout, { firstRun: false });
@@ -645,6 +834,7 @@ export class Game {
       this.occluderSignature = '';
       this.restoreFade = RESTORE_FADE_S;
       this.cineOverlay.setFade(1);
+      beginLeaderEmerge(this.sim.ctx);
     }
     this.camera.fov = 55;
     this.camera.updateProjectionMatrix();
@@ -682,6 +872,7 @@ export class Game {
     const paused = this.hud.isPauseVisible;
     const dt = paused || this.suspended || document.hidden || this.lastTime === null
       ? 0 : THREE.MathUtils.clamp((now - this.lastTime) / 1000, 0, BALANCE.sim.maxFrameDt);
+    this.lastFrameMs = this.lastTime !== null && !paused && !document.hidden ? now - this.lastTime : 0;
     if (this.lastTime !== null) this.frameMs += ((now - this.lastTime) - this.frameMs) * 0.1;
     this.lastTime = now;
     if (dt > 0) this.smoothFps += (1 / dt - this.smoothFps) * (1 - Math.exp(-3 * dt));
@@ -714,13 +905,19 @@ export class Game {
         // Nothing is saved until the player has control (a reload mid-intro replays it), and a replayed intro
         // runs on a throwaway world that must never overwrite the real save.
         if (this.replayRestore === null && !cinematicInputLock(this.flow)) this.savePending = true;
+      } else if (event.type === 'nestTravelMenu') {
+        this.openNestTeleportMap(event.nestId);
       } else if (this.objectiveWatch && (event.type === 'recruited' || event.type === 'converted')) {
         this.objectiveWatch = false;
         window.setTimeout(() => this.cineOverlay.hideObjective(), 2500);
       }
     }
-    this.effects.consume(events, state);
-    this.audio.consume(events, state);
+    const sightEvents = this.effectEventsInSight(events, state.leader.pos);
+    this.effects.consume(sightEvents, state);
+    this.vfx.consume(sightEvents, state);
+    this.brains.consume(sightEvents, state.leader.pos.x, state.leader.pos.z);
+    this.audio.consume(events, state, this.cameraRig.viewYaw,
+      this.flow === 'PLAYING' && state.phase === 'playing' && !this.suspended);
     this.hud.consume(events);
     this.entities.consume(events);
     this.horde.consume(events, state.zombies);
@@ -728,6 +925,9 @@ export class Game {
     const leader = state.leader;
     const cinematicCamera = this.updateIntro(dt);
     this.introAudio.update();
+    if (this.flow === 'PLAYING' && state.phase === 'playing' && !this.suspended) {
+      this.touristVoices.update(state.time, leader.pos, state.guards);
+    }
     if (cinematicCamera) {
       // Visual focus (shadows, guard culling) follows what the cinematic camera is looking at.
       const look = this.cinematic.lookTarget;
@@ -739,7 +939,7 @@ export class Game {
     this.syncVisuals(alpha, dt);
     const facingDelta = approachAngle(leader.prevFacing, leader.facing, Math.PI) - leader.prevFacing;
     this.cameraRig.setLook(this.input.cameraTurn, this.input.lookBack);
-    const shake = this.effects.takeShake();
+    const shake = this.effects.takeShake() * shakeScale(this.graphics);
     const hits = cinematicCamera ? EMPTY_HITS : this.cameraRig.update(dt, this.focus, leader.prevFacing + facingDelta * alpha,
       state.phase === 'playing' && Math.hypot(leader.vel.x, leader.vel.z) > 0.15, shake);
     if (this.restoreFade > 0) {
@@ -762,14 +962,79 @@ export class Game {
     this.entities.setTargeted(this.targeted);
     this.checkpoint.setGateHighlight(hovered?.kind === 'gate' || this.targeted.some(t => t.kind === 'gate'));
     this.landmarks.setHighlight(hovered?.kind === 'structure' ? hovered.id : null, this.targetedStructureIds);
+    this.vehicles.setHighlight(hovered, this.targeted);
     // Refresh indicators after this frame's camera/hover raycast.
     this.entities.update(state, alpha, state.time, 0);
     this.healthBars.update(state, alpha, this.camera);
     this.updateWaypoint(leader.pos);
     this.updateHud();
-    this.renderer.render(this.scene, this.camera);
+    // viewYaw: what the camera actually looks along (includes the hold-V look-back), so arrows match the screen.
+    this.senseIndicators.update(state, this.cameraRig.viewYaw, dt);
+    this.visionFog.update(state, alpha, dt);
+    // The opening flyover is not the Alpha's eyesight: no haze while the cinematic owns the camera.
+    if (cinematicInputLock(this.flow)) this.visionFog.suspend();
+    // Everything past the vision limit is hidden: the haze goes opaque there, so the sky must be the haze colour too.
+    const backdrop = this.visionFog.uniforms.uHideBeyond.value > 0 ? BALANCE.vision.hazeColor : 0x93cdea;
+    if (this.scene.background instanceof THREE.Color) this.scene.background.setHex(backdrop);
+    if (this.scene.fog) this.scene.fog.color.setHex(backdrop);
+    this.updateFarPlane();
+    // Lazily built rigs / pooled effects add materials after construction: patch new ones cheaply every ~1.5 s.
+    if (++this.visionPatchFrame >= 90) { this.visionPatchFrame = 0; this.visionFog.patchScene(this.scene); }
+    setSurfaceDetailCamera(this.camera.position.x, this.camera.position.y, this.camera.position.z);
+    this.windClock += dt;
+    setFoliageWind(this.windClock, this.quality.foliageWind ? (this.graphics.reducedMotion ? 0.4 : 1) : 0);
+    // Count calls/triangles for the whole frame (scene + post quads) in one place.
+    // Particles: interpolated, culled past the vision limit (no limit while the intro suspends the haze).
+    {
+      const lead = this.sim.state.leader;
+      this.brains.update(dt, lead.prevPos.x + (lead.pos.x - lead.prevPos.x) * alpha, lead.prevPos.z + (lead.pos.z - lead.prevPos.z) * alpha);
+    }
+    this.vfx.update(dt, this.sim.state, alpha, this.camera, this.focus.x, this.focus.z, this.visionFog.hiddenBeyond);
+    this.cityVisuals.update(this.sim.state, this.sim.state.time, this.focus.x, this.focus.z, this.visionFog.hiddenBeyond, alpha);
+    this.cityEventProps.update(this.sim.state, this.focus.x, this.focus.z, this.visionFog.hiddenBeyond, this.sim.state.time);
+    this.interactableProps.update(this.sim.state);
+    if (this.touchActive) this.touch.setUseVisible(interactPrompt(this.sim.state, this.sim.ctx.layout) !== null);
+    this.renderer.info.autoReset = false;
+    this.renderer.info.reset();
+    this.post.render();
+    this.updateGfxDiagnostics(dt);
     this.frameId = requestAnimationFrame(this.frame);
   };
+
+  /**
+   * Nothing past the vision limit is visible, so don't draw it: pull the far plane in to the farthest point that can
+   * still be inside the limit (camera→Alpha distance + limit + a margin for tall geometry). Whole meshes past it are
+   * frustum-culled; instanced/merged ones are clipped. Restores the default far plane while the haze is suspended.
+   */
+  private updateFarPlane(): void {
+    const limit = this.visionFog.hiddenBeyond;
+    let far = CAMERA_FAR;
+    if (Number.isFinite(limit)) {
+      const c = this.camera.position;
+      const u = this.visionFog.uniforms.uVisionCenter.value;
+      const dx = c.x - u.x;
+      const dz = c.z - u.y;
+      far = Math.min(CAMERA_FAR, Math.sqrt(dx * dx + dz * dz) + Math.abs(c.y) + limit + FAR_PLANE_MARGIN);
+    }
+    if (Math.abs(this.camera.far - far) > 0.5) {
+      this.camera.far = far;
+      this.camera.updateProjectionMatrix();
+    }
+  }
+
+  /** Effects skip the haze shader (noVisionHaze), so drop events whose origin is past the vision limit. */
+  private effectEventsInSight<E>(events: E[], center: Vec2): E[] {
+    const limit = this.visionFog.hiddenBeyond;
+    if (!Number.isFinite(limit)) return events;
+    const lim2 = limit * limit;
+    return events.filter((e) => {
+      const ev = e as { from?: Vec2; pos?: Vec2 };
+      const p = ev.from ?? ev.pos;
+      if (!p) return true;
+      const dx = p.x - center.x, dz = p.z - center.z;
+      return dx * dx + dz * dz < lim2;
+    });
+  }
 
   private syncVisuals(alpha: number, dt: number): void {
     const state = this.sim.state;
@@ -782,9 +1047,7 @@ export class Game {
     this.loadedChunkCount = this.city.updateStreaming(streamFocus).loaded;
     this.syncOccluders();
     // Keep the shadow frustum centered on the focus so shadows work across the whole world.
-    this.sun.position.set(fx - 70, 115, fz + 65);
-    this.sun.target.position.set(fx, 0, fz);
-    this.sun.target.updateMatrixWorld();
+    this.lighting.follow(fx, fz);
     this.city.update(dt, state.time);
     this.landmarks.update(state, dt, state.time);
     this.checkpoint.update(state.gate, dt, state.time);
@@ -794,11 +1057,14 @@ export class Game {
     const lead = state.leader;
     this.horde.setLeader(lead.prevPos.x + (lead.pos.x - lead.prevPos.x) * alpha,
       lead.prevPos.z + (lead.pos.z - lead.prevPos.z) * alpha, lead.alive);
+    this.horde.setNestTravel(state.nestTravel);
     this.horde.update(state.zombies, alpha, state.time, state.abilities.rushTimeLeft > 0, dt);
     this.entities.setView(fx, fz);
     this.entities.update(state, alpha, state.time, dt);
     let target: TargetRef | null = null;
     if (state.order.type === 'attack') target = this.sim.ctx.nav.effectiveTarget ?? state.order.target;
+    this.effects.setMarkerCull(lead.prevPos.x + (lead.pos.x - lead.prevPos.x) * alpha,
+      lead.prevPos.z + (lead.pos.z - lead.prevPos.z) * alpha, this.visionFog.hiddenBeyond);
     this.effects.setOrderMarker(this.markerFor(target, this.marker) ? this.marker : null);
     // Each extra selected target (split horde) gets its own marker; duplicates of the gate or same structure collapse.
     let extra = 0;
@@ -814,6 +1080,11 @@ export class Game {
     this.effects.setExtraOrderMarkers(this.extraMarkerView);
     this.effects.update(dt, state, alpha);
     this.scenery.update(dt, state, this.camera);
+    this.vehicles.setVisible(!cinematicInputLock(this.flow));
+    this.vehicles.update(state, alpha, state.time);
+    this.signals.update(state.time);
+    this.shops.update(state, state.time);
+    this.boundaryScenery?.update(state.time);
     this.scene.updateMatrixWorld(true);
   }
 
@@ -824,6 +1095,7 @@ export class Game {
     for (const id of loaded) sig += id + ',';
     if (sig !== this.occluderSignature) {
       this.occluderSignature = sig;
+      this.visionFog.patchScene(this.scene); // new chunk meshes streamed in
       this.occluders.length = 0;
       const gateDestroyed = this.sim.state.gate.destroyed;
       for (const entry of this.occluderEntries) {
@@ -842,7 +1114,17 @@ export class Game {
     if (active) this.waypointMarker.position.set(active.x, 7, active.z);
   }
 
+  /** Attack-order marker position, hidden past the vision limit and never placed on an unidentified human (EW). */
   private markerFor(target: TargetRef | null, out: THREE.Vector3): boolean {
+    if (target?.kind === 'guard' && this.sim.ctx.layout.strongholds.length > 0 && !canTarget(this.sim.state, target.id)) return false;
+    if (!this.markerPosFor(target, out)) return false;
+    const limit = this.visionFog.hiddenBeyond;
+    if (!Number.isFinite(limit)) return true;
+    const lead = this.sim.state.leader;
+    return (out.x - lead.pos.x) ** 2 + (out.z - lead.pos.z) ** 2 < limit * limit;
+  }
+
+  private markerPosFor(target: TargetRef | null, out: THREE.Vector3): boolean {
     const state = this.sim.state;
     if (target?.kind === 'gate' && !state.gate.destroyed) {
       out.set(state.gate.center.x, 1.5, state.gate.center.z);
@@ -862,6 +1144,11 @@ export class Game {
         out.set((structDef.rect.minX + structDef.rect.maxX) / 2, 1.5, (structDef.rect.minZ + structDef.rect.maxZ) / 2);
         return true;
       }
+    }
+    if (target?.kind === 'vehicle') {
+      const v = state.vehicles.find(c => c.id === target.id && c.mode !== 'stalled');
+      if (v) { out.set(v.pos.x, 2.4, v.pos.z); return true; }
+      return false;
     }
     if (target?.kind === 'guard') {
       const guardId = target.id;
@@ -884,6 +1171,9 @@ export class Game {
       const structState = this.sim.state.structures?.find(s => s.id === target.id);
       const structDef = structState ?? this.sim.ctx.layout.structures?.find(s => s.id === target.id);
       hoverLabel = structDef ? structureHudLabel(structDef.kind) : 'STRUCTURE';
+    } else if (target?.kind === 'vehicle') {
+      const v = this.sim.state.vehicles.find(c => c.id === target.id);
+      hoverLabel = v?.kind === 'rammer' ? 'HOSTILE DRIVER' : 'CAR';
     }
     this.hud.update(this.sim.state, {
       fps: this.smoothFps, drawCalls: this.renderer.info.render.calls, showDebug: this.showDebug,
@@ -892,6 +1182,7 @@ export class Game {
       waypoint: this.waypoint,
       frameMs: this.frameMs,
       loadedChunks: this.loadedChunkCount,
+      cameraYaw: this.cameraRig.viewYaw,
     });
   }
 
@@ -925,6 +1216,7 @@ export class Game {
 
   private resetClock(): void {
     this.input.clear();
+    if (this.suspended) this.touristVoices.pause(); else this.touristVoices.resume();
     this.lastTime = null;
     this.accumulator = 0;
     // The narration must not run on while the cinematic clock is frozen (hidden tab / lost focus).
@@ -943,5 +1235,54 @@ export class Game {
     this.camera.updateProjectionMatrix();
     this.renderer.setPixelRatio(this.pixelRatio());
     this.renderer.setSize(width, height);
+    this.post.setSize(width, height, this.renderer.getPixelRatio());
   };
+
+  private shadowCasterCount = 0;
+  private shadowCountTimer = 0;
+
+  private updateGfxDiagnostics(dt: number): void {
+    if (this.lastFrameMs > 0) this.gfxDiag.pushFrame(this.lastFrameMs);
+    this.gfxDiag.setVisible(this.showDebug);
+    if (!this.showDebug && !this.benchmark) return;
+    this.shadowCountTimer -= dt;
+    if (this.shadowCountTimer <= 0) { this.shadowCountTimer = 1; this.shadowCasterCount = this.lighting.countShadowCasters(); }
+    const info = this.renderer.info;
+    this.gfxDiag.update(dt, {
+      quality: this.graphics.quality, reducedMotion: this.graphics.reducedMotion, postfx: this.post.active,
+      drawCalls: info.render.calls, triangles: info.render.triangles, geometries: info.memory.geometries,
+      textures: info.memory.textures, particles: this.vfx.stats().live, particleCap: this.quality.maxParticles,
+      shadowCasters: this.shadowCasterCount, zombiesDrawn: this.horde.drawnCount,
+      humans: this.sim.state.guards.length, benchmark: this.benchmark,
+    });
+  }
+
+  /** Debug / benchmark: graphics snapshot (frame-time p50/p95, calls, tris, particles...). */
+  get graphicsStats(): ReturnType<GraphicsDiagnostics['snapshot']> {
+    return this.gfxDiag.snapshot();
+  }
+
+  private readonly onCollectionKey = (e: KeyboardEvent): void => {
+    if (e.repeat || e.code !== 'KeyI' || cinematicInputLock(this.flow) || this.hud.isPauseVisible) return;
+    if (!this.hud.isCollectionVisible) this.input.exitPointerLock();
+    this.hud.toggleCollection();
+  };
+
+  /** Developer debug controls (docs/11_cityupgrade.md §11.5). */
+  debugSpawnCityEvent(kind: DynamicEventKind): boolean {
+    return spawnCityEvent(this.sim.ctx, kind) !== null;
+  }
+
+  debugSetDistrictAlert(districtId: DistrictId, alert: DistrictAlert): void {
+    setDistrictAlert(this.sim.ctx, districtId, alert);
+  }
+
+  debugGrantBrains(amount: number): number {
+    addBrains(this.sim.ctx, amount, 'debug');
+    return this.sim.state.rewards.brains;
+  }
+
+  debugGrantReward(rewardId: string): boolean {
+    return grantReward(this.sim.ctx, rewardId);
+  }
 }

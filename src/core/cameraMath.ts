@@ -168,18 +168,18 @@ export function zoomTarget(current: number, wheelDeltaY: number): number {
 // Input model mapping (ARCHITECTURE.md section 4). Pure so it is testable without a DOM.
 // ---------------------------------------------------------------------------
 
-export type KeyAction = 'recenter' | 'help' | 'debug' | 'mute' | 'map' | 'pause' | 'regroup' | 'follow';
+export type KeyAction = 'recenter' | 'help' | 'debug' | 'mute' | 'map' | 'pause' | 'follow';
 
 /** Keys that always work, even while the pause menu or world map is open. */
 const SYSTEM_KEYS: ReadonlySet<string> = new Set(['Escape', 'KeyM', 'KeyN', 'F3', 'Tab']);
 
 export function isSystemKey(code: string): boolean { return SYSTEM_KEYS.has(code); }
 
-/** Q E R F -> ability slot 0..3, anything else null. */
+/** Q T R F -> ability slot 0..3, anything else null. (E is the held split-target modifier, see RightClickInfo.split.) */
 export function abilitySlotForKey(code: string): number | null {
   switch (code) {
     case 'KeyQ': return 0;
-    case 'KeyE': return 1;
+    case 'KeyT': return 1;
     case 'KeyR': return 2;
     case 'KeyF': return 3;
     default: return null;
@@ -195,7 +195,7 @@ export function keyActionFor(code: string): KeyAction | null {
     case 'KeyN': return 'mute';
     case 'KeyM': return 'map';
     case 'Escape': return 'pause';
-    case 'Space': return 'regroup';
+    case 'Space': return 'follow'; // recall: the whole horde comes back to the Alpha
     case 'KeyG': return 'follow';
     default: return null;
   }
@@ -211,16 +211,17 @@ export interface RightClickInfo {
   /** Ground point under the pointer, or null when the ray misses / is blocked by a building. */
   ground: Vec2 | null;
   shift: boolean;
-  ctrl: boolean;
+  /** E held: toggle the target as an additive split-squad target (E, not Ctrl, so Ctrl+W never closes the tab). */
+  split: boolean;
 }
 
 /**
- * RMB: Shift = regroup; target (human/gate/structure) = attack order (Ctrl = additive split target);
+ * RMB: Shift = recall (follow); target (human/gate/structure) = attack order (E held = additive split target);
  * ground = move order; nothing = no command.
  */
 export function hordeCommandForRightClick(info: RightClickInfo): HordeCommand | null {
-  if (info.shift) return { type: 'regroup' };
-  if (info.target) return { type: 'attack', target: info.target, additive: info.ctrl };
+  if (info.shift) return { type: 'follow' };
+  if (info.target) return { type: 'attack', target: info.target, additive: info.split };
   if (info.ground) return { type: 'move', point: { x: info.ground.x, z: info.ground.z } };
   return null;
 }

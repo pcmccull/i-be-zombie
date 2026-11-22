@@ -5,16 +5,27 @@ import { STRONGHOLDS } from '../content/strongholds';
 import type { SimContext } from '../core/contracts';
 import type {
   AbilityId,
+  CompanionId,
+  ControlState,
+  CosmeticSlot,
+  DistrictAlert,
   DistrictId,
   DistrictState,
   GameState,
+  HideoutId,
+  PlayerRewardState,
+  PlayerVehicleKind,
   StrongholdId,
   StrongholdState,
   TerritoryStatus,
   Vec2,
+  VisionTier,
   WorldSave,
 } from '../core/types';
 import { DISTRICT_IDS } from '../core/types';
+import { createInitialRewardState } from '../sim/createInitialState';
+import { nestEmergePoint } from '../entities/ZombieLeader';
+import { isNestActiveIn } from '../systems/nests';
 
 export const SAVE_VERSION = BALANCE.save.version;
 
@@ -42,7 +53,119 @@ export const MIGRATIONS: Record<number, (old: unknown) => unknown> = {
     }
     return { ...old, version: 2, player: { ...player, slotsOwned: Math.min(BALANCE.progression.slots, owned) } };
   },
+  // v2 -> v3 (EW): eyesight tier + the 12 new districts. EW-T001 shim; EW-T006 adds the fog-grid remap (col +11, row +17).
+  2: (old) => {
+    if (!isRecord(old)) return old;
+    const player = isRecord(old.player) ? { ...old.player, visionTier: 1 } : old.player;
+    const districts = isRecord(old.districts) ? { ...old.districts } : old.districts;
+    if (isRecord(districts)) {
+      for (const id of DISTRICT_IDS) {
+        if (!(id in districts)) {
+          districts[id] = { id, status: 'unknown', discovered: false, infection: 0, humanStrength: 1, alertLevel: 0, strongholdCaptured: false };
+        }
+      }
+    }
+    const strongholds = isRecord(old.strongholds) ? { ...old.strongholds } : old.strongholds;
+    if (isRecord(strongholds)) {
+      for (const id of STRONGHOLD_IDS) {
+        if (!(id in strongholds)) strongholds[id] = { id, captured: false, objectivesDone: [], reinforcementsSpent: 0 };
+      }
+    }
+    // Fog grid: v2 20x16 (origin -200/-160) -> v3 42x34 (origin -420/-500): col + 11, row + 17.
+    let discoveryBits = old.discoveryBits;
+    if (typeof discoveryBits === 'string') {
+      if (!isValidBase64(discoveryBits)) return { ...old, version: 3, player, districts, strongholds };
+      const src = decodeBits(discoveryBits, 20 * 16);
+      const dst = new Uint8Array(42 * 34);
+      for (let row = 0; row < 16; row++) {
+        for (let col = 0; col < 20; col++) {
+          if (src[row * 20 + col]) dst[(row + 17) * 42 + (col + 11)] = 1;
+        }
+      }
+      discoveryBits = encodeBits(dst);
+    }
+    return { ...old, version: 3, player, districts, strongholds, discoveryBits };
+  },
+  // v3 -> v4 (docs/11_cityupgrade.md): player.rewards + district alert/control/heat/POIs.
+  3: (old) => {
+    if (!isRecord(old)) return old;
+    const player = isRecord(old.player)
+      ? { ...old.player, rewards: isRecord(old.player.rewards) ? old.player.rewards : createInitialRewardState() }
+      : old.player;
+    const districts = isRecord(old.districts) ? { ...old.districts } : old.districts;
+    if (isRecord(districts)) {
+      for (const id of DISTRICT_IDS) {
+        const d = districts[id];
+        if (!isRecord(d)) continue;
+        districts[id] = {
+          ...d,
+          alert: typeof d.alert === 'string' ? d.alert : (d.strongholdCaptured ? 'overrun' : 'normal'),
+          control: typeof d.control === 'string' ? d.control : (d.strongholdCaptured || d.status === 'infected' ? 'zombieControlled' : 'humanControlled'),
+          heat: typeof d.heat === 'number' ? d.heat : 0,
+          discoveredPOIs: Array.isArray(d.discoveredPOIs) ? d.discoveredPOIs : [],
+          completedUniqueEvents: Array.isArray(d.completedUniqueEvents) ? d.completedUniqueEvents : [],
+          unlockedShortcuts: Array.isArray(d.unlockedShortcuts) ? d.unlockedShortcuts : [],
+        };
+      }
+    }
+    return { ...old, version: 4, player, districts };
+  },
 };
+
+function sanitizeStringArray<T extends string>(v: unknown): T[] {
+  if (!Array.isArray(v)) return [];
+  const out: T[] = [];
+  for (const item of v) {
+    if (typeof item === 'string' && !out.includes(item as T)) out.push(item as T);
+  }
+  return out;
+}
+
+function sanitizeCoreDamage(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.min(BALANCE.hordeHealth.alphaCore, Math.max(0, value)) : 0;
+}
+
+function sanitizeRewards(raw: unknown): PlayerRewardState {
+  const base = createInitialRewardState();
+  if (!isRecord(raw)) return base;
+  const brains = typeof raw.brains === 'number' && Number.isFinite(raw.brains) && raw.brains >= 0 ? Math.floor(raw.brains) : 0;
+  const equipped = { ...base.equippedCosmeticIdsBySlot };
+  if (isRecord(raw.equippedCosmeticIdsBySlot)) {
+    for (const slot of ['hat', 'glasses', 'back', 'hand'] as CosmeticSlot[]) {
+      const val = raw.equippedCosmeticIdsBySlot[slot];
+      equipped[slot] = typeof val === 'string' ? val : null;
+    }
+  }
+  const progress: Record<string, number> = {};
+  if (isRecord(raw.achievementProgress)) {
+    for (const [k, val] of Object.entries(raw.achievementProgress)) {
+      if (typeof val === 'number' && Number.isFinite(val) && val >= 0) progress[k] = val;
+    }
+  }
+  return {
+    brains,
+    unlockedRewardIds: sanitizeStringArray(raw.unlockedRewardIds),
+    equippedCosmeticIdsBySlot: equipped,
+    unlockedCompanionIds: sanitizeStringArray<CompanionId>(raw.unlockedCompanionIds),
+    activeCompanionIds: sanitizeStringArray<CompanionId>(raw.activeCompanionIds).slice(0, BALANCE.city.maxActiveCompanions),
+    achievementProgress: progress,
+    discoveredSecretIds: sanitizeStringArray(raw.discoveredSecretIds),
+    unlockedHideoutIds: sanitizeStringArray<HideoutId>(raw.unlockedHideoutIds),
+    unlockedVehicleIds: sanitizeStringArray<PlayerVehicleKind>(raw.unlockedVehicleIds),
+    activeVehicleId: typeof raw.activeVehicleId === 'string' ? (raw.activeVehicleId as PlayerVehicleKind) : null,
+  };
+}
+
+/** EW: saved eyesight tier, anything invalid => 1. */
+function sanitizeVisionTier(v: unknown): VisionTier {
+  return v === 2 || v === 3 || v === 4 ? v : 1;
+}
+
+function sanitizeTraitLevel(v: unknown, max: number): number {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.min(Math.floor(v), max) : 0;
+}
+const SPEED_MAX = BALANCE.traits.speed.costs.length;
+const ATTACK_MAX = BALANCE.traits.attack.costs.length;
 
 const STRONGHOLD_IDS: readonly StrongholdId[] = STRONGHOLDS.map(s => s.id);
 const TERRITORY_STATUSES: readonly TerritoryStatus[] = ['unknown', 'human', 'contested', 'infected'];
@@ -261,6 +384,12 @@ export function createSave(state: GameState, seed: number, savedAt = 0): WorldSa
       equippedAbilities,
       selectedNestId: typeof state.activeNestId === 'string' ? state.activeNestId : '',
       slotsOwned,
+      visionTier: sanitizeVisionTier(state.progression.visionTier),
+      speedLevel: sanitizeTraitLevel(state.progression.speedLevel, SPEED_MAX),
+      attackLevel: sanitizeTraitLevel(state.progression.attackLevel, ATTACK_MAX),
+      claimedNests: (state.claimedNests ?? []).filter(id => typeof id === 'string'),
+      alphaCoreDamage: sanitizeCoreDamage(state.horde?.coreDamage),
+      rewards: sanitizeRewards(state.rewards),
     },
     districts,
     strongholds,
@@ -410,6 +539,13 @@ export function parseSave(raw: unknown): WorldSave | null {
         equippedAbilities,
         selectedNestId: player.selectedNestId,
         slotsOwned,
+        visionTier: sanitizeVisionTier(player.visionTier),
+        speedLevel: sanitizeTraitLevel(player.speedLevel, SPEED_MAX),
+        attackLevel: sanitizeTraitLevel(player.attackLevel, ATTACK_MAX),
+        ...(Array.isArray(player.claimedNests)
+          ? { claimedNests: player.claimedNests.filter((id): id is string => typeof id === 'string') } : {}),
+        rewards: sanitizeRewards(player.rewards),
+        alphaCoreDamage: sanitizeCoreDamage(player.alphaCoreDamage),
       },
       districts,
       strongholds,
@@ -451,12 +587,18 @@ export function applySave(ctx: SimContext, save: WorldSave): void {
   );
   state.progression.slotsOwned = reconcileSlots(save.player?.slotsOwned, unlocked, fullEquipped);
   state.progression.equipped = sanitizeEquipped(fullEquipped, unlocked, state.progression.slotsOwned);
+  state.progression.visionTier = sanitizeVisionTier(save.player?.visionTier);
+  state.progression.speedLevel = sanitizeTraitLevel(save.player?.speedLevel, SPEED_MAX);
+  state.progression.attackLevel = sanitizeTraitLevel(save.player?.attackLevel, ATTACK_MAX);
+  state.rewards = sanitizeRewards(save.player?.rewards);
+  // Followers are transient, so a load starts with none: keep at least one core unit so a save taken while depleted never
+  // loads straight into Last Brain Standing (HH-V1 #1).
+  state.horde.coreDamage = Math.min(BALANCE.hordeHealth.alphaCore - 1, sanitizeCoreDamage(save.player?.alphaCoreDamage));
 
   // 2. Restore activeNestId (fall back to the start nest if unknown)
   const startNest = layout.nests.find(n => n.strongholdId === null) ?? layout.nests[0];
   const requestedNest = layout.nests.find(n => n.id === save.player?.selectedNestId);
-  const activeNest = requestedNest ?? startNest;
-  state.activeNestId = activeNest ? activeNest.id : '';
+  state.activeNestId = (requestedNest ?? startNest)?.id ?? '';
 
   // 3. Restore district states
   if (isRecord(save.districts)) {
@@ -473,11 +615,17 @@ export function applySave(ctx: SimContext, save: WorldSave): void {
           typeof sd.humanStrength === 'number' ? sd.humanStrength : state.districts[id].humanStrength,
         ),
         alertLevel: clamp01(typeof sd.alertLevel === 'number' ? sd.alertLevel : state.districts[id].alertLevel),
-        strongholdCaptured:
-          typeof sd.strongholdCaptured === 'boolean'
-            ? sd.strongholdCaptured
-            : state.districts[id].strongholdCaptured,
-      };
+      strongholdCaptured:
+        typeof sd.strongholdCaptured === 'boolean'
+          ? sd.strongholdCaptured
+          : state.districts[id].strongholdCaptured,
+      ...(typeof sd.alert === 'string' ? { alert: sd.alert as DistrictAlert } : {}),
+      ...(typeof sd.control === 'string' ? { control: sd.control as ControlState } : {}),
+      ...(typeof sd.heat === 'number' && Number.isFinite(sd.heat) ? { heat: sd.heat } : {}),
+      ...(Array.isArray(sd.discoveredPOIs) ? { discoveredPOIs: sanitizeStringArray(sd.discoveredPOIs) } : {}),
+      ...(Array.isArray(sd.completedUniqueEvents) ? { completedUniqueEvents: sanitizeStringArray(sd.completedUniqueEvents) } : {}),
+      ...(Array.isArray(sd.unlockedShortcuts) ? { unlockedShortcuts: sanitizeStringArray(sd.unlockedShortcuts) } : {}),
+    };
     }
   }
 
@@ -586,9 +734,19 @@ export function applySave(ctx: SimContext, save: WorldSave): void {
   }
   state.discovery.revealed = revealed;
 
+  // Walk-in nests: the saved claims; a v3 save from before claims existed counts as claimed once a stronghold fell.
+  const claimNests = layout.nests.filter(n => n.claim).map(n => n.id);
+  const savedClaims = save.player?.claimedNests;
+  state.claimedNests = Array.isArray(savedClaims) ? claimNests.filter(id => savedClaims.includes(id))
+    : state.strongholds.some(s => s.captured) ? claimNests : [];
+  // The leader only returns to a nest it can use (an unclaimed walk-in nest sends it back to the start beach).
+  const pick = layout.nests.find(n => n.id === state.activeNestId);
+  const activeNest = pick && isNestActiveIn(state, pick) ? pick : layout.nests.find(n => isNestActiveIn(state, n));
+
   // 8. Move leader and live followers to the active nest (deterministic walkable ring)
   const nestAnchor: Vec2 = activeNest ? activeNest.pos : layout.playerStart;
-  const leaderPos = navGrid.nearestWalkable(nestAnchor);
+  // Beside the mound: a continued game opens with the Alpha climbing out of the ground there.
+  const leaderPos = activeNest ? nestEmergePoint(activeNest.pos, collision, navGrid) : navGrid.nearestWalkable(nestAnchor);
   state.leader.pos.x = leaderPos.x;
   state.leader.pos.z = leaderPos.z;
   state.leader.prevPos.x = leaderPos.x;

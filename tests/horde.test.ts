@@ -63,11 +63,11 @@ describe('horde commands and guidance', () => {
     expect(sim.ctx.nav.attackField!.goals.length).toBeGreaterThan(1);
     for (const goal of sim.ctx.nav.attackField!.goals) expect(goal.z).toBeGreaterThan(sim.state.gate.rect.maxZ);
     sim.state.gate.destroyed = true; sim.state.gate.hp = 0;
-    sim.ctx.collision.setEnabled(sim.state.gate.colliderId, false); sim.ctx.navGrid.rebuild();
+    sim.ctx.collision.setEnabled(sim.state.gate.colliderId, false); sim.ctx.navGrid.rebuild(); sim.ctx.crawlNavGrid.rebuild();
     sim.step(dt, emptyInput());
     expect(sim.ctx.nav.effectiveTarget).toEqual({ kind: 'guard', id: g.id });
     expect(sim.ctx.nav.attackField!.distanceAt(sim.state.leader.pos)).toBeLessThan(Infinity);
-    expect(sim.ctx.nav.attackField!.navVersion).toBe(sim.ctx.navGrid.version);
+    expect(sim.ctx.nav.attackField!.navVersion).toBe(sim.ctx.crawlNavGrid.version);
   });
 
   it('builds reachable tower base goals and rejects an unrelated enclosure as a gate blocker', () => {
@@ -86,7 +86,7 @@ describe('horde commands and guidance', () => {
     expect(sim.ctx.nav.effectiveTarget?.kind).toBe('guard');
     const open = new Simulation();
     open.state.gate.destroyed = true; open.state.gate.hp = 0;
-    open.ctx.collision.setEnabled(open.state.gate.colliderId, false); open.ctx.navGrid.rebuild();
+    open.ctx.collision.setEnabled(open.state.gate.colliderId, false); open.ctx.navGrid.rebuild(); open.ctx.crawlNavGrid.rebuild();
     open.step(dt, { ...emptyInput(), attackTarget: { kind: 'guard', id: open.state.guards[0].id } });
     expect(open.ctx.nav.effectiveTarget?.kind).toBe('guard');
     for (const p of open.ctx.nav.attackField!.goals) expect(open.ctx.collision.isBlocked(p, 0.4)).toBe(false);
@@ -95,7 +95,7 @@ describe('horde commands and guidance', () => {
 
   it('throttles moving-goal replans and immediately responds to orders and grid changes', () => {
     const sim = new Simulation();
-    const spy = vi.spyOn(sim.ctx.navGrid, 'buildFlowField');
+    const spy = vi.spyOn(sim.ctx.crawlNavGrid, 'buildFlowField');
     updateNavigation(sim.ctx, dt, emptyInput()); expect(spy).toHaveBeenCalledTimes(1);
     sim.state.leader.pos.x += 3;
     for (let i = 0; i < 10; i++) updateNavigation(sim.ctx, dt, emptyInput());
@@ -104,7 +104,7 @@ describe('horde commands and guidance', () => {
     expect(spy).toHaveBeenCalledTimes(2);
     sim.state.order = { type: 'attack', target: { kind: 'guard', id: sim.state.guards[5].id } };
     updateNavigation(sim.ctx, dt, emptyInput()); expect(spy).toHaveBeenCalledTimes(3);
-    sim.ctx.navGrid.rebuild(); updateNavigation(sim.ctx, dt, emptyInput());
+    sim.ctx.crawlNavGrid.rebuild(); updateNavigation(sim.ctx, dt, emptyInput());
     expect(spy).toHaveBeenCalledTimes(5);
   });
 

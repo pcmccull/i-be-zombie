@@ -1,10 +1,13 @@
 // [3D] Render-only tropical dressing: animated ocean + beach past the south edge, palm rows, beach umbrellas and
 // ambient traffic. Traffic brakes for anyone on the road and yields at intersections; after the opening it is
 // retired (each car disappears once it is out of the camera's view). Nothing here touches gameplay state.
+import { applyFoliageWind, applySurfaceDetail, tagSurface } from '../graphics/materials/SurfaceDetail';
+import { SURFACE } from '../graphics/materials/surfaceDetailMath';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { DistrictLayout, GameState } from '../core/types';
 import { buildTropicalLayout, type TropicalLayout } from './tropicalLayout';
+import { asGroundDecal } from './groundLevels';
 
 const CAR_COLORS = [0xff6f91, 0x35c6c6, 0xffd35c, 0xf8f4ec, 0x6f8cff, 0xff9a4d, 0x9be15d, 0xe85d75];
 const UMBRELLA_COLORS = [0xff5f8f, 0x2ec4b6, 0xffd166, 0xf78c6b, 0x7b8cff];
@@ -44,6 +47,8 @@ export class TropicalScenery {
   private readonly data: TropicalLayout;
   private readonly ocean: THREE.Mesh;
   private readonly oceanBase: Float32Array;
+  private readonly bay: THREE.Mesh;
+  private readonly bayBase: Float32Array;
   private readonly foam: THREE.Mesh;
   private readonly carBodies: THREE.InstancedMesh;
   private readonly carTrims: THREE.InstancedMesh;
@@ -68,7 +73,8 @@ export class TropicalScenery {
 
     // Beach sand + wet sand.
     const sandMat = this.keep(new THREE.MeshLambertMaterial({ color: 0xf2dca6 }));
-    const sand = new THREE.Mesh(this.keep(new THREE.PlaneGeometry(d.beach.maxX - d.beach.minX, d.beach.maxZ - d.beach.minZ)), sandMat);
+    applySurfaceDetail(sandMat);
+    const sand = new THREE.Mesh(this.keep(tagSurface(new THREE.PlaneGeometry(d.beach.maxX - d.beach.minX, d.beach.maxZ - d.beach.minZ), SURFACE.sand)), sandMat);
     sand.rotation.x = -Math.PI / 2;
     sand.position.set((d.beach.minX + d.beach.maxX) / 2, -0.02, (d.beach.minZ + d.beach.maxZ) / 2);
     sand.receiveShadow = true;
@@ -76,7 +82,7 @@ export class TropicalScenery {
     const wet = new THREE.Mesh(this.keep(new THREE.PlaneGeometry(d.beach.maxX - d.beach.minX, 6)),
       this.keep(new THREE.MeshLambertMaterial({ color: 0xd9c08a })));
     wet.rotation.x = -Math.PI / 2;
-    wet.position.set(sand.position.x, -0.015, d.beach.maxZ - 3);
+    wet.position.set(sand.position.x, 0, d.beach.maxZ - 3); // 2 cm over the dry sand: no coplanar z-fight
     this.group.add(sand, wet);
 
     // Ocean: low-res plane with flat-shaded rolling waves (positions animated, normals from derivatives).
@@ -97,11 +103,31 @@ export class TropicalScenery {
     this.ocean = new THREE.Mesh(oceanGeo, this.keep(new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true })));
     this.ocean.name = 'Ocean';
     this.ocean.frustumCulled = false;
+
+    // East bay water along x > bounds.maxX
+    const bw = d.bay.maxX - d.bay.minX, bd = d.bay.maxZ - d.bay.minZ;
+    const bayGeo = this.keep(new THREE.PlaneGeometry(bw, bd, 28, 60));
+    bayGeo.rotateX(-Math.PI / 2);
+    bayGeo.translate((d.bay.minX + d.bay.maxX) / 2, -0.36, (d.bay.minZ + d.bay.maxZ) / 2);
+    const bPos = bayGeo.getAttribute('position') as THREE.BufferAttribute;
+    this.bayBase = new Float32Array(bPos.array as Float32Array);
+    const bColors = new Float32Array(bPos.count * 3);
+    const bayShallow = new THREE.Color(0x2f8fa3), bayDeep = new THREE.Color(0x1d5f78);
+    for (let i = 0; i < bPos.count; i++) {
+      const t = Math.min(1, Math.max(0, (bPos.getX(i) - d.bay.minX) / 140));
+      this.c3.copy(bayShallow).lerp(bayDeep, t);
+      bColors[i * 3] = this.c3.r; bColors[i * 3 + 1] = this.c3.g; bColors[i * 3 + 2] = this.c3.b;
+    }
+    bayGeo.setAttribute('color', new THREE.BufferAttribute(bColors, 3));
+    this.bay = new THREE.Mesh(bayGeo, this.keep(new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true })));
+    this.bay.name = 'Bay';
+    this.bay.frustumCulled = false;
+
     this.foam = new THREE.Mesh(this.keep(new THREE.PlaneGeometry(ow, 2.2)),
-      this.keep(new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.6, depthWrite: false })));
+      this.keep(asGroundDecal(new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.6, depthWrite: false }))));
     this.foam.rotation.x = -Math.PI / 2;
-    this.foam.position.set(sand.position.x, 0.02, d.ocean.minZ + 1.2);
-    this.group.add(this.ocean, this.foam);
+    this.foam.position.set(sand.position.x, 0.04, d.ocean.minZ + 1.2);
+    this.group.add(this.ocean, this.bay, this.foam);
 
     this.buildPalms();
     this.buildUmbrellas();
@@ -211,6 +237,14 @@ export class TropicalScenery {
       arr[i + 1] = base[i + 1] + Math.sin(x * 0.045 + t * 0.9) * 0.28 + Math.sin(z * 0.08 - t * 1.3 + x * 0.02) * 0.22;
     }
     pos.needsUpdate = true;
+    const bPos = this.bay.geometry.getAttribute('position') as THREE.BufferAttribute;
+    const bArr = bPos.array as Float32Array;
+    const bBase = this.bayBase;
+    for (let i = 0; i < bArr.length; i += 3) {
+      const x = bBase[i], z = bBase[i + 2];
+      bArr[i + 1] = bBase[i + 1] + Math.sin(x * 0.05 + t * 0.85) * 0.22 + Math.sin(z * 0.07 - t * 1.15 + x * 0.02) * 0.18;
+    }
+    bPos.needsUpdate = true;
     const fm = this.foam.material as THREE.MeshBasicMaterial;
     fm.opacity = 0.35 + 0.3 * (0.5 + 0.5 * Math.sin(t * 0.8));
     this.foam.position.z = this.data.ocean.minZ + 1.2 + Math.sin(t * 0.8) * 0.9;
@@ -294,6 +328,9 @@ export class TropicalScenery {
     for (const p of crownParts) p.dispose();
     const crownMat = this.keep(new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true, side: THREE.DoubleSide }));
     const trunkMat = this.keep(new THREE.MeshLambertMaterial({ color: 0x9c7a52, flatShading: true }));
+    // VP-T004: palms sway (trunk bends with height² over its unit local height; crown follows the trunk top)
+    applyFoliageWind(trunkMat, { perHeight2: 0.3 });
+    applyFoliageWind(crownMat, { base: 0.3, perHeight2: 0.02 });
     const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, palms.length);
     const crowns = new THREE.InstancedMesh(crownGeo, crownMat, palms.length);
     const tilt = new THREE.Quaternion();
@@ -320,7 +357,7 @@ export class TropicalScenery {
 
   private buildUmbrellas(): void {
     const b = this.data.beach;
-    const count = 18;
+    const count = 36;
     const parts: THREE.BufferGeometry[] = [];
     for (let i = 0; i < count; i++) {
       const x = b.minX + 50 + i * ((b.maxX - b.minX - 100) / count) + Math.sin(i * 7.3) * 6;

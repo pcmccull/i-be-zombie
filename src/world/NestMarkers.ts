@@ -1,14 +1,20 @@
 import * as THREE from 'three';
 import { BALANCE } from '../config/balance';
-import type { DistrictLayout, GameState } from '../core/types';
+import type { DistrictLayout, GameState, NestDef } from '../core/types';
+import { isNestActiveIn } from '../systems/nests';
 import { onLayoutChunksChanged } from './CityDistrict';
 import { chunkIdAt } from './worldQueries';
+import { asGroundDecal, DECAL_STEP, DECAL_Y } from './groundLevels';
 
 const COLOR_MOUND = 0x4f7a3c;
 const COLOR_MOUND_DIM = 0x4a5048;
 const COLOR_GLOW = 0x7dff6a;
 
 interface NestVisual {
+  def: NestDef;
+  /** Walk-in nest: a pulsing claim ring (claimRadius) beckons until the Alpha walks in. */
+  claimRing: THREE.Mesh | null;
+  claimMat: THREE.MeshBasicMaterial | null;
   id: string;
   chunkId: number;
   strongholdId: string | null;
@@ -72,12 +78,28 @@ export class NestMarkers {
           side: THREE.DoubleSide,
         }),
       );
+      asGroundDecal(ringMat);
       const ringMesh = new THREE.Mesh(ringGeom, ringMat);
-      ringMesh.position.y = 0.08;
+      ringMesh.position.y = DECAL_Y;
       ringMesh.visible = false;
       group.add(ringMesh);
+      let claimRing: THREE.Mesh | null = null, claimMat: THREE.MeshBasicMaterial | null = null;
+      if (def.claim) {
+        claimMat = this.track(new THREE.MeshBasicMaterial({
+          color: COLOR_GLOW, transparent: true, opacity: 0.5, depthWrite: false, side: THREE.DoubleSide,
+        }));
+        const claimGeom = this.track(new THREE.RingGeometry(BALANCE.nest.claimRadius - 0.35, BALANCE.nest.claimRadius, 40));
+        claimGeom.rotateX(-Math.PI / 2);
+        asGroundDecal(claimMat);
+        claimRing = new THREE.Mesh(claimGeom, claimMat);
+        claimRing.position.y = DECAL_Y + DECAL_STEP;
+        group.add(claimRing);
+      }
       this.group.add(group);
       this.nests.push({
+        def,
+        claimRing,
+        claimMat,
         id: def.id,
         chunkId: chunkIdAt(layout, def.pos),
         strongholdId: def.strongholdId,
@@ -110,23 +132,20 @@ export class NestMarkers {
     const lz = state.leader.pos.z;
     const r2 = BALANCE.nest.equipRadius * BALANCE.nest.equipRadius;
     for (const n of this.nests) {
-      let active = n.strongholdId === null;
-      if (!active) {
-        for (let i = 0; i < state.strongholds.length; i++) {
-          const sh = state.strongholds[i];
-          if (sh.id === n.strongholdId) {
-            active = sh.captured;
-            break;
-          }
-        }
-      }
+      const active = isNestActiveIn(state, n.def);
       if (active !== n.active) {
         n.active = active;
         n.moundMat.color.setHex(active ? COLOR_MOUND : COLOR_MOUND_DIM);
       }
-      const pulse = 0.5 + 0.5 * Math.sin(this.time * (active ? 2.6 : 0.8) + n.x * 0.1);
-      n.glowMat.opacity = active ? 0.35 + 0.35 * pulse : 0.06 + 0.04 * pulse;
-      n.glowMesh.scale.setScalar(active ? 1 + 0.25 * pulse : 0.7);
+      // An unclaimed walk-in nest beckons: fast bright pulse + a breathing claim ring.
+      const beckon = !active && !!n.def.claim;
+      const pulse = 0.5 + 0.5 * Math.sin(this.time * (active ? 2.6 : beckon ? 4 : 0.8) + n.x * 0.1);
+      n.glowMat.opacity = active ? 0.35 + 0.35 * pulse : beckon ? 0.45 + 0.4 * pulse : 0.06 + 0.04 * pulse;
+      n.glowMesh.scale.setScalar(active ? 1 + 0.25 * pulse : beckon ? 1.1 + 0.45 * pulse : 0.7);
+      if (n.claimRing && n.claimMat) {
+        n.claimRing.visible = beckon;
+        if (beckon) { n.claimMat.opacity = 0.3 + 0.45 * pulse; n.claimRing.scale.setScalar(0.92 + 0.12 * pulse); }
+      }
       const dx = lx - n.x;
       const dz = lz - n.z;
       const near = active && dx * dx + dz * dz <= r2;

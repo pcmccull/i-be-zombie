@@ -1,8 +1,10 @@
 import { BALANCE } from '../config/balance';
 import type { SegmentOptions, SimContext } from '../core/contracts';
-import type { AABB, GuardAgent, SimInput, TargetRef, Vec2, ZombieAgent } from '../core/types';
+import type { AABB, GuardAgent, LeaderState, SimInput, TargetRef, Vec2, ZombieAgent } from '../core/types';
 import { wrapAngle } from '../utils/math';
 import { damageLeader, damageZombie } from './CombatSystem';
+import { civilianWeapon } from './ResistanceSystem';
+import type { CivilianWeapon } from '../core/types';
 
 interface GuardMemory {
   sight: SegmentOptions;
@@ -14,6 +16,9 @@ interface GuardMemory {
   retreatRetryAt: number;
   aimTarget: TargetRef | null;
   aimTime: number;
+  /** Heavy weapons: rounds left in the current MG burst; tank coaxial MG cooldown. */
+  burstLeft: number;
+  coaxCooldown: number;
 }
 interface Scratch {
   zombies: Map<number, ZombieAgent>;
@@ -23,8 +28,48 @@ interface Scratch {
 }
 const memories = new WeakMap<SimContext, Scratch>();
 const leaderTarget: TargetRef = { kind: 'leader' };
+const FOLLOWER_HEIGHT = 1.7;
+const TARGET_SWITCH_MARGIN = 1.5; // m a new threat must be nearer than the visible current target to take over
+const LEADER_CHEST_HEIGHT = 1.2;
+
+/** First circle entry along a shot, with the same interpolated-height rule as world LOS.
+ * The bounded population scan reads live positions (the hash can predate follower movement).
+ * No scratch containers or per-shot allocations are needed.
+ */
+export function findShotInterceptor(ctx: SimContext, from: Vec2, fromHeight: number,
+  to: Vec2, toHeight: number): ZombieAgent | null {
+  const dx = to.x - from.x, dz = to.z - from.z, lengthSq = dx * dx + dz * dz;
+  if (lengthSq <= 1e-12) return null;
+  let first: ZombieAgent | null = null, firstT = 1;
+  const endT = Math.max(0, 1 - ctx.state.leader.radius / Math.sqrt(lengthSq));
+  for (const z of ctx.state.zombies) {
+    if (z.state !== 'follower' || z.dormant || z.hp <= 0) continue;
+    const ox = z.pos.x - from.x, oz = z.pos.z - from.z;
+    const projection = (ox * dx + oz * dz) / lengthSq;
+    const perpendicular = ox * dz - oz * dx;
+    const chordSq = z.radius * z.radius - perpendicular * perpendicular / lengthSq;
+    if (chordSq < 0) continue;
+    const halfChord = Math.sqrt(chordSq / lengthSq);
+    if (projection < 0 || projection >= 1) continue; // centre behind the shooter or beyond the Alpha
+    const t = Math.max(0, projection - halfChord);
+    if (t >= endT) continue; // first contact inside the Alpha's own radius: it is beside / behind him, not in front
+    if (t >= firstT || fromHeight + (toHeight - fromHeight) * t >= z.elevation + FOLLOWER_HEIGHT) continue;
+    firstT = t; first = z;
+  }
+  return first;
+}
+
+/** Resolve an Alpha-bound bullet and retarget its existing tracer endpoint in place. */
+function hitAlpha(ctx: SimContext, g: GuardAgent, fromHeight: number, to: Vec2 & { y: number }, damage: number): void {
+  const z = findShotInterceptor(ctx, g.pos, fromHeight, ctx.state.leader.pos, to.y);
+  if (z) {
+    to.x = z.pos.x; to.y = z.elevation + BALANCE.targetHeights.zombieTorso; to.z = z.pos.z;
+    damageZombie(ctx, z, damage);
+  } else damageLeader(ctx, damage, 'bullet');
+}
 
 function armedRange(g: GuardAgent): number {
+  if (g.heavy) return g.heavy === 'mg' ? BALANCE.heavy.mg.range : BALANCE.heavy.tank.cannonRange;
   return g.post === 'barricade' ? BALANCE.outposts.barricadeRange
     : g.role === 'police' ? BALANCE.police.range : g.tower ? BALANCE.guard.towerRange : BALANCE.guard.range;
 }
@@ -49,11 +94,12 @@ function memory(ctx: SimContext, s: Scratch, g: GuardAgent, index: number): Guar
   let m = s.guards.get(g);
   if (!m) {
     m = {
-      sight: { mode: 'sight', fromHeight: g.tower ? BALANCE.guard.towerEyeHeight : BALANCE.guard.eyeHeight,
+      sight: { mode: 'sight', fromHeight: g.heavy ? BALANCE.heavy[g.heavy].eyeHeight
+          : g.tower ? BALANCE.guard.towerEyeHeight : BALANCE.guard.eyeHeight,
         toHeight: BALANCE.targetHeights.zombieTorso,
         ignoreIds: g.towerColliderId === null ? undefined : [g.towerColliderId] },
       alertPos: { ...g.pos }, visible: false, pathVersion: ctx.navGrid.version, retryAt: 0, retreated: false, retreatRetryAt: 0,
-      aimTarget: null, aimTime: 0,
+      aimTarget: null, aimTime: 0, burstLeft: 0, coaxCooldown: 0,
     };
     s.guards.set(g, m);
     if (g.perceptionTimer === 0) g.perceptionTimer = (index + 1) / ctx.state.guards.length / BALANCE.sim.aiTickHz;
@@ -61,8 +107,10 @@ function memory(ctx: SimContext, s: Scratch, g: GuardAgent, index: number): Guar
   return m;
 }
 
-function targetEntity(ctx: SimContext, s: Scratch, target: TargetRef | null) {
-  if (target?.kind === 'leader') return ctx.state.leader.alive && ctx.state.leader.hp > 0 ? ctx.state.leader : null;
+type GuardTarget = LeaderState | ZombieAgent;
+
+function targetEntity(ctx: SimContext, s: Scratch, target: TargetRef | null): GuardTarget | null {
+  if (target?.kind === 'leader') return ctx.state.leader.alive ? ctx.state.leader : null;
   if (target?.kind !== 'zombie') return null;
   const z = s.zombies.get(target.id);
   return z && !z.dormant && z.hp > 0 && z.heldBy === 0 && (z.state === 'follower' || z.state === 'ambient') ? z : null;
@@ -86,27 +134,27 @@ function alert(ctx: SimContext, g: GuardAgent, m: GuardMemory, pos: Vec2): void 
 
 function perceive(ctx: SimContext, s: Scratch, g: GuardAgent, m: GuardMemory): void {
   const current = targetEntity(ctx, s, g.target);
-  if (current && visible(ctx, g, m, current.pos, 'state' in current && current.state === 'ambient')) {
-    m.visible = true;
-  } else {
-    g.target = null; m.visible = false;
-    const range = armedRange(g);
-    s.candidates.length = 0;
-    ctx.zombieHash.query(g.pos.x, g.pos.z, range, s.candidates);
-    let nearest = Infinity;
-    for (const id of s.candidates) {
-      const z = s.zombies.get(id);
-      if (!z || z.dormant || z.hp <= 0 || z.heldBy !== 0 || (z.state !== 'follower' && z.state !== 'ambient')) continue;
-      const d = (z.pos.x - g.pos.x) ** 2 + (z.pos.z - g.pos.z) ** 2;
-      if (d < nearest && visible(ctx, g, m, z.pos, z.state === 'ambient')) {
-        nearest = d; g.target = s.targets.get(id)!;
-      }
+  // Reconsider nearer threats each perception tick, but only switch away from a still-visible target when the new one is
+  // TARGET_SWITCH_MARGIN m nearer: a milling horde must not thrash the target (each switch resets the aim timer, HH-V2 #1).
+  const currentSq = current && visible(ctx, g, m, current.pos, 'state' in current && current.state === 'ambient')
+    ? (current.pos.x - g.pos.x) ** 2 + (current.pos.z - g.pos.z) ** 2 : Infinity;
+  if (currentSq === Infinity) g.target = null;
+  let nearest = currentSq === Infinity ? Infinity : Math.max(0, Math.sqrt(currentSq) - TARGET_SWITCH_MARGIN) ** 2;
+  const range = armedRange(g);
+  s.candidates.length = 0;
+  ctx.zombieHash.query(g.pos.x, g.pos.z, range, s.candidates);
+  for (const id of s.candidates) {
+    const z = s.zombies.get(id);
+    if (!z || z.dormant || z.hp <= 0 || z.heldBy !== 0 || (z.state !== 'follower' && z.state !== 'ambient')) continue;
+    const d = (z.pos.x - g.pos.x) ** 2 + (z.pos.z - g.pos.z) ** 2;
+    if (d < nearest && visible(ctx, g, m, z.pos, z.state === 'ambient')) {
+      nearest = d; g.target = s.targets.get(id)!;
     }
-    const leader = ctx.state.leader;
-    if (leader.alive && leader.hp > 0 && visible(ctx, g, m, leader.pos) &&
-        (!g.target || ctx.rng.next() < BALANCE.guard.leaderTargetChance)) g.target = leaderTarget;
-    m.visible = g.target !== null;
   }
+  const leader = ctx.state.leader;
+  const leaderDistance = (leader.pos.x - g.pos.x) ** 2 + (leader.pos.z - g.pos.z) ** 2;
+  if (leader.alive && leaderDistance < nearest && visible(ctx, g, m, leader.pos)) g.target = leaderTarget;
+  m.visible = g.target !== null;
   const target = targetEntity(ctx, s, g.target);
   if (!target || !m.visible) return;
   m.alertPos.x = target.pos.x; m.alertPos.z = target.pos.z;
@@ -180,7 +228,8 @@ function approachPath(ctx: SimContext, g: GuardAgent, wp: Vec2): Vec2[] | null {
 }
 
 function patrol(ctx: SimContext, g: GuardAgent, m: GuardMemory, dt: number): void {
-  if (g.tower) return;
+  if (g.tower || g.heavy) return; // emplacements hold their arc
+
   if (g.idleTimer > 0) {
     g.idleTimer = Math.max(0, g.idleTimer - dt); g.facing = wrapAngle(g.facing + dt * 0.6);
     return;
@@ -204,7 +253,7 @@ function patrol(ctx: SimContext, g: GuardAgent, m: GuardMemory, dt: number): voi
 }
 
 function tryRetreat(ctx: SimContext, s: Scratch, g: GuardAgent, m: GuardMemory): void {
-  if (g.tower || m.retreated || ctx.state.time < m.retreatRetryAt ||
+  if (g.tower || g.heavy || m.retreated || ctx.state.time < m.retreatRetryAt ||
       g.hp >= BALANCE.guard.retreatHpFraction * g.maxHp) return;
   m.retreatRetryAt = ctx.state.time + 1 / BALANCE.sim.aiTickHz;
   s.candidates.length = 0; ctx.zombieHash.query(g.pos.x, g.pos.z, 6, s.candidates);
@@ -232,7 +281,8 @@ function tryRetreat(ctx: SimContext, s: Scratch, g: GuardAgent, m: GuardMemory):
   }
 }
 
-function fire(ctx: SimContext, s: Scratch, g: GuardAgent, m: GuardMemory): void {
+function fire(ctx: SimContext, s: Scratch, g: GuardAgent, m: GuardMemory, dt: number): void {
+  if (g.heavy) { fireHeavy(ctx, s, g, m, dt); return; }
   if (g.role === 'civilian' || g.role === 'police' && m.aimTime + 1e-9 < BALANCE.police.aimDelay) return;
   const target = targetEntity(ctx, s, g.target);
   if (!target || !m.visible || g.attackCooldown > 1e-9) return;
@@ -245,9 +295,11 @@ function fire(ctx: SimContext, s: Scratch, g: GuardAgent, m: GuardMemory): void 
   const weapon = g.role === 'police' ? BALANCE.police : BALANCE.guard;
   const hit = ctx.rng.next() < (barricade ? BALANCE.outposts.barricadeHitChance : weapon.hitChance);
   const damage = barricade ? BALANCE.outposts.barricadeDamage : weapon.damage;
-  const to = { x: target.pos.x, y: BALANCE.targetHeights.zombieTorso, z: target.pos.z };
+  const eye = g.elevation + BALANCE.guard.eyeHeight;
+  const to = { x: target.pos.x, y: g.target?.kind === 'leader'
+    ? target.elevation + LEADER_CHEST_HEIGHT : BALANCE.targetHeights.zombieTorso, z: target.pos.z };
   if (hit) {
-    if (g.target?.kind === 'leader') damageLeader(ctx, damage);
+    if (g.target?.kind === 'leader') hitAlpha(ctx, g, eye, to, damage);
     else damageZombie(ctx, target as ZombieAgent, damage);
   } else {
     const dx = target.pos.x - g.pos.x, dz = target.pos.z - g.pos.z, d = Math.hypot(dx, dz) || 1;
@@ -255,8 +307,76 @@ function fire(ctx: SimContext, s: Scratch, g: GuardAgent, m: GuardMemory): void 
     to.x += dz / d * offset; to.z -= dx / d * offset;
   }
   ctx.emit({ type: 'shot', guardId: g.id,
-    from: { x: g.pos.x, y: g.elevation + BALANCE.guard.eyeHeight - 0.1, z: g.pos.z }, to, hit });
+    from: { x: g.pos.x, y: eye - 0.1, z: g.pos.z }, to, hit });
   g.attackCooldown = weapon.fireCooldown; g.anim = 'attack'; g.animTime = 0;
+}
+
+/** Shared round: hit roll, damage, tracer (a miss lands beside the target). */
+function heavyRound(ctx: SimContext, g: GuardAgent, target: GuardTarget, hitChance: number, damage: number,
+  kind: 'mg' | 'coax', eye: number): void {
+  const hit = ctx.rng.next() < hitChance;
+  const to = { x: target.pos.x, y: g.target?.kind === 'leader'
+    ? target.elevation + LEADER_CHEST_HEIGHT : BALANCE.targetHeights.zombieTorso, z: target.pos.z };
+  if (hit) {
+    if (g.target?.kind === 'leader') hitAlpha(ctx, g, eye, to, damage);
+    else damageZombie(ctx, target as ZombieAgent, damage);
+  } else {
+    const dx = target.pos.x - g.pos.x, dz = target.pos.z - g.pos.z, d = Math.hypot(dx, dz) || 1;
+    const offset = (ctx.rng.next() < 0.5 ? -1 : 1) * (0.6 + ctx.rng.next() * 0.8);
+    to.x += dz / d * offset; to.z -= dx / d * offset;
+  }
+  ctx.emit({ type: 'shot', guardId: g.id, from: { x: g.pos.x, y: eye, z: g.pos.z }, to, hit, heavy: kind });
+}
+
+/** Mounted MG: long bursts with a reload gap. Tank: splash cannon at range + coaxial MG up close. */
+function fireHeavy(ctx: SimContext, s: Scratch, g: GuardAgent, m: GuardMemory, dt: number): void {
+  m.coaxCooldown = Math.max(0, m.coaxCooldown - dt);
+  const target = targetEntity(ctx, s, g.target);
+  if (!target || !m.visible) { if (g.heavy === 'mg' && g.attackCooldown <= 1e-9) m.burstLeft = 0; return; }
+  if (!visible(ctx, g, m, target.pos, 'state' in target && target.state === 'ambient')) {
+    m.aimTarget = null; m.aimTime = 0;
+    return;
+  }
+  const d = Math.hypot(target.pos.x - g.pos.x, target.pos.z - g.pos.z);
+  if (g.heavy === 'mg') {
+    const mg = BALANCE.heavy.mg;
+    if (g.attackCooldown > 1e-9 || m.aimTime + 1e-9 < mg.aimDelay) return;
+    if (m.burstLeft <= 0) m.burstLeft = mg.burstRounds;
+    heavyRound(ctx, g, target, mg.hitChance, mg.damage, 'mg', g.elevation + mg.eyeHeight);
+    m.burstLeft--;
+    g.attackCooldown = m.burstLeft > 0 ? mg.shotInterval : mg.reloadTime;
+    g.anim = 'attack'; g.animTime = 0;
+    return;
+  }
+  const tank = BALANCE.heavy.tank;
+  if (d <= tank.coaxRange && m.coaxCooldown <= 1e-9) {
+    heavyRound(ctx, g, target, tank.coaxHitChance, tank.coaxDamage, 'coax', g.elevation + tank.eyeHeight - 0.6);
+    m.coaxCooldown = tank.coaxInterval;
+  }
+  if (g.attackCooldown > 1e-9 || d < tank.cannonMinRange || m.aimTime + 1e-9 < tank.cannonAimDelay) return;
+  // The shell lands on the target, or short/long of it on a miss (it still bursts there).
+  const blast = { x: target.pos.x, z: target.pos.z };
+  if (ctx.rng.next() < 0.3) {
+    const ux = (target.pos.x - g.pos.x) / (d || 1), uz = (target.pos.z - g.pos.z) / (d || 1);
+    const off = (ctx.rng.next() < 0.5 ? -1 : 1) * (1.5 + ctx.rng.next() * 2);
+    blast.x += ux * off; blast.z += uz * off;
+  }
+  const r = tank.splashRadius;
+  s.candidates.length = 0;
+  ctx.zombieHash.query(blast.x, blast.z, r, s.candidates);
+  for (const id of s.candidates) {
+    const z = s.zombies.get(id);
+    if (!z || z.dormant || z.hp <= 0 || z.heldBy !== 0 || (z.state !== 'follower' && z.state !== 'ambient')) continue;
+    const dz = Math.hypot(z.pos.x - blast.x, z.pos.z - blast.z);
+    if (dz <= r) damageZombie(ctx, z, tank.splashDamage * (1 - 0.65 * dz / r));
+  }
+  const leader = ctx.state.leader;
+  const dl = Math.hypot(leader.pos.x - blast.x, leader.pos.z - blast.z);
+  if (dl <= r) damageLeader(ctx, tank.splashLeaderDamage * (1 - 0.65 * dl / r), 'explosion');
+  ctx.emit({ type: 'shot', guardId: g.id, from: { x: g.pos.x, y: tank.eyeHeight - 0.2, z: g.pos.z },
+    to: { x: blast.x, y: 0.3, z: blast.z }, hit: true, heavy: 'cannon' });
+  ctx.emit({ type: 'shellBlast', guardId: g.id, pos: blast, radius: r });
+  g.attackCooldown = tank.cannonCooldown; g.anim = 'attack'; g.animTime = 0;
 }
 
 function outsideBy(r: AABB, p: Vec2): number {
@@ -269,7 +389,7 @@ function updateCivilian(ctx: SimContext, s: Scratch, g: GuardAgent, m: GuardMemo
     g.target = null; m.visible = false;
     let nearest = BALANCE.civilian.panicRadius ** 2;
     const leader = ctx.state.leader;
-    if (leader.alive && leader.hp > 0) {
+    if (leader.alive) {
       const d = (leader.pos.x - g.pos.x) ** 2 + (leader.pos.z - g.pos.z) ** 2;
       if (d <= nearest && !ctx.collision.segmentBlocked(g.pos, leader.pos, m.sight)) {
         nearest = d; g.target = leaderTarget;
@@ -290,6 +410,13 @@ function updateCivilian(ctx: SimContext, s: Scratch, g: GuardAgent, m: GuardMemo
   const threat = targetEntity(ctx, s, g.target);
   if (!threat) { g.target = null; m.visible = false; }
   g.lostTargetTimer = m.visible ? 0 : g.lostTargetTimer + dt;
+  // todos #12: armed citizens stand and fight (until badly hurt, then they run like everyone else).
+  const weapon = civilianWeapon(ctx.state, g);
+  if (weapon !== 'none' && g.hp >= BALANCE.armedCivilian.fleeHpFraction * g.maxHp) {
+    fightBack(ctx, g, m, dt, weapon, threat && m.visible ? threat : null);
+    clampHome(g);
+    return;
+  }
   if (m.visible && g.state !== 'RETREAT') {
     g.state = 'RETREAT'; g.stateTime = 0; g.path.length = 0;
     ctx.emit({ type: 'guardAlert', guardId: g.id, pos: { ...g.pos }, role: g.role });
@@ -307,12 +434,70 @@ function updateCivilian(ctx: SimContext, s: Scratch, g: GuardAgent, m: GuardMemo
       g.state = 'PATROL'; g.stateTime = 0; g.path.length = 0;
     }
   } else if (g.state === 'PATROL') patrol(ctx, g, m, dt);
-  // Fleeing street civilians may run out of their home area; calm ones walk back via their waypoints.
-  if (g.homeArea && !(g.post === 'street' && (g.state === 'RETREAT' || outsideBy(g.homeArea, g.pos) > 1.5))) {
+  clampHome(g);
+}
+
+/** Fleeing/fighting street civilians may leave their home area; calm ones walk back via their waypoints. */
+function clampHome(g: GuardAgent): void {
+  if (g.homeArea && !(g.post === 'street' && (g.state === 'RETREAT' || g.state === 'COMBAT' || outsideBy(g.homeArea, g.pos) > 1.5))) {
     const r = g.homeArea;
     g.pos.x = Math.max(r.minX + g.radius, Math.min(r.maxX - g.radius, g.pos.x));
     g.pos.z = Math.max(r.minZ + g.radius, Math.min(r.maxZ - g.radius, g.pos.z));
   }
+}
+
+/** todos #12: a civilian with a bat charges and swings; one with a gun keeps its distance and shoots. */
+function fightBack(ctx: SimContext, g: GuardAgent, m: GuardMemory, dt: number, weapon: CivilianWeapon,
+  threat: GuardTarget | null): void {
+  const A = BALANCE.armedCivilian;
+  if (!threat) {
+    m.aimTarget = null; m.aimTime = 0;
+    if (g.state !== 'PATROL' && g.lostTargetTimer >= BALANCE.civilian.calmTime) {
+      g.state = 'PATROL'; g.stateTime = 0; g.path.length = 0;
+    }
+    if (g.state === 'PATROL') patrol(ctx, g, m, dt);
+    return;
+  }
+  if (g.state !== 'COMBAT') {
+    g.state = 'COMBAT'; g.stateTime = 0; g.path.length = 0;
+    ctx.emit({ type: 'guardAlert', guardId: g.id, pos: { ...g.pos }, role: g.role });
+  }
+  const isLeader = g.target?.kind === 'leader';
+  const dx = threat.pos.x - g.pos.x, dz = threat.pos.z - g.pos.z, d = Math.hypot(dx, dz);
+  face(g, threat.pos, dt);
+  if (weapon === 'bat') {
+    const reach = A.batRange + threat.radius;
+    if (d > reach && d < A.chargeRadius && d > 1e-9) {
+      ctx.collision.moveCircle(g.pos, dx / d * A.chargeSpeed * dt, dz / d * A.chargeSpeed * dt, g.radius);
+    } else if (d <= reach && g.attackCooldown <= 1e-9) {
+      if (isLeader) damageLeader(ctx, A.batLeaderDamage, 'melee');
+      else damageZombie(ctx, threat as ZombieAgent, A.batDamage);
+      ctx.emit({ type: 'humanMelee', guardId: g.id, pos: { ...g.pos }, hit: true });
+      g.attackCooldown = A.batCooldown; g.anim = 'attack'; g.animTime = 0;
+    }
+    return;
+  }
+  const gun = weapon === 'shotgun' ? A.shotgun : A.pistol;
+  if (d < A.keepAway && d > 1e-9) {
+    ctx.collision.moveCircle(g.pos, -dx / d * A.backOffSpeed * dt, -dz / d * A.backOffSpeed * dt, g.radius);
+  }
+  m.aimTime = m.aimTarget === g.target ? m.aimTime + dt : 0;
+  m.aimTarget = g.target;
+  if (d > gun.range || g.attackCooldown > 1e-9 || m.aimTime + 1e-9 < gun.aimDelay) return;
+  if (ctx.collision.segmentBlocked(g.pos, threat.pos, m.sight)) return;
+  const hit = ctx.rng.next() < gun.hitChance;
+  const eye = g.elevation + BALANCE.guard.eyeHeight;
+  const to = { x: threat.pos.x, y: isLeader
+    ? threat.elevation + LEADER_CHEST_HEIGHT : BALANCE.targetHeights.zombieTorso, z: threat.pos.z };
+  if (hit) {
+    if (isLeader) hitAlpha(ctx, g, eye, to, gun.damage);
+    else damageZombie(ctx, threat as ZombieAgent, gun.damage);
+  } else if (d > 1e-9) {
+    const offset = (ctx.rng.next() < 0.5 ? -1 : 1) * (0.8 + ctx.rng.next() * 0.4);
+    to.x += dz / d * offset; to.z -= dx / d * offset;
+  }
+  ctx.emit({ type: 'shot', guardId: g.id, from: { x: g.pos.x, y: eye - 0.1, z: g.pos.z }, to, hit });
+  g.attackCooldown = gun.fireCooldown; g.anim = 'attack'; g.animTime = 0;
 }
 
 export function updateHumanAI(ctx: SimContext, dt: number, _input: SimInput): void {
@@ -334,8 +519,8 @@ export function updateHumanAI(ctx: SimContext, dt: number, _input: SimInput): vo
     if (g.role === 'civilian') {
       updateCivilian(ctx, s, g, m, dt);
       g.vel.x = dt > 0 ? (g.pos.x - x) / dt : 0; g.vel.z = dt > 0 ? (g.pos.z - z) / dt : 0;
-      if (!(g.anim === 'hit' && g.animTime < 0.35)) {
-        const anim = Math.hypot(g.vel.x, g.vel.z) > 0.05 ? (g.state === 'RETREAT' ? 'run' : 'walk') : 'idle';
+      if (!((g.anim === 'hit' || g.anim === 'attack') && g.animTime < 0.35)) {
+        const anim = Math.hypot(g.vel.x, g.vel.z) > 0.05 ? (g.state === 'RETREAT' || g.state === 'COMBAT' ? 'run' : 'walk') : 'idle';
         if (g.anim !== anim) { g.anim = anim; g.animTime = 0; }
       }
       continue;
@@ -366,7 +551,7 @@ export function updateHumanAI(ctx: SimContext, dt: number, _input: SimInput): vo
         if (g.stateTime >= 3 || walkPath(ctx, g, BALANCE.guard.speed, dt)) {
           g.state = 'COMBAT'; g.stateTime = 0; g.path.length = 0;
         }
-      } else if (!g.tower) {
+      } else if (!g.tower && !g.heavy) {
         s.candidates.length = 0; ctx.zombieHash.query(g.pos.x, g.pos.z, 2.5, s.candidates);
         let nearest: ZombieAgent | null = null, distance = 2.5;
         for (const id of s.candidates) {
@@ -381,7 +566,7 @@ export function updateHumanAI(ctx: SimContext, dt: number, _input: SimInput): vo
           (g.pos.z - nearest.pos.z) / distance * BALANCE.guard.speed * 0.6 * dt);
       }
       if (target) face(g, target.pos, dt);
-      fire(ctx, s, g, m);
+      fire(ctx, s, g, m, dt);
       if (g.lostTargetTimer >= BALANCE.guard.loseTargetTime) {
         g.state = g.post === 'patrol' ? 'PATROL' : 'ALERT';
         g.stateTime = 0; g.lostTargetTimer = 0; g.path.length = 0; m.retreated = false;

@@ -54,23 +54,13 @@ describe('recruitment and initial state', () => {
     expect(sim.drainEvents().filter(e => e.type === 'recruited')).toHaveLength(1);
   });
 
-  it('rallies at 14m once per 8 seconds and snapshots event positions', () => {
+  it('rally is removed: the input recruits nobody outside passive range and emits no rally event', () => {
     const sim = isolated(), p = sim.state.leader.pos;
-    const first = add(sim, p.x + 14, p.z);
+    const far = add(sim, p.x + 14, p.z);
     sim.step(dt, { ...emptyInput(), rally: true });
-    expect(first.state).toBe('follower');
-    const event = sim.drainEvents().find(e => e.type === 'recruited');
-    expect(event?.type === 'recruited' && event.viaRally).toBe(true);
-    const second = add(sim, p.x - 14, p.z);
-    sim.step(dt, { ...emptyInput(), rally: true });
-    expect(second.state).toBe('ambient');
-    expect(sim.drainEvents().filter(e => e.type === 'rally')).toHaveLength(0);
-    for (let i = 0; i < 479; i++) sim.step(dt, emptyInput());
-    // Place it back in range; ambient wander must not affect the cooldown boundary test.
-    second.pos.x = p.x - 14; second.pos.z = p.z;
-    sim.step(dt, { ...emptyInput(), rally: true });
-    expect(second.state).toBe('follower'); expect(sim.state.abilities.rallyCooldown).toBe(8);
-    if (event?.type === 'recruited') expect(event.pos).not.toBe(first.pos);
+    expect(far.state).toBe('ambient');
+    expect(sim.drainEvents().some(e => e.type === 'rally' || e.type === 'recruited')).toBe(false);
+    expect(sim.state.abilities.rallyCooldown).toBe(0);
   });
 
   it('makes overlapping passive/rally/repeated recruitment idempotent', () => {

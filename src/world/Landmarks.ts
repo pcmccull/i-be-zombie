@@ -17,6 +17,7 @@ import type {
 } from '../core/types';
 import { onLayoutChunksChanged } from './CityDistrict';
 import { chunkIdAt } from './worldQueries';
+import { asGroundDecal, DECAL_Y } from './groundLevels';
 
 const COLOR_BUS_YELLOW = 0xe59824;
 const COLOR_BUS_ORANGE = 0xd48318;
@@ -72,6 +73,13 @@ function findLandmarkDef(layout: DistrictLayout, landmark: LandmarkKind): Struct
   }
   return undefined;
 }
+
+function findLandmarkDefs(layout: DistrictLayout, landmark: LandmarkKind): StructureDef[] {
+  return layout.structures.filter((s) => s.landmark === landmark);
+}
+
+/** Legacy-prefix placeholder that never matches a collider tag (per-def lookups use only the def's own prefix). */
+const NO_LEGACY_PREFIX = '\u0000';
 
 /**
  * Finds all non-breakable shell colliders belonging to a landmark enclosure,
@@ -1465,8 +1473,19 @@ export class Landmarks {
       }
     }
 
-    const penDef = findLandmarkDef(layout, 'barricade');
-    const penFences = findShellColliders(layout, penDef, 'pen-fence-');
+    // Every barricade enclosure (suburb pen + tier 1–3 expansion strongholds) gets its fence, in its own chunk.
+    const penDefs = findLandmarkDefs(layout, 'barricade');
+    if (penDefs.length === 0) this.appendPenFence(layout, getBucket, undefined, 'pen-fence-');
+    penDefs.forEach((d, i) => this.appendPenFence(layout, getBucket, d, i === 0 ? 'pen-fence-' : NO_LEGACY_PREFIX));
+  }
+
+  private appendPenFence(
+    layout: DistrictLayout,
+    getBucket: (chunkId: number) => ChunkGeomBuckets,
+    penDef: StructureDef | undefined,
+    legacyPrefix: string,
+  ): void {
+    const penFences = findShellColliders(layout, penDef, legacyPrefix);
     if (penFences.length === 0 && !penDef) return;
 
     const anchor = penDef
@@ -1553,8 +1572,19 @@ export class Landmarks {
     layout: DistrictLayout,
     getBucket: (chunkId: number) => ChunkGeomBuckets,
   ): void {
-    const stationDef = findLandmarkDef(layout, 'station');
-    const stationWalls = findShellColliders(layout, stationDef, 'station-');
+    // Every station enclosure (police district + tier 4+ expansion strongholds), each in its own chunk.
+    const stationDefs = findLandmarkDefs(layout, 'station');
+    if (stationDefs.length === 0) this.appendStationCourtyard(layout, getBucket, undefined, 'station-');
+    for (const d of stationDefs) this.appendStationCourtyard(layout, getBucket, d, NO_LEGACY_PREFIX);
+  }
+
+  private appendStationCourtyard(
+    layout: DistrictLayout,
+    getBucket: (chunkId: number) => ChunkGeomBuckets,
+    stationDef: StructureDef | undefined,
+    legacyPrefix: string,
+  ): void {
+    const stationWalls = findShellColliders(layout, stationDef, legacyPrefix);
     if (!stationDef && stationWalls.length === 0) return;
 
     const anchor = stationDef
@@ -1781,8 +1811,9 @@ export class Landmarks {
             side: THREE.DoubleSide,
           }),
         );
+        asGroundDecal(holdRingMat);
         holdRingMesh = new THREE.Mesh(ringGeom, holdRingMat);
-        holdRingMesh.position.set(0, 0.04, 0);
+        holdRingMesh.position.set(0, DECAL_Y, 0);
         group.add(holdRingMesh);
       }
 
@@ -1812,6 +1843,7 @@ export class Landmarks {
       penGate: 2.2,
       stationDoor: 3.2,
       securityShutter: 3,
+      shopDoor: 2.6,
     };
 
     const pickMat = this.trackMaterial(
@@ -1919,8 +1951,9 @@ export class Landmarks {
           side: THREE.DoubleSide,
         }),
       );
+      asGroundDecal(burstRingMat);
       const burstRingMesh = new THREE.Mesh(sharedBurstRingGeom, burstRingMat);
-      burstRingMesh.position.set(0, 0.06, 0);
+      burstRingMesh.position.set(0, DECAL_Y, 0);
       burstRingMesh.visible = false;
       rubbleGroup.add(burstRingMesh);
 
@@ -2061,7 +2094,7 @@ export class Landmarks {
         const col = k % 3 === 0 ? COLOR_HAZARD_YELLOW : k % 2 === 0 ? COLOR_WOOD_PLANK : COLOR_DARK_STEEL;
         rubble.push(makeBox(0.95, 0.12, 0.28, rx, 0.07, rz, col, 0.04, k * 0.5, 0));
       }
-    } else if (kind === 'storeDoor') {
+    } else if (kind === 'storeDoor' || kind === 'shopDoor') {
       parts.push(makeBox(0.16, h, thick * 0.8, -span * 0.47, h * 0.5, 0, COLOR_STORE_TRIM));
       parts.push(makeBox(0.16, h, thick * 0.8, span * 0.47, h * 0.5, 0, COLOR_STORE_TRIM));
       parts.push(makeBox(0.14, h, thick * 0.8, 0, h * 0.5, 0, COLOR_STORE_TRIM));

@@ -66,7 +66,7 @@ src/
   ui/CinematicOverlay.ts       fade, letterbox, subtitles, Skip Intro, start prompt, objective card (+ ui/intro.css)
   audio/IntroAudio.ts          narration (assets/voiceover/intro2.mp3) + synthesized intro/gameplay music
   sim/Simulation.ts            [pure] implements ISimulation; owns SimContext; fixed step order (below)
-  sim/createInitialState.ts    [pure] DistrictLayout + Rng -> GameState (leader, 5 start followers, 85 ambient incl. 45 held, 16 humans, gate, structures, momentum)
+  sim/createInitialState.ts    [pure] DistrictLayout + Rng -> GameState (leader, start followers — 0 open world / 5 legacy, 85 ambient incl. 45 held, 16 humans, gate, structures, momentum)
   world/districtLayout.ts      [pure] buildDistrictLayout(seed?): DistrictLayout — the open world (4 districts) as data
   world/layout/*.ts            [pure] roads + per-district builders used by districtLayout
   world/legacyDistrictLayout.ts [pure] buildLegacyDistrictLayout() — recruitment-milestone district; Simulation default + test fixture
@@ -94,6 +94,7 @@ src/
   systems/VictorySystem.ts     [pure] checkVictory (gate destroyed AND every post==='checkpoint' human DEAD)
   systems/StructureSystem.ts   [pure] findStructure, damageStructure, updateStructures (destroy -> release held zombies)
   systems/MomentumSystem.ts    [pure] addMomentum, updateMomentum, momentumTier, recruitRadiusMultiplier, speedMultiplier
+  systems/HordeHealthSystem.ts [pure] Horde Strength (the Alpha's only survival resource): shared Alpha damage, core, Last Brain Standing
   world/Landmarks.ts           [3D] Bus, locked alley, convenience store, police barricade/pen meshes + damage/release visuals + pick proxies
   visuals/LowPolyCharacters.ts [3D] Human (guard/police/civilian) rigs + procedural animation
   visuals/zombieRig.ts         [pure] zombie skeleton dims, ZombiePose, leg FK/grounding helpers
@@ -105,8 +106,36 @@ src/
   visuals/EntityRenderer.ts    [3D] Leader + guards + gate sync from GameState (interpolated)
   visuals/Effects.ts           [3D] Pooled tracers, muzzle flashes, rings/pulses, sparkles, dust, camera shake requests
   audio/AudioSystem.ts         [3D-side, no three needed] Web Audio synth SFX; unlock on gesture; mute-safe
-  ui/HUD.ts                    DOM/CSS overlay (no framework), reads GameState + events
-  ui/hud.css
+  ui/HUD.ts                    DOM/CSS overlay (no framework), reads GameState + events; renders hudModel view models
+  ui/hudModel.ts               [pure] HUD view models (Horde Strength, horde, objective, abilities, context actions, banners, minimap math)
+  ui/hudIcons.ts               [pure] SVG icon set drawn in code (icon(), abilityIcon())
+  ui/hudTheme.css              design tokens (--hz-*), --hz-u scale unit, surfaces, key caps, buttons, keyframes, reduced motion
+  ui/hud.css                   gameplay HUD layout/components; ui/hudPanels.css menus/modals/nest/world-map frame
+  world/boundaryLayout.ts      [pure] world-edge segments/colliders + backdrop rects (expand spec)
+  world/BoundaryScenery.ts     [3D] render-only edge dressing + backdrop (instanced, ~18 draw calls)
+  systems/AwarenessSystem.ts   [pure] zombie vision (identified/seen, LOS budget) + sense cues; isIdentified/isSeen/canTarget
+  core/visionMath.ts           [pure] hazeFactor, tierBlend, lerpProfile, humanVisual
+  visuals/VisionFog.ts         [3D] world-space vision haze material patch (shared uniforms)
+  ui/SenseIndicators.ts        screen-edge sense-cue arcs (pooled DOM)
+  graphics/performance/GraphicsQuality.ts [pure] low/medium/high presets + reducedMotion, localStorage `ibz.graphics.v1`
+  graphics/performance/{frameStats,benchmark}.ts [pure] frame p50/p95 window; `?bench=1|2` stress population
+  graphics/performance/GraphicsDiagnostics.ts  F3 graphics panel (calls, tris, casters, particles)
+  graphics/materials/surfaceDetailMath.ts [pure] surface ids + tileable detail atlas bytes
+  graphics/materials/SurfaceDetail.ts [3D] world-space detail patch (`aSurface` attr) + foliage wind
+  graphics/lighting/LightingController.ts [3D] sun/hemi/fill, shadow size per preset, follows focus
+  graphics/postfx/PostProcessingPipeline.ts [3D] display-referred grade + saturated-only bloom (copy canvas → quad)
+  graphics/vfx/vfxRules.ts     [pure] emitter configs, GameEvent → VfxName mapping, budgets, footstep picker, surfaceAt
+  graphics/vfx/{EmitterPool,VFXManager}.ts [3D] 2 instanced billboard pools; event adapter + footsteps/charge/ambient
+  visuals/humanProfiles.ts     [pure] human archetype (tourist/resident/worker/security/defender) + look per id
+  systems/trafficControl.ts    [pure] traffic network (merged lanes, junctions), signal clock, stop rules helpers
+  systems/vehicleModels.ts     [pure] vehicle body types: footprint, handling, spawn pick
+  world/TrafficSignals.ts      [3D] traffic lights (live bulbs), stop signs, stop lines (instanced)
+  world/layout/ringRoad.ts     [pure] perimeter ring road (N/W/E edges)
+  systems/CityActivityDirector.ts [pure] district heat → alert (5 stages) + control, weighted event scheduling, staging, responders
+  systems/{RewardSystem,CompanionSystem,PlayerVehicleSystem,HideoutSystem,WorldInteractionSystem}.ts [pure] living-city rewards
+  content/{events,rewards}.ts  [pure] event catalog; cosmetics/companions/vehicles/hideouts/secrets/achievements (data only)
+  visuals/{CityVisuals,CityEventProps,InteractableProps,CosmeticMeshes,BrainPickups}.ts [3D] living-city render layers
+  ui/CollectionPanel.ts        wardrobe/companions/garage/hideouts/trophies/secrets (I key)
   utils/math.ts                [pure] vec helpers (allocation-free variants with `out` params), angle lerp, clamp
   utils/spatialHash.ts         [pure] implements ISpatialHash (uniform grid)
   utils/rng.ts                 [pure] mulberry32(seed): Rng
@@ -119,8 +148,11 @@ Agents only create/edit files listed in their task brief. **Never edit `src/core
 
 ## World conventions
 
-- Meters. X/Z ground plane, Y up. Ground at Y=0. Open world bounds x∈[-200,200], z∈[-160,160] (`BALANCE.openWorld`);
-  legacy district x∈[-120,120], z∈[-90,90]. Districts: suburbs SW, police NW, shopping SE, industrial NE.
+- Meters. X/Z ground plane, Y up. Ground at Y=0. Open world (expand spec): walkable `layout.playArea` x∈[-400,400], z∈[-480,160];
+  `layout.bounds` = playArea + a 20 m boundary band (x∈[-420,420], z∈[-500,180]) that holds the indestructible world edge.
+  16 districts on a 4 × 4 grid (columns x -420/-200/0/200/420, rows z -500/-320/-160/0/180); the original four (suburbs SW,
+  police NW, shopping SE, industrial NE of the old 400 × 320 world) keep their coordinates as the bottom-middle 2 × 2.
+  Legacy district x∈[-120,120], z∈[-90,90]. Chunks are 80 m (11 × 9); discovery cells 20 m (42 × 34).
 - **North = -Z, East = +X.** Park/plaza start is southwest (≈ x -85, z +60). Checkpoint is northeast (≈ x +80, z -60).
 - Facing angle `a`: forward = `(sin a, cos a)` on (x,z); `a=0` faces +Z. Three.js: `mesh.rotation.y = a`.
 - Camera yaw uses the same convention: yaw = direction the camera *looks* along the ground (yaw=0 looks toward +Z,
@@ -131,6 +163,10 @@ Agents only create/edit files listed in their task brief. **Never edit `src/core
 - LOS height rule: a sight segment from height h0 at `a` to h1 at `b` is blocked by a `blocksSight` collider iff the segment
   crosses its footprint at a point where the interpolated line height < collider.height. Tower guards (eye 5.2 m) see over
   compound walls (2.4 m) but not buildings (≥ 6 m). Cars are 1.7 m and block ground-level (1.5 m) sight.
+- **Climbing:** any `vehicle`/`prop`/`wall` collider with `height <= horde.crawlMaxHeight` (1.8 m, a car is 1.7) is climbable
+  (`isCrawlable`, `climbHeightAt` in CollisionWorld): every follower (not brutes, not ambient/held) and the Alpha walk over it,
+  slower on top (`crawlSpeedMultiplier` / `leaderClimbSpeedMultiplier`), with `elevation` rising to its height. The horde
+  always plans on `crawlNavGrid`. Compound walls (2.4 m), buildings, gates, towers, breakables and boundaries never climb.
 - Gate: one `ColliderDef` with `tag: 'gate'`, `kind: 'gate'`, blocksMove+blocksSight. Destroyed ⇒ `collision.setEnabled(id,false)`
   then `navGrid.rebuild()` + `crawlNavGrid.rebuild()` exactly once, emit `gateDestroyed`.
 - Towers: `kind:'tower'` blocking 3×3 m footprints inside the compound's front corners. Occupant stands on the platform
@@ -155,7 +191,16 @@ Agents only create/edit files listed in their task brief. **Never edit `src/core
 
 ### Recruitment, structures & momentum (recruitment spec)
 
-- **Start:** `BALANCE.horde.startFollowers` (5) followers spawn inside `layout.startFollowerArea` with `recruitGen 0`,
+- **Beach start (open world):** the Alpha starts alone on the suburbs start beach (`START_BEACH` sand ground, playerStart ≈ (−150, 156))
+  with `openWorld.startFollowers` 0 and base cap `openWorld.maxFollowers` 0, so nothing can be recruited until a nest opens.
+  First objective: walk into the **walk-in nest** by the bus (`NestDef.claim`, `nest_start` ≈ (−124, 125), within
+  `nest.claimRadius`). Claiming (ConquestSystem `claimNests`, `state.claimedNests`, saved as `player.claimedNests`) activates it
+  and the first claim raises `openWorld.firstNestHorde` (10) free followers (`hordeUnlocked`, once). Every active claim or
+  stronghold nest adds `followersPerNest` (10) cap; stronghold captures give no free horde. Until a nest is active the Alpha
+  respawns / reloads on the beach. Nest activity rules live in pure `systems/nests.ts` (`isNestActiveIn`) — use it, never
+  `strongholdId === null`. Old 5 / 40 economy tests call `usePreBeachEconomy()` (tests/support; also pre-claims the nest via
+  `openWorld.startNestClaimed`); the beach start itself is tests/beachStart.test.ts.
+- **Start (legacy district):** `BALANCE.horde.startFollowers` (5) followers spawn inside `layout.startFollowerArea` with `recruitGen 0`,
   `pulseAt -1` (they do not pulse), counted in `followerCount` but NOT in `stats.recruited`, no momentum.
 - **Recruitment generations:** leader proximity / rally / conversion ⇒ gen 0. Every newly recruited zombie (gen < `recruitPulse.maxGeneration`)
   schedules exactly one pulse at `time + U(delayMin, delayMax)`; when it fires (`pulseAt` → -1) it recruits up to
@@ -185,7 +230,101 @@ Agents only create/edit files listed in their task brief. **Never edit `src/core
 - Humans killed by the Alpha (`killedByAlpha`) always convert; others use the normal roll. One damage path: CombatSystem helpers.
 - Saves contain canonical data only (`WorldSave`); followers are transient. Corrupt/incompatible saves ⇒ clean start, never a crash.
 
-### `Simulation.step(dt, input)` order (authoritative; open-world order lands in T012)
+### Expanded world & zombie vision (docs/5_expand_world.md, ARCHITECTURE.md §EW)
+
+- **World edge:** colliders with `kind: 'boundary'` (from `world/boundaryLayout.ts`) are never breakable, never a structure, never
+  disabled. `BoundaryScenery` dresses them per `BoundaryKind` (render-only, never pickable, no shadows cast). Backdrop rects
+  (ocean, bay, mangroves, highway, skyline, airfield) lie outside `bounds`.
+- **Vision is sim truth:** only `AwarenessSystem` writes `state.vision` (sorted `identified` / `seen` id arrays, fuzzed `cues`,
+  `revision`). It reads only `leader.pos` + `progression.visionTier` (never camera/zoom), LOS-budgeted at `vision.updateHz`.
+  While respawning, `identified` collapses to the engaged set. **Every living human inside the rendered vision limit
+  (`hazeRadius × (1 + VISION_EDGE_BAND)`) is at least `seen`** (hazed silhouette, no LOS needed, like the scenery
+  around it), so a human is never invisible next to a visible tree; identification still needs clear sight + LOS. Legacy layout: no awareness, everyone counts as identified.
+- **Eyesight tiers** 1–4 (`BALANCE.vision.tiers`) are bought with biomass at an active nest (`buyVision` in ProgressionSystem;
+  costs `vision.tierCosts`). Save v3 stores `visionTier`; v2 fog is remapped (+11 cols, +17 rows).
+- **Targeting gate:** open-world horde attack orders on a human with `!canTarget(state, id)` become a move to its position.
+  Client picks, hover labels, health bars, silhouettes and minimap/world-map humans use the same helpers
+  (`isIdentified` / `isSeen` / `visionMath.humanVisual`): identified ⇒ full, seen ⇒ silhouette, otherwise hidden (never a mesh
+  or dot at a live position). Structures/gates are geography and stay targetable.
+- **Haze & vision limit:** `VisionFog` patches materials once (`onBeforeCompile`, shared uniforms) around the interpolated Alpha.
+  **Everything past the vision limit is hidden:** past `hazeRadius` the haze ramps to fully opaque over `VISION_EDGE_BAND`
+  (visionMath `visionVisibility`, mirrored in the GLSL) and `Game` sets the sky/background + scene fog to the haze colour.
+  Effects skip the shader (`userData.noVisionHaze`), so `Game` drops effect events whose origin is past `visionFog.hiddenBeyond`.
+  Attack/move order markers are culled past the limit (`Effects.setMarkerCull`, `Game.markerFor`) and never sit on an
+  unidentified human. Deliberate exception: the player's own world-map waypoint beacon (navigation UI, not world info).
+  Any new always-visible 3D overlay must cull itself the same way. Quality `low` (touch / DPR ≤ 1) drops desaturation. New meshes must be
+  re-patched (Game re-patches on chunk changes). `visionFog.suspend()` turns it all off during the intro cinematic.
+- **Senses:** cues (gunshot, scream, siren, crowd) are aggregated, fuzzed and capped (`BALANCE.senses`); UI shows screen-edge arcs
+  (`SenseIndicators`), soft map blobs and panned audio, never exact positions. **Gunshots and screams are warnings:** they cue
+  whenever within hearing range (even inside clear sight, with proportional fuzz so the bearing holds), are evicted last, and
+  show a ⚠ icon with a direction arrow at ≥ `WARNING_CUE_MIN_OPACITY`. Sirens/scent cue only outside clear sight.
+
+### Horde Strength (docs/13_hode_health.md, ARCHITECTURE §HH)
+
+- **The Alpha has no HP.** `LeaderState` has no `hp`/`maxHp`; survival is `state.horde` (HordeHealthState), written ONLY by
+  `HordeHealthSystem`. Strength is derived once per step, never subtracted: `clamp(Σ follower values (walker 1, companion 2,
+  brute 3) + (alphaCore − coreDamage), 0, alphaCore + followerCap)`. The Alpha core (`hordeHealth.alphaCore`, 6 units) is the
+  shared-damage accumulator, so a solo Alpha on the beach still survives ≈ 96 damage.
+- **Alpha damage enters only through `damageLeader(ctx, amount, source)`** (`'bullet'|'melee'|'explosion'|'vehicle'|'hazard'`):
+  ignored while `graceLeft > 0`; during Last Brain it is the finishing hit (`finishLastBrain`); otherwise `applyAlphaDamage`
+  pours `amount × alphaDamageMultiplier` nearest-first into followers within `shareRadius` (≤ `maxRecipients`, via
+  `damageZombie`), then the core (`unitHp` per unit), then the nearest followers anywhere. One `sharedDamage` event per hit.
+  Kill followers only via `damageZombie`; never write strength. Death goes only through `killLeader`.
+- **Shielding:** shots at the Alpha are intercepted by the first live follower on the 2D segment (`findShotInterceptor`, LOS
+  height rule for elevated shooters); guards target the nearest visible threat. Splash is not intercepted (followers take their
+  own splash once, the Alpha's share once).
+- **Last Brain Standing:** strength 0 while alive ⇒ `lastBrainStart` (6 s, ×1.35 speed, `entryGrace`); any strength back ⇒
+  `recovered` + `recoveryGrace`; a hit ⇒ `finished` death; timer ⇒ `expired` death. Respawn = `resetHordeHealth` (core full).
+- Heals (shop drinks, convoy supplies) restore core units only (`restoreStrength`, HP × multiplier / unitHp), refused at full core.
+  Saves store `player.alphaCoreDamage` (v4 optional, clamped); followers stay transient.
+
+### Traffic & car attacks (todos #12 + car attacks)
+
+- Only `TrafficSystem` writes `state.vehicles`. Cars are agents, not colliders. A live (non-stalled) car is a
+  `TargetRef { kind: 'vehicle', id }`: melee reach is measured to its footprint (`vehicleOverlap`), damage goes through
+  `damageVehicle` (wears `hp` = driver's grip, slows + bogs the car); at 0 the car stalls and the driver is dragged out as a
+  dazed, hurt civilian (`driverBailed` with `pulled: true`, ignores the human cap). Followers auto-engage a car within
+  `traffic.engageReach`; attack orders on cars are accepted. Every body a car hits costs speed and adds `bogTime`
+  (no acceleration + drag), so a car that ploughs into the horde rolls to a stop beside it.
+  Any clawed driver panics (`TrafficSystem` side-table, `isPanicking`): reverses out of the mob (`rammer.panicBackup`), then
+  rams the centroid of nearby zombies + Alpha for `rammer.maxPasses` passes at rammer damage, then flees. While bogged it gets
+  only `rammer.panicBogAccel` of its acceleration, so a large mob still pins it and drags the driver out.
+- **Traffic control** (`systems/trafficControl.ts` [pure], shared by sim + `world/TrafficSignals.ts`): the road network is
+  rebuilt as merged through-lanes + junctions from `layout.ground` roads (split patches with gaps <= 16 m are one road).
+  Main-road (>= 12 m) and city-core junctions are lit (`signalFor(junction, axis, time)` — N-S then E-W, never both);
+  the rest are 4-way stops (full stop, `stopHold`, first come first served, same road goes together, a granted car holds
+  the junction until it is through). Lane cars keep `followGap`, never enter a box they can't leave, swerve round wrecks
+  through a clear oncoming lane, turn onto a crossing road at the end of a lane (ring road corners) or U-turn at a dead
+  end / after `pedestrianPatience` s behind people standing in the road; `junctionPatience` breaks any residual wait.
+  Only waiting at a wall counts toward `stuckTime`. Out-of-control cars (`ram`/`turn`/`flee`) ignore all of it; when one
+  overlaps another vehicle (`carOverlap`) at >= `crashMinSpeed` closing speed it is a `vehicleCrash`: the vehicle hit is
+  wrecked by mass ratio (driver bails), the wild one too at `crashWreckSpeed`.
+- **Vehicle models** (`VehicleAgent.model`, optional = sedan; `systems/vehicleModels.ts`, `BALANCE.vehicleModels`): sedan,
+  hatchback, pickup, van, box truck, bus, police — footprint, speed/accel scale, crash mass, spawn weight, rammer-capable.
+  Use `halfLength(v)`/`halfWidth(v)`, never `traffic.carLength`, for a vehicle's footprint. Police drivers bail as `police`.
+- **Ring road** (`world/layout/ringRoad.ts`): N/W/E edges, 1 m inside the play area (never touching the boundary band),
+  abutting (never overlapping) the existing carriageways; city blocks keep >= 14 m from the edge so it fits.
+
+### Living city & rewards (docs/11_cityupgrade.md, ARCHITECTURE.md §CU)
+
+- **Alert vs control:** only `CityActivityDirector` writes `DistrictState.heat/alert/control`. Heat comes from step events
+  (shots, kills, conversions, crashes, props) and decays; captured ⇒ `overrun` + `zombieControlled`. Alert is local per district.
+- **Dynamic events** are data (`content/events.ts`: tags, alert/control filters, weight, cooldown, duration, Brains). A new kind
+  needs a `DynamicEventKind`, a catalog row and a `stageEvent` case (dressing = `ActiveDynamicEvent.props`, render-only).
+  Events spawn **past the rendered vision limit** (`visibleLimit(state)` + `eventSpawnBeyondVision`), never the same kind twice
+  in a row or at a recent spot, capped by `eventMaxConcurrent` / `eventMaxHumans` / `policeMaxExtraActive`, and are suppressed
+  near a contested stronghold. Responders walk in from `responderArriveDist`. Resolved participants become ordinary street
+  people and are removed only once out of sight (never delete a visible actor). Post-conquest pools use `allowedControl`.
+- **Rewards:** one grant path (`grantReward`, unique ⇒ exactly once), one currency (`addBrains`), purchases via `buyReward`
+  (check → deduct → grant). Achievements are typed stat keys (`recordAchievementProgress`), saved in `achievementProgress`.
+  Cosmetics never change stats. Rewards/secrets/achievement progress persist in save v4 (`player.rewards`); events, companion
+  bodies and the parked vehicle are transient.
+- **V (interact)** priority, mirrored by `hudModel.interactPrompt`: vehicle mount/dismount > discovered shortcut > nearest prop.
+  Touch: the USE button. Props also trigger on attack, sprint-bump or ramming in the cart.
+- **Companions** are followers with an entry in `state.companions` (≤ `maxActiveCompanions`), respawn near the Alpha after
+  `companionRecoverTime`; perks fire only when they have a target (Larry recruits strays, Chef freezes civilians, Grandma wallops).
+
+### `Simulation.step(dt, input)` order (authoritative; legacy list first, open-world order below)
 
 1. Copy `pos→prevPos`, `facing→prevFacing` for leader, zombies, guards.
 2. If `phase !== 'playing'`: only advance anim timers / corpse fades, then return.
@@ -200,9 +339,11 @@ Agents only create/edit files listed in their task brief. **Never edit `src/core
 10. `checkVictory` (victory: gate destroyed AND all guards DEAD; defeat: leader dead) → set phase, emit once
 11. Tick `hitFlash`, `animTime`, `capReachedFlash`; `state.time += dt`.
 
-Open-world order (T012 replaces the list above): 1 copy prev · 2 `updatePopulation` · 3 `applyHordeCommands` · 4 `updateProgression` ·
+Open-world order: 1 copy prev · 2 `updatePopulation` · 3 `applyHordeCommands` · 4 `updateProgression` ·
 5 `updateLeader` (skipped while respawning) · 6 `updateNavigation` · 7 `updateHorde` · 8 `updateHumanAI` · 9 `updateCombat` ·
-10 `updateConversion` · 11 `updateStructures`, `updateMomentum` · 12 `updateConquest` · 13 `updateRespawn` · 14 timers, `time += dt`.
+10 `updateConversion` · 11 `updateStructures`, `updateMomentum` · 12 `updateConquest` · 12a `updateHordeHealth` · 13 `updateRespawn` · 13a resistance, traffic, shops, then living city: `updateHideouts` (fast travel,
+shortcut) → `updateWorldInteractions` → `updateCompanions` → `updateCityDirector` → `updateRewards` (both read this step's
+events; `updatePlayerVehicle` runs right after `updateLeader`) · 13b `updateAwareness(ctx, dt, eventsOfThisStep)` · 14 timers, `time += dt`.
 No victory/defeat; the world keeps simulating while `phase === 'respawning'`.
 
 ## Visual conventions
@@ -220,6 +361,17 @@ No victory/defeat; the world keeps simulating while `phase === 'respawning'`.
 - Palette: asphalt `#4a5260`, sidewalk `#a9a294`, concrete `#c9b99a`, zombie skin `#7d9a6a`/`#6f8a72`, leader `#4f6b3a`,
   human faction orange `#e0782a` + navy `#2c3e66`, warning lights `#ffb347`. No gore.
 - Shadows: sun shadow map on for buildings/leader/guards only; zombies use a cheap blob-shadow instanced disc.
+- **Visual polish (docs/8_visual_polish.md, ARCHITECTURE §VP):** all graphics options go through `GraphicsQuality` presets
+  (render-only, never in WorldSave). City geometry opts into surface detail with a float `aSurface` vertex attribute
+  (`SURFACE` ids); patch new city materials with `applySurfaceDetail` **before** VisionFog patches them. Post-processing is
+  display-referred (the vision haze is mixed in sRGB after tone mapping): never switch to a linear EffectComposer chain.
+  Particles go through `VFXManager.emit` / `consume` (pooled, capped, culled past `hiddenBeyond`); never add per-burst meshes.
+  Camera shake is scaled once in Game by `shakeScale`; flash-type visuals use `flashScale`. Pure/3D twin files need different
+  stems (Windows is case-insensitive: `foo.ts` and `Foo.ts` are one file).
+- **HUD (docs/9_hud_redesign.md, ARCHITECTURE §HUD):** style only with `hudTheme.css` tokens and `calc(N * var(--hz-u))`
+  sizes; icons from `hudIcons.ts` (no emoji / text glyphs); decisions in pure `hudModel.ts` (tested), HUD.ts only renders
+  and writes the DOM on signature change. Gameplay widgets live in `.hz-play` (hidden under modals and the cinematic);
+  never invent HUD states the sim does not have, never show undiscovered/unidentified things on HUD or minimap.
 - Renderer DPR capped at 1.5. One `requestAnimationFrame` loop. `Game.dispose()` must remove all listeners.
 
 ## Testing conventions
@@ -264,3 +416,9 @@ worker owns, and every change ends with `npx tsc --noEmit` + `npm test` green.
 - [x] **Wave B**: T007 horde · T008 humans/population · T009 conquest/respawn · T010 world render · T011 characters/FX
 - [x] **Wave C–E**: T012 sim integration · T013 UI/audio · T014 client integration · T015 docs (legacy fields kept as test fixture) · T016 playtest
 - [x] **Verification**: V1 spec audit · V2 adversarial review · F1 fixes · V3 final build/test report (PASS)
+
+### Expanded world & vision (docs/5_expand_world.md) — task board in `.agent-context/PROGRESS.md`
+
+- [x] **EW-T001–T006**: contracts, 4 × 4 layout + boundaries, nav/collision scale, AwarenessSystem, eyesight purchase + save v3
+- [x] **EW-T007–T010**: boundary scenery, vision haze + gated visuals, sense UI/audio, integration (order gate, wiring)
+- [x] **EW-T011–T012**: browser playtest + fixes, docs

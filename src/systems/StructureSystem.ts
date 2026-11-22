@@ -63,7 +63,7 @@ export function damageStructure(ctx: SimContext, s: StructureState, amount: numb
     count++;
   }
   ctx.state.stats.structuresDestroyed++;
-  addBiomass(ctx, BALANCE.progression.biomassStructure, 'structure');
+  addBiomass(ctx, BALANCE.progression.biomassStructure, 'structure', s.center);
   ctx.emit({ type: 'structureDestroyed', id: s.id, kind: s.kind, landmark: s.landmark, pos: { ...s.center } });
   if (count > 0) ctx.emit({ type: 'released', structureId: s.id, count, pos: { ...s.center } });
   if (def.defensive) addMomentum(ctx, 'structure');

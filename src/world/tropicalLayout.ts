@@ -12,6 +12,7 @@ export interface TrafficLane {
 export interface TropicalLayout {
   beach: AABB;
   ocean: AABB;
+  bay: AABB;
   palms: { pos: Vec2; height: number; lean: number; rot: number }[];
   lanes: TrafficLane[];
   /** Road crossings (centers + half sizes) — cars do not enter a busy one. */
@@ -34,6 +35,7 @@ export function buildTropicalLayout(layout: DistrictLayout): TropicalLayout {
   const b = layout.bounds;
   const beach: AABB = { minX: b.minX - 60, maxX: b.maxX + 60, minZ: b.maxZ, maxZ: b.maxZ + 26 };
   const ocean: AABB = { minX: b.minX - 400, maxX: b.maxX + 400, minZ: b.maxZ + 22, maxZ: b.maxZ + 420 };
+  const bay: AABB = { minX: b.maxX, maxX: b.maxX + 360, minZ: b.minZ - 300, maxZ: b.maxZ + 22 };
   const roads = layout.ground.filter(g => g.kind === 'road').map(g => g.rect);
   const sidewalks = layout.ground.filter(g => g.kind === 'sidewalk').map(g => g.rect);
   const blocked = (x: number, z: number): boolean =>
@@ -91,5 +93,5 @@ export function buildTropicalLayout(layout: DistrictLayout): TropicalLayout {
     const minZ = Math.max(a.minZ, c.minZ), maxZ = Math.min(a.maxZ, c.maxZ);
     if (minX < maxX && minZ < maxZ) intersections.push({ minX, maxX, minZ, maxZ });
   }
-  return { beach, ocean, palms, lanes, intersections };
+  return { beach, ocean, bay, palms, lanes, intersections };
 }

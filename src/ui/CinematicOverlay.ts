@@ -1,7 +1,11 @@
 // Cinematic overlay (docs/4_intro_scene.md): black fade, letterbox, subtitles, Skip Intro, start prompt and the
 // first tutorial objective card. DOM only; Game drives it. Lives beside (not inside) the HUD container so the
 // gameplay HUD can be hidden while this stays visible.
+import './hudTheme.css';
+import './hudPanels.css';
 import './intro.css';
+import { icon } from './hudIcons';
+import { fullscreenSupported, loadFullscreenPref, saveFullscreenPref } from './fullscreen';
 
 export class CinematicOverlay {
   readonly element: HTMLDivElement;
@@ -11,6 +15,9 @@ export class CinematicOverlay {
   private readonly startEl: HTMLDivElement;
   private readonly startHintEl: HTMLDivElement;
   private readonly objectiveEl: HTMLDivElement;
+  private readonly fsBtn: HTMLButtonElement;
+  private readonly fsLabel: HTMLSpanElement;
+  private fullscreenPref = loadFullscreenPref();
   private subtitle = '';
   private fade = -1;
   private objectiveTimer: number | null = null;
@@ -19,6 +26,9 @@ export class CinematicOverlay {
 
   private readonly onSkipClick = (e: Event): void => { e.stopPropagation(); this.skipCb?.(); };
   private readonly onStartClick = (e: Event): void => { e.stopPropagation(); this.startCb?.(); };
+  // The toggle sits on the start screen: swallow its pointerdown (no start, no focus so Space/Enter still start).
+  private readonly onFsDown = (e: Event): void => { e.stopPropagation(); e.preventDefault(); };
+  private readonly onFsClick = (e: Event): void => { e.stopPropagation(); this.toggleFullscreenPref(); };
 
   constructor(parent: HTMLElement) {
     const el = document.createElement('div');
@@ -28,13 +38,17 @@ export class CinematicOverlay {
       <div class="ibz-cine-bar ibz-cine-bar-bottom"></div>
       <div class="ibz-cine-fade" data-ref="fade"></div>
       <div class="ibz-cine-subtitle" data-ref="subtitle" aria-live="polite"></div>
-      <button type="button" class="ibz-cine-skip" data-ref="skip">Skip Intro <span>Esc</span></button>
+      <button type="button" class="ibz-cine-skip" data-ref="skip">Skip Intro <span class="hz-key">Esc</span></button>
       <div class="ibz-cine-start" data-ref="start">
-        <h1 class="ibz-cine-title">I BE ZOMBIE</h1>
+        <h1 class="ibz-cine-title">I BE <span>ZOMBIE</span></h1>
         <div class="ibz-cine-start-hint" data-ref="startHint">Loading…</div>
+        <button type="button" class="ibz-btn ibz-btn-small ibz-cine-fs" data-ref="fs" tabindex="-1" aria-pressed="false">
+          <span class="ibz-btn-ico">${icon('fullscreen', 's')}</span><span class="ibz-btn-label">Start in full screen: Off</span>
+          <span class="hz-key">F</span>
+        </button>
       </div>
       <div class="ibz-cine-objective" data-ref="objective">
-        <div class="ibz-cine-objective-tag">NEW OBJECTIVE</div>
+        <div class="ibz-cine-objective-tag">${icon('pin', 's')}<span>NEW OBJECTIVE</span></div>
         <div class="ibz-cine-objective-title" data-ref="objTitle"></div>
         <div class="ibz-cine-objective-text" data-ref="objText"></div>
       </div>`;
@@ -47,6 +61,12 @@ export class CinematicOverlay {
     this.startEl = q('start');
     this.startHintEl = q('startHint');
     this.objectiveEl = q('objective');
+    this.fsBtn = q('fs');
+    this.fsLabel = this.fsBtn.querySelector('.ibz-btn-label') as HTMLSpanElement;
+    this.fsBtn.hidden = !fullscreenSupported();
+    this.fsBtn.addEventListener('pointerdown', this.onFsDown);
+    this.fsBtn.addEventListener('click', this.onFsClick);
+    this.refreshFullscreen();
     this.skipBtn.addEventListener('click', this.onSkipClick);
     this.skipBtn.addEventListener('pointerdown', e => e.stopPropagation());
     this.startEl.addEventListener('pointerdown', this.onStartClick);
@@ -54,6 +74,22 @@ export class CinematicOverlay {
 
   onSkip(cb: () => void): void { this.skipCb = cb; }
   onStart(cb: () => void): void { this.startCb = cb; }
+
+  /** Start-screen choice: go full screen when the intro begins (remembered per browser). */
+  get startFullscreen(): boolean { return this.fullscreenPref && fullscreenSupported(); }
+
+  toggleFullscreenPref(): void {
+    if (!fullscreenSupported()) return;
+    this.fullscreenPref = !this.fullscreenPref;
+    saveFullscreenPref(this.fullscreenPref);
+    this.refreshFullscreen();
+  }
+
+  private refreshFullscreen(): void {
+    this.fsLabel.textContent = `Start in full screen: ${this.fullscreenPref ? 'On' : 'Off'}`;
+    this.fsBtn.setAttribute('aria-pressed', String(this.fullscreenPref));
+    this.fsBtn.classList.toggle('is-on', this.fullscreenPref);
+  }
 
   /** Cinematic mode on: letterbox bars + subtitle area. */
   setActive(on: boolean): void {
@@ -109,6 +145,8 @@ export class CinematicOverlay {
     this.hideObjective();
     this.skipBtn.removeEventListener('click', this.onSkipClick);
     this.startEl.removeEventListener('pointerdown', this.onStartClick);
+    this.fsBtn.removeEventListener('pointerdown', this.onFsDown);
+    this.fsBtn.removeEventListener('click', this.onFsClick);
     this.element.remove();
   }
 }

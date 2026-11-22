@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { BALANCE } from '../src/config/balance';
 import { emptyInput } from '../src/core/types';
 import { Simulation } from '../src/sim/Simulation';
-import { damageGate, damageGuard, damageLeader } from '../src/systems/CombatSystem';
+import { damageGate, damageGuard, killLeader } from '../src/systems/CombatSystem';
 import { recruitZombie } from '../src/systems/HordeSystem';
 import { buildDistrictLayout } from '../src/world/districtLayout';
 import { checkVictory } from '../src/systems/VictorySystem';
@@ -25,7 +25,7 @@ describe('victory, defeat and restart: design §15.12–13,15', () => {
     expect(sim.state.phase).toBe('victory'); expect(sim.drainEvents()).toEqual([{ type: 'victory' }]);
     sim.reset(); damageGate(sim.ctx, BALANCE.gate.maxHp);
     for (const g of sim.state.guards) damageGuard(sim.ctx, g, 50, 'other');
-    damageLeader(sim.ctx, 100); sim.drainEvents(); checkVictory(sim.ctx); checkVictory(sim.ctx);
+    killLeader(sim.ctx); sim.drainEvents(); checkVictory(sim.ctx); checkVictory(sim.ctx);
     expect(sim.state.phase).toBe('defeat'); expect(sim.drainEvents()).toEqual([{ type: 'defeat' }]);
   });
 
@@ -34,7 +34,7 @@ describe('victory, defeat and restart: design §15.12–13,15', () => {
     sim.step(dt, { ...emptyInput(), rush: true, rally: true, attackTarget: { kind: 'gate' } });
     damageGuard(sim.ctx, sim.state.guards[5], 50, 'zombie'); damageGate(sim.ctx, BALANCE.gate.maxHp);
     if (phase === 'victory') for (const g of sim.state.guards) damageGuard(sim.ctx, g, 50, 'other');
-    else damageLeader(sim.ctx, 100);
+    else killLeader(sim.ctx);
     checkVictory(sim.ctx); expect(sim.state.phase).toBe(phase); sim.drainEvents();
     const time = sim.state.time, pos = { ...sim.state.leader.pos }, cooldown = sim.state.abilities.rushCooldown;
     const pending = JSON.stringify(sim.state.pendingConversions), stats = { ...sim.state.stats };
@@ -77,7 +77,7 @@ describe('victory, defeat and restart: design §15.12–13,15', () => {
     damageGate(sim.ctx, BALANCE.gate.maxHp);
     for (const g of sim.state.guards) damageGuard(sim.ctx, g, 500, 'other');
     sim.step(dt, emptyInput()); expect(sim.state.phase).toBe('playing');
-    damageLeader(sim.ctx, 1e6); sim.step(dt, emptyInput());
+    killLeader(sim.ctx); sim.step(dt, emptyInput());
     expect(sim.state.phase).toBe('respawning');
     for (let i = 0; i < Math.ceil(BALANCE.respawn.delay / dt) + 2; i++) sim.step(dt, emptyInput());
     expect(sim.state.phase).toBe('playing'); expect(sim.state.leader.alive).toBe(true);

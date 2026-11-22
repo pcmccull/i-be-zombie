@@ -5,6 +5,7 @@ import type { DistrictDef, DistrictId, Vec2 } from '../core/types';
 import { createGuard } from '../entities/HumanGuard';
 import { createZombie } from '../entities/Zombie';
 import { getDistrictAt } from '../world/worldQueries';
+import { isNestActiveIn } from './nests';
 
 interface DistrictPopulation {
   civilians: number;
@@ -20,11 +21,10 @@ interface PopulationMemory {
 const memories = new WeakMap<SimContext, PopulationMemory>();
 
 function activeOrigin(ctx: SimContext): Vec2 {
-  if (ctx.state.leader.alive && ctx.state.leader.hp > 0) return ctx.state.leader.pos;
+  if (ctx.state.leader.alive) return ctx.state.leader.pos;
   const nests = ctx.layout.nests;
-  const active = (id: string): boolean => ctx.state.strongholds.some(s => s.id === id && s.captured);
-  return nests.find(n => n.id === ctx.state.activeNestId && (n.strongholdId === null || active(n.strongholdId)))?.pos ??
-    nests.find(n => n.strongholdId === null)?.pos ?? ctx.layout.playerStart;
+  return nests.find(n => n.id === ctx.state.activeNestId && isNestActiveIn(ctx.state, n))?.pos ??
+    nests.find(n => isNestActiveIn(ctx.state, n))?.pos ?? ctx.layout.playerStart;
 }
 
 function refresh(ctx: SimContext, m: PopulationMemory, origin: Vec2): void {
@@ -39,7 +39,9 @@ function refresh(ctx: SimContext, m: PopulationMemory, origin: Vec2): void {
   for (const pending of ctx.state.pendingConversions) m.pending.add(pending.guardId);
   let write = 0;
   for (const g of ctx.state.guards) {
-    if (g.state === 'DEAD' && g.deathTime !== null && ctx.state.time - g.deathTime > 30 && !m.pending.has(g.id)) continue;
+    // A knocked-out tank stays as its wreck (its hull collider keeps blocking).
+    if (g.state === 'DEAD' && g.deathTime !== null && ctx.state.time - g.deathTime > 30 && !m.pending.has(g.id) &&
+      g.heavy !== 'tank') continue;
     // Captured/infected districts stand their patrols down once the patrol is out of the active radius.
     if (g.post === 'patrol' && g.dormant && g.hp > 0 && g.state !== 'DEAD' && !m.pending.has(g.id) &&
       ctx.state.districts[getDistrictAt(ctx.layout, g.pos)].status === 'infected') continue;
@@ -58,7 +60,7 @@ function spawnPoint(ctx: SimContext, district: DistrictDef, origin: Vec2, radius
     if (getDistrictAt(ctx.layout, p) !== district.id ||
         (p.x - origin.x) ** 2 + (p.z - origin.z) ** 2 < BALANCE.population.minRespawnDistance ** 2 ||
         ctx.collision.isBlocked(p, radius)) continue;
-    if (ctx.state.leader.alive && ctx.state.leader.hp > 0 &&
+    if (ctx.state.leader.alive &&
         !ctx.collision.segmentBlocked(ctx.state.leader.pos, p, {
           mode: 'sight', fromHeight: BALANCE.guard.eyeHeight, toHeight: BALANCE.targetHeights.guardTorso,
         })) continue;

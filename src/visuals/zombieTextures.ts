@@ -572,21 +572,29 @@ function paintTile(id: number, p: Painter): void {
       break;
     }
     case TILE.alphaJacket: {
-      fill(p, '#6b1f2e');
-      noise(p, 900, 1, '#3a0e16', '#8a3444', 0.3);
-      for (let i = 0; i < 22; i++) {
-        const x = r() * S; const y = r() * S; const a = r() * Math.PI;
-        wrapped(c, S, (ctx) => { ctx.strokeStyle = 'rgba(200,120,120,0.35)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + Math.cos(a) * 14, y + Math.sin(a) * 14); ctx.stroke(); });
-      }
-      c.strokeStyle = 'rgba(20,6,8,0.6)';
-      c.lineWidth = 2;
-      c.setLineDash([4, 3]);
-      c.beginPath(); c.moveTo(S * 0.3, 0); c.lineTo(S * 0.3, S); c.moveTo(S * 0.7, 0); c.lineTo(S * 0.7, S); c.stroke();
+      // Alpha hero: distressed colourful Hawaiian tourist shirt (teal/coral flowers, seams, torn hem)
+      paintHawaiian(p, '#2696a4', ['#ff6f61', '#ff9a76', '#ffd166', '#fff2d8'], '#1f6a4f');
+      // Button placket & stitching down centre front
+      c.fillStyle = 'rgba(20,55,62,0.32)';
+      c.fillRect(S / 2 - 4, 0, 8, S);
+      c.strokeStyle = 'rgba(255,245,220,0.45)';
+      c.lineWidth = 1;
+      c.setLineDash([3, 3]);
+      c.beginPath();
+      c.moveTo(S / 2 - 4, 0);
+      c.lineTo(S / 2 - 4, S);
+      c.moveTo(S / 2 + 4, 0);
+      c.lineTo(S / 2 + 4, S);
+      c.stroke();
       c.setLineDash([]);
-      wrinkles(p, 9);
-      grime(p, 6, '#140808', 0.35);
-      bloodStain(p, 2, 0.6);
-      tears(p, 2, '#6f8f55');
+      c.fillStyle = '#f2e8d0';
+      for (let y = 14; y < S; y += 26) {
+        c.beginPath();
+        c.arc(S / 2, y, 2.3, 0, Math.PI * 2);
+        c.fill();
+      }
+      p.h.fillStyle = '#9a9a9a';
+      p.h.fillRect(S / 2 - 4, 0, 8, S);
       break;
     }
     case TILE.fatigues: {

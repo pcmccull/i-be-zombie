@@ -2,16 +2,25 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { BALANCE } from '../src/config/balance';
 import { createZombie } from '../src/entities/Zombie';
 import { Simulation } from '../src/sim/Simulation';
-import { damageLeader } from '../src/systems/CombatSystem';
+import { followerCap } from '../src/systems/HordeSystem';
+import { damageLeader, killLeader } from '../src/systems/CombatSystem';
 import { updateConquest } from '../src/systems/ConquestSystem';
 import { unlockAbility } from '../src/systems/ProgressionSystem';
+import { updateHordeHealth } from '../src/systems/HordeHealthSystem';
 import { updateRespawn } from '../src/systems/RespawnSystem';
 import { damageStructure, findStructure } from '../src/systems/StructureSystem';
 import { buildDistrictLayout } from '../src/world/districtLayout';
+import { usePreBeachEconomy } from './support/preBeachEconomy';
+
+usePreBeachEconomy();
 
 let sim: Simulation;
 beforeEach(() => { sim = new Simulation(buildDistrictLayout()); });
-function die(): void { damageLeader(sim.ctx, sim.state.leader.hp); updateRespawn(sim.ctx, BALANCE.sim.fixedDt); }
+function die(): void { killLeader(sim.ctx); updateRespawn(sim.ctx, BALANCE.sim.fixedDt); }
+/** The Alpha climbs out beside the mound: emergeOffset m from the nest centre. */
+function expectBesideNest(pos: { x: number; z: number }, nest: { x: number; z: number }): void {
+  expect(Math.hypot(pos.x - nest.x, pos.z - nest.z)).toBeLessThanOrEqual(BALANCE.respawn.emergeOffset + 1e-6);
+}
 function finish(): void { updateRespawn(sim.ctx, BALANCE.respawn.delay); }
 
 describe('leader recovery at nests', () => {
@@ -55,10 +64,10 @@ describe('leader recovery at nests', () => {
     l.sprinting = true; l.attackPhase = 'windup'; l.attackTimer = 9;
     l.comboStep = 3; l.comboWindow = 1; l.hitStun = 2; l.hitFlash = 3;
     die(); finish();
-    expect(l).toMatchObject({ alive: true, hp: l.maxHp, stamina: BALANCE.leader.staminaMax,
+    expect(l).toMatchObject({ alive: true, stamina: BALANCE.leader.staminaMax,
       exhausted: false, sprinting: false, vel: { x: 0, z: 0 }, attackPhase: 'ready', attackTimer: 0,
-      comboStep: 0, comboWindow: 0, hitStun: 0, hitFlash: 0, anim: 'idle', animTime: 0, respawnTimer: 0, attackCooldown: 0 });
-    expect(l.pos).toEqual(sim.ctx.layout.nests[0].pos); expect(l.prevPos).toEqual(l.pos);
+      comboStep: 0, comboWindow: 0, hitStun: 0, hitFlash: 0, anim: 'rise', animTime: 0, respawnTimer: 0, emergeTimer: BALANCE.respawn.emergeTime, attackCooldown: 0 });
+    expectBesideNest(l.pos, sim.ctx.layout.nests[0].pos); expect(l.prevPos).toEqual(l.pos);
     expect(l.prevFacing).toBe(l.facing);
     expect(sim.state.progression).toEqual(progression); expect(sim.state.districts).toEqual(districts);
     expect(sim.state.strongholds).toEqual(strongholds); expect(sim.state.discovery).toEqual(discovery);
@@ -74,7 +83,7 @@ describe('leader recovery at nests', () => {
     expect(sim.state.activeNestId).toBe(def.nestId);
     const biomass = sim.state.progression.biomass;
     die(); finish();
-    expect(sim.state.leader.pos).toEqual(sim.ctx.layout.nests.find(n => n.id === def.nestId)!.pos);
+    expectBesideNest(sim.state.leader.pos, sim.ctx.layout.nests.find(n => n.id === def.nestId)!.pos);
     expect(sim.state.progression.unlocked).toContain('horde_frenzy');
     expect(sim.state.progression.biomass).toBe(biomass);
     expect(sim.state.districts.shopping.status).toBe('infected');
@@ -87,7 +96,7 @@ describe('leader recovery at nests', () => {
     sim.state.leader.pos = { ...sim.ctx.layout.nests.find(n => n.strongholdId === 'police_station')!.pos };
     die(); finish();
     expect(sim.state.activeNestId).toBe('nest_start');
-    expect(sim.state.leader.pos).toEqual(sim.ctx.layout.nests.find(n => n.id === 'nest_start')!.pos);
+    expectBesideNest(sim.state.leader.pos, sim.ctx.layout.nests.find(n => n.id === 'nest_start')!.pos);
   });
 
   it.each(['missing', 'nest_industrial_yard'])('falls back from inactive selection %s to the nearest active nest', selected => {
@@ -96,11 +105,11 @@ describe('leader recovery at nests', () => {
     sim.state.activeNestId = selected; sim.state.leader.pos = { x: nest.pos.x + 2, z: nest.pos.z };
     die(); finish();
     expect(sim.state.activeNestId).toBe(nest.id);
-    expect(sim.state.leader.pos).toEqual(nest.pos);
+    expectBesideNest(sim.state.leader.pos, nest.pos);
   });
 
   it.each([0, 1])('respects the follower cap with %i reserved rising slots', rising => {
-    while (sim.state.followerCount < BALANCE.openWorld.maxFollowers - 1) {
+    while (sim.state.followerCount < followerCap(sim.ctx) - 1) {
       sim.state.zombies.push(createZombie(sim.ctx.newId(), { x: -100, z: 80 }, {
         state: 'follower', variant: 0, spawnZone: -1, isConverted: false, rng: sim.ctx.rng,
       })); sim.state.followerCount++;
@@ -137,5 +146,26 @@ describe('leader recovery at nests', () => {
     expect(sim.state.deaths).toBe(2);
     sim.reset(); updateRespawn(sim.ctx, 20);
     expect(sim.state.deaths).toBe(0); expect(sim.state.followerCount).toBe(BALANCE.horde.startFollowers);
+  });
+
+  it('real depletion: core + followers drained -> Last Brain -> finishing hit after the entry grace kills the Alpha, respawn refills the core', () => {
+    const lb = BALANCE.hordeHealth.lastBrain;
+    damageLeader(sim.ctx, 1e6); updateHordeHealth(sim.ctx, 0);
+    expect(sim.state.horde.lastBrain.active).toBe(true); expect(sim.state.leader.alive).toBe(true);
+    damageLeader(sim.ctx, 50); // inside the entry grace: shielded
+    expect(sim.state.leader.alive).toBe(true);
+    updateHordeHealth(sim.ctx, lb.entryGrace + 0.01);
+    damageLeader(sim.ctx, 1);
+    expect(sim.state.leader.alive).toBe(false);
+    expect(sim.drainEvents().filter(e => e.type === 'leaderDied')).toHaveLength(1);
+    updateRespawn(sim.ctx, BALANCE.sim.fixedDt); finish();
+    expect(sim.state.leader.alive).toBe(true); expect(sim.state.horde.coreDamage).toBe(0);
+  });
+
+  it('real depletion: Last Brain expires after its duration without a finishing hit', () => {
+    damageLeader(sim.ctx, 1e6); updateHordeHealth(sim.ctx, 0);
+    expect(sim.state.horde.lastBrain.active).toBe(true);
+    updateHordeHealth(sim.ctx, BALANCE.hordeHealth.lastBrain.duration + 0.1);
+    expect(sim.state.leader.alive).toBe(false);
   });
 });

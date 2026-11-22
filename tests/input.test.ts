@@ -14,13 +14,13 @@ import {
 } from '../src/core/cameraMath';
 
 describe('open-world key mapping', () => {
-  it('maps Q E R F to ability slots 0-3 and nothing else', () => {
-    expect(['KeyQ', 'KeyE', 'KeyR', 'KeyF'].map(abilitySlotForKey)).toEqual([0, 1, 2, 3]);
+  it('maps Q T R F to ability slots 0-3 and nothing else', () => {
+    expect(['KeyQ', 'KeyT', 'KeyR', 'KeyF'].map(abilitySlotForKey)).toEqual([0, 1, 2, 3]);
     for (const code of ['KeyW', 'Space', 'KeyG', 'KeyM', 'Escape']) expect(abilitySlotForKey(code)).toBeNull();
   });
 
-  it('maps one-shot keys to actions (Space regroup, G follow, M map, Esc pause, N mute)', () => {
-    expect(keyActionFor('Space')).toBe('regroup');
+  it('maps one-shot keys to actions (Space + G follow, M map, Esc pause, N mute)', () => {
+    expect(keyActionFor('Space')).toBe('follow');
     expect(keyActionFor('KeyG')).toBe('follow');
     expect(keyActionFor('KeyM')).toBe('map');
     expect(keyActionFor('Escape')).toBe('pause');
@@ -31,6 +31,7 @@ describe('open-world key mapping', () => {
     // R is an ability slot now, never restart; E is no longer rally.
     expect(keyActionFor('KeyR')).toBeNull();
     expect(keyActionFor('KeyE')).toBeNull();
+    expect(abilitySlotForKey('KeyE')).toBeNull(); // E is the held split-target modifier
   });
 
   it('ignores game keys while a menu or map is open but keeps system keys', () => {
@@ -49,26 +50,26 @@ describe('right-click horde orders', () => {
   const guard = { kind: 'guard', id: 7 } as const;
   const ground = { x: 12, z: -3 };
 
-  it('attacks a target, additive with Ctrl', () => {
-    expect(hordeCommandForRightClick({ target: guard, ground, shift: false, ctrl: false }))
+  it('attacks a target, additive with E held', () => {
+    expect(hordeCommandForRightClick({ target: guard, ground, shift: false, split: false }))
       .toEqual({ type: 'attack', target: guard, additive: false });
-    expect(hordeCommandForRightClick({ target: guard, ground, shift: false, ctrl: true }))
+    expect(hordeCommandForRightClick({ target: guard, ground, shift: false, split: true }))
       .toEqual({ type: 'attack', target: guard, additive: true });
   });
 
   it('moves to the ground point when nothing is targeted', () => {
-    const cmd = hordeCommandForRightClick({ target: null, ground, shift: false, ctrl: false });
+    const cmd = hordeCommandForRightClick({ target: null, ground, shift: false, split: false });
     expect(cmd).toEqual({ type: 'move', point: ground });
     expect(cmd && cmd.type === 'move' && cmd.point).not.toBe(ground); // copied, not aliased
   });
 
-  it('Shift+RMB regroups regardless of what is under the pointer', () => {
-    expect(hordeCommandForRightClick({ target: guard, ground, shift: true, ctrl: false })).toEqual({ type: 'regroup' });
-    expect(hordeCommandForRightClick({ target: null, ground: null, shift: true, ctrl: false })).toEqual({ type: 'regroup' });
+  it('Shift+RMB recalls regardless of what is under the pointer', () => {
+    expect(hordeCommandForRightClick({ target: guard, ground, shift: true, split: false })).toEqual({ type: 'follow' });
+    expect(hordeCommandForRightClick({ target: null, ground: null, shift: true, split: false })).toEqual({ type: 'follow' });
   });
 
   it('issues nothing when the ray misses the ground and hits no target', () => {
-    expect(hordeCommandForRightClick({ target: null, ground: null, shift: false, ctrl: false })).toBeNull();
+    expect(hordeCommandForRightClick({ target: null, ground: null, shift: false, split: false })).toBeNull();
   });
 });
 

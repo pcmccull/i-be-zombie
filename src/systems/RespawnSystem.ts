@@ -1,7 +1,9 @@
 // [pure] Leader death and recovery; permanent world progress is untouched. OWNER: T009.
 import { BALANCE } from '../config/balance';
 import type { SimContext } from '../core/contracts';
+import { resetHordeHealth } from './HordeHealthSystem';
 import { isNestActive, spawnNestFollowers } from './ConquestSystem';
+import { beginLeaderEmerge, nestEmergePoint } from '../entities/ZombieLeader';
 
 export function updateRespawn(ctx: SimContext, dt: number): void {
   const s = ctx.state, l = s.leader;
@@ -25,17 +27,20 @@ export function updateRespawn(ctx: SimContext, dt: number): void {
       if (dist < nearest) { nearest = dist; nest = candidate; }
     }
   }
-  if (!nest) return;
-  s.activeNestId = nest.id;
-  l.pos.x = l.prevPos.x = nest.pos.x; l.pos.z = l.prevPos.z = nest.pos.z;
-  l.vel.x = l.vel.z = 0; l.prevFacing = l.facing;
-  l.hp = l.maxHp; l.stamina = BALANCE.leader.staminaMax;
+  // No usable nest yet (the walk-in start nest is unclaimed): rise again on the start beach, still alone.
+  const home = nest ? nest.pos : ctx.layout.playerStart;
+  if (nest) s.activeNestId = nest.id;
+  const at = nest ? nestEmergePoint(nest.pos, ctx.collision, ctx.navGrid) : ctx.navGrid.nearestWalkable(home);
+  l.pos.x = l.prevPos.x = at.x; l.pos.z = l.prevPos.z = at.z;
+  l.vel.x = l.vel.z = 0; l.prevFacing = l.facing; l.elevation = 0;
+  resetHordeHealth(s); l.stamina = BALANCE.leader.staminaMax;
   l.alive = true; l.exhausted = false; l.sprinting = false;
   l.anim = 'idle'; l.animTime = 0; l.hitFlash = 0; l.attackCooldown = 0;
   l.attackPhase = 'ready'; l.attackTimer = 0; l.comboStep = 0; l.comboWindow = 0;
   l.hitStun = 0; l.respawnTimer = 0;
-  spawnNestFollowers(ctx, nest.pos, BALANCE.respawn.followers);
+  if (nest) spawnNestFollowers(ctx, nest.pos, BALANCE.respawn.followers);
   s.phase = 'playing';
-  ctx.emit({ type: 'leaderRespawned', nestId: nest.id, pos: { ...nest.pos } });
+  ctx.emit({ type: 'leaderRespawned', nestId: nest?.id ?? '', pos: { ...home } });
+  beginLeaderEmerge(ctx);
   ctx.emit({ type: 'autosave', reason: 'respawn' });
 }

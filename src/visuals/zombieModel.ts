@@ -19,6 +19,8 @@ import type { AccessoryKind, ZombieLook } from './zombieProfiles';
 import { ATLAS_GRID, TILE } from './zombieProfiles';
 import { RIG, type ZombiePose } from './zombieRig';
 import { getZombieAtlas } from './zombieTextures';
+import { applyInstancedSkinning, type BoneTexture } from '../graphics/characters/InstancedSkinning';
+import { HB } from '../graphics/characters/characterTypes';
 
 /** Subtle baseline emissive of the Alpha (hit flash / frenzy override it, EntityRenderer restores it). */
 export const LEADER_GLOW = 0x16300a;
@@ -226,8 +228,95 @@ export const HORDE_PARTS: readonly HordePart[] = [
 /** Parts drawn twice per zombie (left + right). */
 export const PAIRED_PARTS: ReadonlySet<HordePart> = new Set(['upperArm', 'sleeve', 'forearm', 'thigh', 'shin', 'foot']);
 
+function heroHeadGeo(): THREE.BufferGeometry {
+  // Friendly, humorous Alpha head: large mismatched glowing yellow-green eyes, slack grin, cheek patch, no horror gore
+  const parts = [
+    prism(0.058, 0.066, 0.1, 0, 0.0, -0.005, {}), // neck
+    box(0.26, 0.21, 0.275, 0, 0.215, -0.005, { taper: 0.9 }), // cranium
+    box(0.24, 0.115, 0.245, 0, 0.1, 0.012, { taper: 1.12, taperZ: 1.02 }), // friendly round cheeks
+    box(0.25, 0.036, 0.055, 0, 0.185, 0.115, { color: 0xc8d2bc }), // expressive brow
+    // Dark eye backing rings
+    box(0.095, 0.082, 0.028, 0.058, 0.15, 0.126, { color: 0x242820, ...DARK }),
+    box(0.068, 0.056, 0.028, -0.062, 0.156, 0.126, { color: 0x242820, ...DARK }),
+    // Large mismatched glowing yellow-green eyes (left huge & wide, right smaller & squinted)
+    box(0.068, 0.062, 0.022, 0.058, 0.15, 0.139, { color: 0xd6ff4a, tex: 0, tint: 0, glow: 1.3 }),
+    box(0.042, 0.034, 0.022, -0.062, 0.156, 0.139, { color: 0xc4f238, tex: 0, tint: 0, glow: 1.15 }),
+    // Off-kilter pupils for comical expression
+    box(0.019, 0.019, 0.012, 0.066, 0.155, 0.151, { color: 0x242c1a, ...DARK }),
+    box(0.014, 0.014, 0.012, -0.058, 0.154, 0.151, { color: 0x242c1a, ...DARK }),
+    // Crooked button nose
+    box(0.04, 0.056, 0.048, 0.004, 0.112, 0.138, { color: 0xe4e8d8, rz: 0.12 }),
+    // Wide slack grin + a couple of goofy protruding teeth
+    box(0.14, 0.044, 0.03, 0.004, 0.064, 0.126, { color: 0x28141c, ...DARK }),
+    box(0.036, 0.026, 0.022, -0.028, 0.072, 0.136, { color: 0xf2ebd0, ...DARK, rz: -0.08 }),
+    box(0.032, 0.024, 0.022, 0.026, 0.07, 0.136, { color: 0xece3c4, ...DARK, rz: 0.1 }),
+    // Ears
+    box(0.032, 0.064, 0.05, 0.134, 0.142, -0.01, {}),
+    box(0.032, 0.062, 0.05, -0.134, 0.145, -0.005, { rz: 0.15 }),
+    // Humorous Band-Aid cheek patch
+    box(0.068, 0.03, 0.012, -0.088, 0.105, 0.124, { color: 0xd8a878, ...DARK, rz: -0.22 }),
+    box(0.024, 0.026, 0.014, -0.088, 0.105, 0.126, { color: 0xf2e6d4, ...DARK, rz: -0.22 }),
+  ];
+  return merge(parts);
+}
+
+function heroJawGeo(): THREE.BufferGeometry {
+  return merge([
+    box(0.18, 0.058, 0.155, 0, -0.03, 0.035, { taper: 1.12 }),
+    box(0.03, 0.02, 0.02, -0.012, -0.002, 0.104, { color: 0xede4c4, ...DARK }),
+    box(0.028, 0.018, 0.02, 0.034, -0.003, 0.103, { color: 0xe4dbb8, ...DARK }),
+    box(0.11, 0.016, 0.02, 0.008, -0.014, 0.108, { color: 0x5c3c3c, tex: 0, tint: 2, rz: 0.1 }),
+  ]);
+}
+
+function heroRightForearmGeo(): THREE.BufferGeometry {
+  // Oversized (~1.8x) comical right hand with chunky fingers
+  const hand = { tex: 0, tint: 2 } as const;
+  const nail = { color: 0xc2bea4, tex: 0, tint: 0 } as const;
+  return merge([
+    prism(0.052, 0.05, 0.21, 0, -0.105, 0, { sz: 0.94 }),
+    // 1.8x chunky palm
+    box(0.128, 0.148, 0.068, 0, -0.275, 0.01, { ...hand, taper: 1.14 }),
+    // 4 chunky curled fingers
+    box(0.03, 0.11, 0.034, 0.048, -0.39, 0.024, { ...hand, rx: -0.35 }),
+    box(0.03, 0.122, 0.034, 0.016, -0.4, 0.028, { ...hand, rx: -0.42 }),
+    box(0.03, 0.115, 0.034, -0.016, -0.395, 0.026, { ...hand, rx: -0.38 }),
+    box(0.028, 0.095, 0.032, -0.048, -0.38, 0.02, { ...hand, rx: -0.3 }),
+    // Big chunky thumb
+    box(0.034, 0.088, 0.034, 0.058, -0.26, 0.058, { ...hand, rx: -0.75, rz: 0.25 }),
+    // Blunt comical fingernails
+    box(0.024, 0.018, 0.02, 0.048, -0.442, 0.044, nail),
+    box(0.024, 0.018, 0.02, 0.016, -0.456, 0.052, nail),
+    box(0.024, 0.018, 0.02, -0.016, -0.448, 0.048, nail),
+    box(0.022, 0.018, 0.02, -0.048, -0.424, 0.038, nail),
+  ]);
+}
+
+function heroSandalGeo(skin: number): THREE.BufferGeometry {
+  // Left foot: bare zombie toes on a bright coral rubber flip-flop
+  const strapCol = 0xff6f61;
+  const soleCol = 0x2696a4;
+  return merge([
+    box(0.11, 0.022, 0.255, 0, -0.052, 0.05, { color: soleCol, ...DARK }),
+    box(0.092, 0.048, 0.2, 0, -0.022, 0.04, { color: skin, ...DARK, taper: 0.9 }),
+    box(0.102, 0.022, 0.06, 0, 0.005, 0.055, { color: strapCol, ...DARK }),
+    box(0.024, 0.02, 0.08, 0, 0.002, 0.1, { color: strapCol, ...DARK }),
+  ]);
+}
+
+function heroSneakerGeo(): THREE.BufferGeometry {
+  // Right foot: chunky canvas sneaker with white sole & toe cap
+  return merge([
+    box(0.112, 0.028, 0.265, 0, -0.052, 0.05, { color: 0xf4f0e6, ...DARK }),
+    box(0.102, 0.075, 0.195, 0, -0.018, 0.025, { color: 0x2e6f9e, ...DARK, taper: 0.9 }),
+    box(0.098, 0.052, 0.075, 0, -0.028, 0.148, { color: 0xf4f0e6, ...DARK, taper: 0.85 }),
+    box(0.055, 0.014, 0.09, 0, 0.022, 0.07, { color: 0xffffff, ...DARK }), // laces
+  ]);
+}
+
 function headGeo(hero: boolean): THREE.BufferGeometry {
-  const eyeGlow = hero ? 1.2 : 0.35;
+  if (hero) return heroHeadGeo();
+  const eyeGlow = 0.35;
   const parts = [
     prism(0.055, 0.062, 0.1, 0, 0.0, -0.005, {}), // neck
     box(0.25, 0.2, 0.265, 0, 0.215, -0.005, { taper: 0.9 }), // cranium
@@ -512,6 +601,178 @@ totalEmissiveRadiance += vColor.rgb * vMat.z;`);
 }
 
 // ---------------------------------------------------------------------------
+// Skinned horde body material (VP2-T009)
+// ---------------------------------------------------------------------------
+
+/** Accessory attachment bone on the VP2 21-bone skeleton (head accessories ride `head`, torso ones `chest`). */
+export const ACCESSORY_HB: Record<AccessoryKind, number> = {
+  hairShort: HB.head,
+  hairMop: HB.head,
+  policeCap: HB.head,
+  hardHat: HB.head,
+  helmet: HB.head,
+  sunglasses: HB.head,
+  tie: HB.chest,
+  vest: HB.chest,
+  flap: HB.chest,
+};
+
+/** Per-instance flag bits in `aLook.w` of the skinned body material. */
+export const BODY_FLAG = { shorts: 1, tornL: 2, tornR: 4, longSleeves: 8, noSleeves: 16 } as const;
+
+/**
+ * Material for the skinned horde bodies (one shared material for all shape x LOD meshes). Same atlas / normal map as
+ * the rigid parts, but the per-vertex class (`aRegion`/`aSel`, packed by CharacterFactory) picks tile + tint from
+ * per-instance attributes: `aLook` (shirtTile, pantsTile, skinTile, flags = BODY_FLAG), `aSkin`, `aShirt`, `aPants`,
+ * `aShoe` (linear tints; the renderer applies state tinting / hit flash to them). Smooth shading (no flatShading).
+ * The skinning patch is chained last, so VisionFog (which Game applies afterwards) sees the final world position.
+ */
+export function createZombieBodyMaterial(bones: BoneTexture): THREE.MeshStandardMaterial {
+  return buildBodyMaterial(bones, null);
+}
+
+/**
+ * Material for the Alpha's real `THREE.SkinnedMesh` (VP2-T009b): the same atlas / region mapping as the horde body, but
+ * the per-instance attributes are uniforms (returned in `uniforms`, driven by the look), skinning is three's own, and
+ * the eye regions glow mismatched (character-left pale yellow, right ember red) on top of `LEADER_GLOW`.
+ */
+export interface AlphaBodyUniforms {
+  aLook: { value: THREE.Vector4 };
+  aSkin: { value: THREE.Color }; aShirt: { value: THREE.Color };
+  aPants: { value: THREE.Color }; aShoe: { value: THREE.Color };
+  uEyeL: { value: THREE.Color }; uEyeR: { value: THREE.Color };
+}
+export function createAlphaBodyMaterial(look: ZombieLook): { material: THREE.MeshStandardMaterial; uniforms: AlphaBodyUniforms } {
+  const flags = (look.shorts ? BODY_FLAG.shorts : 0) | (look.tornLeg === 1 ? BODY_FLAG.tornL : 0)
+    | (look.tornLeg === -1 ? BODY_FLAG.tornR : 0) | (look.sleeves === 'long' ? BODY_FLAG.longSleeves : 0)
+    | (look.sleeves === 'none' ? BODY_FLAG.noSleeves : 0);
+  const uniforms: AlphaBodyUniforms = {
+    aLook: { value: new THREE.Vector4(look.torsoTile, look.pantsTile, look.skinTile, flags) },
+    aSkin: { value: new THREE.Color(look.skin) },
+    aShirt: { value: new THREE.Color(look.torsoTint) },
+    aPants: { value: new THREE.Color(look.pantsTint) },
+    aShoe: { value: new THREE.Color(look.shoeTint) },
+    uEyeL: { value: new THREE.Color(0xfff2a0) },
+    uEyeR: { value: new THREE.Color(0xff5a3a) },
+  };
+  const material = buildBodyMaterial(null, uniforms);
+  material.emissive.setHex(LEADER_GLOW);
+  return { material, uniforms };
+}
+
+function buildBodyMaterial(bones: BoneTexture | null, alpha: AlphaBodyUniforms | null): THREE.MeshStandardMaterial {
+  const atlas = getZombieAtlas();
+  const mat = new THREE.MeshStandardMaterial({
+    map: atlas.map,
+    normalMap: atlas.normalMap,
+    normalScale: new THREE.Vector2(0.7, 0.7),
+    vertexColors: false,
+    flatShading: false,
+    roughness: 0.86,
+    metalness: 0.0,
+  });
+  mat.name = alpha ? 'AlphaBodyMaterial' : 'ZombieBodyMaterial';
+  const N = ATLAS_GRID.toFixed(1);
+  const inset = ATLAS_INSET.toFixed(5);
+  const decl = alpha ? 'uniform' : 'attribute';
+  mat.onBeforeCompile = (shader) => {
+    if (alpha) Object.assign(shader.uniforms, alpha);
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', `#include <common>
+attribute float aRegion;
+attribute float aSel;
+${decl} vec4 aLook;
+${decl} vec3 aSkin;
+${decl} vec3 aShirt;
+${decl} vec3 aPants;
+${decl} vec3 aShoe;
+varying float vZBx;
+flat varying vec4 vZA;
+flat varying vec4 vZB;
+flat varying vec2 vZG;
+varying float vZSel;
+// class = region + 8 * part -> (tint rgb, atlas tile or -1 = plain colour), glow
+void zResolve( int cls, out vec4 col, out float glow ) {
+  int reg = cls & 7;
+  int part = cls >> 3;
+  int fl = int( aLook.w + 0.5 );
+  glow = 0.0;
+  if ( reg == 1 ) {
+    col = vec4( aShirt, aLook.x );
+    if ( part == 3 && ( fl & ${BODY_FLAG.noSleeves} ) != 0 ) col = vec4( aSkin, aLook.z );
+  } else if ( reg == 2 ) {
+    col = vec4( aPants, aLook.y );
+    if ( part == 1 || part == 2 ) {
+      bool torn = ( part == 1 && ( fl & ${BODY_FLAG.tornL} ) != 0 ) || ( part == 2 && ( fl & ${BODY_FLAG.tornR} ) != 0 );
+      if ( ( fl & ${BODY_FLAG.shorts} ) != 0 ) col = vec4( aSkin, aLook.z );
+      else if ( torn ) col = vec4( aSkin, ${TILE.skinRot}.0 );
+    }
+  } else if ( reg == 3 ) {
+    col = vec4( aShoe, ${TILE.leather}.0 );
+  } else if ( reg == 4 ) {
+    col = vec4( 0.93, 0.92, 0.82, -1.0 );
+    glow = 0.22;
+  } else if ( reg == 5 ) {
+    col = vec4( 0.03, 0.03, 0.04, -1.0 );
+  } else if ( reg == 6 ) {
+    col = vec4( 0.2, 0.06, 0.06, -1.0 );
+  } else {
+    col = vec4( aSkin, aLook.z );
+    if ( part == 4 && ( fl & ${BODY_FLAG.longSleeves} ) != 0 ) col = vec4( aShirt, aLook.x );
+  }
+}`)
+      .replace('#include <color_vertex>', `#include <color_vertex>
+{
+  int zc = int( aRegion + 0.5 );
+  vec4 zColA; vec4 zColB; float zGlowA; float zGlowB;
+  zResolve( zc & 63, zColA, zGlowA );
+  zResolve( zc >> 6, zColB, zGlowB );
+  vZA = zColA; vZB = zColB; vZG = vec2( zGlowA, zGlowB );
+  vZSel = aSel;
+  vZBx = position.x;
+}`);
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', `#include <common>
+flat varying vec4 vZA;
+flat varying vec4 vZB;
+flat varying vec2 vZG;
+varying float vZSel;
+varying float vZBx;
+${alpha ? 'uniform vec3 uEyeL; uniform vec3 uEyeR;' : ''}
+vec4 zAtlas( sampler2D tex, vec2 uv, float t ) {
+  vec2 cell = vec2( mod( t, ${N} ), ${N} - 1.0 - floor( t / ${N} ) );
+  float span = ( 1.0 - 2.0 * ${inset} ) / ${N};
+  vec2 st = ( cell + ${inset} ) / ${N} + fract( uv ) * span;
+  // Gradients from whichever of uv / wrapped uv is continuous here (no mip blur on the fract() seam).
+  vec2 a = dFdx( uv ), b = dFdx( fract( uv + 0.5 ) - 0.5 );
+  vec2 c = dFdy( uv ), d = dFdy( fract( uv + 0.5 ) - 0.5 );
+  a = mix( a, b, step( abs( b ), abs( a ) ) );
+  c = mix( c, d, step( abs( d ), abs( c ) ) );
+  return textureGrad( tex, st, a * span, c * span );
+}`)
+      .replace('#include <map_fragment>', `float zUseB = step( 0.5, vZSel );
+vec4 zSel = mix( vZA, vZB, zUseB );
+float zGlow = mix( vZG.x, vZG.y, zUseB );
+float zTexMix = zSel.w >= -0.5 ? 1.0 : 0.0;
+float zTile = max( floor( zSel.w + 0.5 ), 0.0 );
+` + patchChunk(THREE.ShaderChunk.map_fragment,
+        'vec4 sampledDiffuseColor = texture2D( map, vMapUv );',
+        'vec4 sampledDiffuseColor = mix( vec4( 1.0 ), zAtlas( map, vMapUv, zTile ), zTexMix );'))
+      .replace('#include <color_fragment>', `#include <color_fragment>
+diffuseColor.rgb *= zSel.rgb;${alpha ? `
+if ( zGlow > 0.0 ) { diffuseColor.rgb = vZBx > 0.0 ? uEyeL : uEyeR; zGlow = vZBx > 0.0 ? 0.55 : 0.9; }` : ''}`)
+      .replace('#include <normal_fragment_maps>', patchChunk(THREE.ShaderChunk.normal_fragment_maps,
+        'vec3 mapN = texture2D( normalMap, vNormalMapUv ).xyz * 2.0 - 1.0;',
+        'vec3 mapN = mix( vec3( 0.5, 0.5, 1.0 ), zAtlas( normalMap, vNormalMapUv, zTile ).xyz, zTexMix ) * 2.0 - 1.0;'))
+      .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+totalEmissiveRadiance += diffuseColor.rgb * zGlow;`);
+  };
+  mat.customProgramCacheKey = () => (alpha ? 'zombie-body-atlas-alpha' : 'zombie-body-atlas');
+  if (bones) applyInstancedSkinning(mat, bones);
+  return mat;
+}
+
+// ---------------------------------------------------------------------------
 // Horde geometry access
 // ---------------------------------------------------------------------------
 
@@ -569,39 +830,36 @@ function bakeHero(g: THREE.BufferGeometry, tile: number, tint: number, skin: num
 }
 
 function heroExtras(bone: number, look: ZombieLook): THREE.BufferGeometry[] {
-  const bone2 = 0xd9cfae;
-  const pad = 0x8f7952;
-  const trim = 0x4d1e16;
+  const khakiTint = 0xd4c298;
   switch (bone) {
     case BONE.spine:
       return [
-        // asymmetric plated shoulder pads + bone spikes down the back: reads as the Alpha from afar
-        bakeHero(box(0.24, 0.12, 0.3, 0.2, 0.5, 0, { color: pad, tex: 0, tint: 0, rz: -0.28 }), TILE.plain, 0xffffff, look.skin),
-        bakeHero(box(0.07, 0.15, 0.07, 0.25, 0.6, 0, { color: 0xb8a47e, tex: 0, tint: 0, rz: -0.2 }), TILE.plain, 0xffffff, look.skin),
-        bakeHero(box(0.2, 0.11, 0.28, -0.2, 0.5, 0, { color: pad, tex: 0, tint: 0, rz: 0.28 }), TILE.plain, 0xffffff, look.skin),
-        bakeHero(box(0.065, 0.13, 0.065, -0.24, 0.59, 0, { color: 0xb8a47e, tex: 0, tint: 0, rz: 0.2 }), TILE.plain, 0xffffff, look.skin),
-        bakeHero(box(0.06, 0.16, 0.07, 0, 0.46, -0.16, { color: bone2, tex: 0, tint: 0, rx: 0.6 }), TILE.plain, 0xffffff, look.skin),
-        bakeHero(box(0.06, 0.14, 0.07, 0, 0.3, -0.165, { color: bone2, tex: 0, tint: 0, rx: 0.6 }), TILE.plain, 0xffffff, look.skin),
-        bakeHero(box(0.06, 0.12, 0.07, 0, 0.15, -0.16, { color: bone2, tex: 0, tint: 0, rx: 0.6 }), TILE.plain, 0xffffff, look.skin),
-        // torn hood / high collar
-        bakeHero(prism(0.16, 0.13, 0.12, 0, 0.56, -0.03, { sz: 0.8, color: trim, tex: 0, tint: 0 }), TILE.plain, 0xffffff, look.skin),
-        // exposed ribs through a tear
-        bakeHero(box(0.12, 0.015, 0.02, 0.07, 0.3, 0.135, { color: 0xd8ceb0, tex: 0, tint: 0, rz: 0.1 }), TILE.plain, 0xffffff, look.skin),
-        bakeHero(box(0.11, 0.015, 0.02, 0.07, 0.27, 0.136, { color: 0xd0c6a8, tex: 0, tint: 0, rz: 0.1 }), TILE.plain, 0xffffff, look.skin),
-        bakeHero(box(0.13, 0.08, 0.012, 0.07, 0.285, 0.13, { color: 0x3a1010, tex: 0, tint: 0 }), TILE.plain, 0xffffff, look.skin),
+        // Asymmetric right-raised hunched shoulder + open Hawaiian tourist shirt collar
+        bakeHero(box(0.18, 0.11, 0.22, -0.14, 0.52, -0.01, { taper: 0.78, rz: 0.18 }), look.torsoTile, look.torsoTint, look.skin),
+        bakeHero(box(0.085, 0.065, 0.14, 0.075, 0.515, 0.045, { rz: -0.25, ry: 0.2 }), look.torsoTile, look.torsoTint, look.skin),
+        bakeHero(box(0.085, 0.065, 0.14, -0.075, 0.515, 0.045, { rz: 0.25, ry: -0.2 }), look.torsoTile, look.torsoTint, look.skin),
       ];
-    case BONE.forearmL:
-    case BONE.forearmR:
+    case BONE.upperArmR:
       return [
-        // longer, sharper claws
-        bakeHero(box(0.016, 0.05, 0.016, 0.027, -0.385, 0.04, { color: 0xe8e0c8, tex: 0, tint: 0, rx: -0.6 }), TILE.plain, 0xffffff, look.skin),
-        bakeHero(box(0.016, 0.055, 0.016, 0.009, -0.392, 0.045, { color: 0xe8e0c8, tex: 0, tint: 0, rx: -0.6 }), TILE.plain, 0xffffff, look.skin),
-        bakeHero(box(0.016, 0.05, 0.016, -0.009, -0.388, 0.043, { color: 0xe8e0c8, tex: 0, tint: 0, rx: -0.6 }), TILE.plain, 0xffffff, look.skin),
+        // Raised + hunched right shoulder cap
+        bakeHero(box(0.145, 0.11, 0.145, -0.01, 0.015, 0, { taper: 0.85 }), look.torsoTile, look.torsoTint, look.skin),
+      ];
+    case BONE.thighL:
+      return [
+        // Cargo shorts pocket on left thigh
+        bakeHero(box(0.036, 0.13, 0.11, 0.082, -0.19, 0.005, {}), TILE.khaki, khakiTint, look.skin),
+      ];
+    case BONE.thighR:
+      return [
+        // Cargo shorts pocket on right thigh
+        bakeHero(box(0.036, 0.13, 0.11, -0.082, -0.19, 0.005, {}), TILE.khaki, khakiTint, look.skin),
       ];
     default:
       return [];
   }
 }
+
+export type HeroCosmeticSlot = 'hat' | 'glasses' | 'back' | 'hand';
 
 export interface ZombieHeroRig {
   root: THREE.Group;
@@ -609,6 +867,8 @@ export interface ZombieHeroRig {
   meshes: THREE.Mesh[];
   /** Bone-relative matrices (root group carries position + facing). */
   bones: THREE.Matrix4[];
+  /** Empty cosmetic attachment anchors parented to head/spine/hand bones (nothing attached by default). */
+  slots: Record<HeroCosmeticSlot, THREE.Object3D>;
   scale: number;
   width: number;
   apply(pose: ZombiePose): void;
@@ -623,31 +883,31 @@ export function createZombieHeroRig(look: ZombieLook, scale: number, width: numb
   const identity = new THREE.Matrix4();
 
   const torsoTile = look.torsoTile;
-  const pantsTile = look.pantsTile;
+  const shortsTile = TILE.khaki;
+  const shortsTint = 0xd4c298;
   const skinTile = look.skinTile;
-  const sleeveLong = look.sleeves === 'long';
   type Spec = { bone: number; geo: THREE.BufferGeometry };
   const specs: Spec[] = [];
   const add = (bone: number, g: THREE.BufferGeometry, tile: number, tint: number): void => {
     specs.push({ bone, geo: bakeHero(g, tile, tint, look.skin) });
   };
   add(BONE.head, headGeo(true), skinTile, look.skin);
-  add(BONE.jaw, jawGeo(), skinTile, look.skin);
+  add(BONE.jaw, heroJawGeo(), skinTile, look.skin);
   add(BONE.spine, torsoGeo(), torsoTile, look.torsoTint);
-  add(BONE.hips, pelvisGeo(), pantsTile, look.pantsTint);
+  add(BONE.hips, pelvisGeo(), shortsTile, shortsTint);
   for (const [ua, fa, th, sh, ft, side] of [
     [BONE.upperArmL, BONE.forearmL, BONE.thighL, BONE.shinL, BONE.footL, 1],
     [BONE.upperArmR, BONE.forearmR, BONE.thighR, BONE.shinR, BONE.footR, -1],
   ] as const) {
-    add(ua, upperArmGeo(), sleeveLong ? torsoTile : skinTile, sleeveLong ? look.torsoTint : look.skin);
-    if (look.sleeves !== 'none') add(ua, sleeveGeo(), torsoTile, look.torsoTint);
-    // The Alpha's right sleeve is torn away: bare, scarred forearm.
-    const bareForearm = !sleeveLong || side === -1;
-    add(fa, forearmGeo(), bareForearm ? skinTile : torsoTile, bareForearm ? look.skin : look.torsoTint);
-    add(th, thighGeo(), pantsTile, look.pantsTint);
-    const bareShin = look.shorts || look.tornLeg === side;
-    add(sh, shinGeo(), bareShin ? skinTile : pantsTile, bareShin ? look.skin : look.pantsTint);
-    add(ft, footGeo(), TILE.leather, look.shoeTint);
+    // Short-sleeved colourful tourist shirt + bare forearms
+    add(ua, upperArmGeo(), skinTile, look.skin);
+    add(ua, sleeveGeo(), torsoTile, look.torsoTint);
+    add(fa, side === -1 ? heroRightForearmGeo() : forearmGeo(), skinTile, look.skin);
+    // Cargo shorts + bare shins
+    add(th, thighGeo(), shortsTile, shortsTint);
+    add(sh, shinGeo(), skinTile, look.skin);
+    // One rubber sandal (left) and one sneaker (right)
+    add(ft, side === 1 ? heroSandalGeo(look.skin) : heroSneakerGeo(), TILE.plain, 0xffffff);
   }
   for (let bone = 0; bone < BONE_COUNT; bone++) {
     for (const g of heroExtras(bone, look)) specs.push({ bone, geo: g });
@@ -675,11 +935,33 @@ export function createZombieHeroRig(look: ZombieLook, scale: number, width: numb
     meshBones.push(bone);
   }
 
+  // Cosmetic attachment slots parented to bone-synced groups (nothing attached by default).
+  const slotFollowers: { group: THREE.Group; bone: number }[] = [];
+  const makeSlot = (name: HeroCosmeticSlot, bone: number, x: number, y: number, z: number): THREE.Object3D => {
+    const follower = new THREE.Group();
+    follower.name = `HeroSlotBone_${name}`;
+    follower.matrixAutoUpdate = false;
+    root.add(follower);
+    slotFollowers.push({ group: follower, bone });
+    const anchor = new THREE.Object3D();
+    anchor.name = `HeroSlot_${name}`;
+    anchor.position.set(x, y, z);
+    follower.add(anchor);
+    return anchor;
+  };
+  const slots: Record<HeroCosmeticSlot, THREE.Object3D> = {
+    hat: makeSlot('hat', BONE.head, 0, 0.31, -0.005),
+    glasses: makeSlot('glasses', BONE.head, 0, 0.153, 0.145),
+    back: makeSlot('back', BONE.spine, 0, 0.32, -0.14),
+    hand: makeSlot('hand', BONE.forearmR, 0, -0.32, 0.03),
+  };
+
   const rig: ZombieHeroRig = {
     root,
     materials: [mat],
     meshes,
     bones,
+    slots,
     scale,
     width,
     apply(pose: ZombiePose): void {
@@ -687,6 +969,11 @@ export function createZombieHeroRig(look: ZombieLook, scale: number, width: numb
       for (let i = 0; i < meshes.length; i++) {
         meshes[i].matrix.copy(bones[meshBones[i]]);
         meshes[i].matrixWorldNeedsUpdate = true;
+      }
+      for (let i = 0; i < slotFollowers.length; i++) {
+        const sf = slotFollowers[i];
+        sf.group.matrix.copy(bones[sf.bone]);
+        sf.group.matrixWorldNeedsUpdate = true;
       }
     },
     dispose(): void {

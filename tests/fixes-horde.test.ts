@@ -104,7 +104,7 @@ describe('horde review regressions', () => {
     expect(dist(before, z.pos)).toBeGreaterThan(0.3);
   });
 
-  it.each([false, true])('counts rising reservations once per recruitment pass (rally=%s)', rally => {
+  it('counts rising reservations once per recruitment pass', () => {
     const { sim } = fixture(); sim.state.leader.pos = { x: 0, z: 0 };
     let reservationReads = 0;
     const rising = Array.from({ length: 49 }, () => add(sim, { x: 1, z: 0 }, 'rising'));
@@ -112,8 +112,7 @@ describe('horde review regressions', () => {
       configurable: true, get: () => { reservationReads++; return 'rising'; },
     });
     for (let i = 0; i < 60; i++) add(sim, { x: 0, z: 0 });
-    if (rally) applyHordeCommands(sim.ctx, dt, { ...emptyInput(), rally: true });
-    else updateHorde(sim.ctx, dt, emptyInput());
+    updateHorde(sim.ctx, dt, emptyInput());
     expect(sim.state.followerCount).toBe(51);
     expect(reservationReads).toBeLessThanOrEqual(rising.length * 5);
     const extra = sim.state.zombies.find(z => z.state === 'ambient')!;

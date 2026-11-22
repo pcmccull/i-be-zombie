@@ -14,6 +14,9 @@ import {
 } from '../src/persistence/saveSchema';
 import { Simulation } from '../src/sim/Simulation';
 import { buildLegacyDistrictLayout } from '../src/world/legacyDistrictLayout';
+import { usePreBeachEconomy } from './support/preBeachEconomy';
+
+usePreBeachEconomy();
 
 class MemoryStorage implements StorageLike {
   readonly data = new Map<string, string>();
@@ -260,7 +263,7 @@ describe('T006 Persistence — createSave / SaveStore / applySave round-trip', (
 
     // Leader and live followers moved to active nest ('nest_suburb' at 18, 30) on walkable points
     const nestPos = layout.nests.find(n => n.id === 'nest_suburb')!.pos;
-    expect(Math.hypot(s2.leader.pos.x - nestPos.x, s2.leader.pos.z - nestPos.z)).toBeLessThan(3);
+    expect(Math.hypot(s2.leader.pos.x - nestPos.x, s2.leader.pos.z - nestPos.z)).toBeLessThan(BALANCE.respawn.emergeOffset + 0.5);
     expect(sim2.ctx.navGrid.isWalkable(s2.leader.pos)).toBe(true);
     const followers = s2.zombies.filter(z => z.state === 'follower');
     expect(followers.length).toBe(BALANCE.horde.startFollowers);
@@ -481,5 +484,72 @@ describe('T006 Persistence — parseSave validation, migrations, and SaveStore r
 
     // Refuses to save malformed WorldSave
     expect(store.save({ ...valid, version: 999 } as WorldSave)).toBe(false);
+  });
+});
+
+describe('EW-T006 v2 -> v3 migration', () => {
+  function rawV2(bits: Uint8Array): Record<string, unknown> & { player: Record<string, unknown> } {
+    const sim = new Simulation();
+    const raw = JSON.parse(JSON.stringify(createSave(sim.state, 1, 0))) as Record<string, unknown> & {
+      player: Record<string, unknown>; districts: Record<string, unknown>;
+    };
+    raw.version = 2;
+    delete raw.player.visionTier;
+    for (const id of Object.keys(raw.districts)) {
+      if (!['suburbs', 'police', 'shopping', 'industrial'].includes(id)) delete raw.districts[id];
+    }
+    raw.discoveryBits = encodeBits(bits);
+    return raw;
+  }
+
+  it('loads with tier 1, all district records and shifted fog bits', () => {
+    const bits = new Uint8Array(20 * 16);
+    bits[3 * 20 + 5] = 1; // (c=5, r=3)
+    bits[15 * 20 + 19] = 1;
+    const save = parseSave(rawV2(bits));
+    expect(save).not.toBeNull();
+    expect(save!.player.visionTier).toBe(1);
+    expect(Object.keys(save!.districts).length).toBe(16);
+    const v3 = decodeBits(save!.discoveryBits, 42 * 34);
+    const set: number[] = [];
+    v3.forEach((v, i) => { if (v) set.push(i); });
+    expect(set).toEqual([(3 + 17) * 42 + (5 + 11), (15 + 17) * 42 + (19 + 11)].sort((a, b) => a - b));
+  });
+
+  it('v1 saves still load through the chain', () => {
+    const raw = rawV2(new Uint8Array(20 * 16));
+    raw.version = 1;
+    delete raw.player.slotsOwned;
+    const save = parseSave(raw);
+    expect(save).not.toBeNull();
+    expect(save!.version).toBe(SAVE_VERSION);
+    expect(save!.player.visionTier).toBe(1);
+  });
+
+  it('corrupt fog string yields null', () => {
+    const raw = rawV2(new Uint8Array(20 * 16));
+    raw.discoveryBits = 'not valid base64!';
+    expect(parseSave(raw)).toBeNull();
+  });
+
+  it('alphaCoreDamage round-trips and tampered values are clamped / ignored', () => {
+    const sim = new Simulation(buildLegacyDistrictLayout());
+    sim.state.horde.coreDamage = 2.5;
+    const raw = JSON.parse(JSON.stringify(createSave(sim.state, 7)));
+    expect(raw.player.alphaCoreDamage).toBe(2.5);
+    const fresh = new Simulation(buildLegacyDistrictLayout());
+    applySave(fresh.ctx, parseSave(raw)!);
+    expect(fresh.state.horde.coreDamage).toBe(2.5);
+    const load = (v: unknown): number => {
+      const r = JSON.parse(JSON.stringify(raw)); r.player.alphaCoreDamage = v;
+      const t = new Simulation(buildLegacyDistrictLayout()); applySave(t.ctx, parseSave(r)!);
+      return t.state.horde.coreDamage;
+    };
+    expect(load(999)).toBe(BALANCE.hordeHealth.alphaCore - 1); // loads keep >= 1 core unit (followers are transient)
+    expect(load(-3)).toBe(0); expect(load('x')).toBe(0); expect(load(null)).toBe(0); expect(load(Number.NaN)).toBe(0);
+    const missing = JSON.parse(JSON.stringify(raw)); delete missing.player.alphaCoreDamage;
+    const t = new Simulation(buildLegacyDistrictLayout()); t.state.horde.coreDamage = 4;
+    applySave(t.ctx, parseSave(missing)!);
+    expect(t.state.horde.coreDamage).toBe(0);
   });
 });

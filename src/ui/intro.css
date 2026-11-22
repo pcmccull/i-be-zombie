@@ -1,17 +1,17 @@
-/* Opening cinematic overlay. Shares the HUD's typeface + green accent. */
+/* Opening cinematic overlay (HUD-T003). Shares tokens from hudTheme.css. */
 .ibz-cine {
   position: fixed;
   inset: 0;
   pointer-events: none;
   z-index: 30;
-  font-family: 'Bahnschrift', 'Arial Narrow', 'Franklin Gothic Medium', system-ui, -apple-system, sans-serif;
-  color: #f0f2ec;
+  font-family: var(--hz-font-body);
+  color: var(--hz-cream);
 }
 
 .ibz-cine-fade {
   position: absolute;
   inset: 0;
-  background: #000;
+  background: var(--hz-ink);
   opacity: 0;
   display: none;
 }
@@ -21,9 +21,9 @@
   left: 0;
   right: 0;
   height: 9vh;
-  background: #000;
+  background: var(--hz-ink);
   transform: scaleY(0);
-  transition: transform 0.9s ease;
+  transition: transform 0.9s var(--hz-ease);
 }
 .ibz-cine-bar-top { top: 0; transform-origin: top; }
 .ibz-cine-bar-bottom { bottom: 0; transform-origin: bottom; }
@@ -32,51 +32,60 @@
 .ibz-cine-subtitle {
   position: absolute;
   left: 50%;
-  bottom: calc(9vh + 18px);
+  bottom: calc(9vh + var(--hz-gap-4));
   transform: translateX(-50%);
-  max-width: min(860px, calc(100vw - 32px));
-  padding: 10px 20px;
-  background: rgba(18, 22, 27, 0.78);
-  border: 1px solid rgba(155, 227, 90, 0.28);
-  border-radius: 6px;
-  font-size: clamp(16px, 2.4vw, 24px);
-  line-height: 1.35;
+  max-width: min(calc(860 * var(--hz-u)), calc(100vw - 2 * var(--hz-edge)));
+  padding: var(--hz-gap-2) var(--hz-gap-4);
+  background: var(--hz-panel-solid);
+  border: calc(1.5 * var(--hz-u)) solid var(--hz-panel-border);
+  border-radius: var(--hz-r-m);
+  box-shadow: var(--hz-hi), var(--hz-lip), var(--hz-drop);
+  font-size: clamp(calc(15 * var(--hz-u)), 2.2vw, calc(24 * var(--hz-u)));
+  line-height: 1.38;
   letter-spacing: 0.02em;
   text-align: center;
-  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8);
+  color: var(--hz-cream);
+  text-shadow: var(--hz-text-shadow);
   opacity: 0;
-  transition: opacity 0.25s ease;
+  transition: opacity var(--hz-t-small) var(--hz-ease);
 }
 .ibz-cine-subtitle.is-visible { opacity: 1; }
 
 .ibz-cine-skip {
   position: absolute;
-  right: 18px;
-  bottom: calc(9vh + 18px);
+  right: var(--hz-safe-r);
+  bottom: calc(9vh + var(--hz-gap-4));
   display: none;
+  align-items: center;
+  gap: var(--hz-gap-2);
   pointer-events: auto;
-  padding: 8px 14px;
-  font: inherit;
-  font-size: 14px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
+  padding: var(--hz-gap-2) var(--hz-gap-3);
+  font-family: var(--hz-font-display);
+  font-size: var(--hz-fs-s);
+  font-weight: 900;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: #e8f2e0;
-  background: rgba(18, 22, 27, 0.7);
-  border: 1px solid rgba(155, 227, 90, 0.45);
-  border-radius: 6px;
+  color: var(--hz-cream);
+  background: var(--hz-panel-solid);
+  border: calc(1.5 * var(--hz-u)) solid var(--hz-panel-border);
+  border-radius: var(--hz-r-pill);
+  box-shadow: var(--hz-hi), var(--hz-lip), var(--hz-drop);
   cursor: pointer;
+  transition: transform var(--hz-t-press) var(--hz-ease), border-color var(--hz-t-press) ease, filter var(--hz-t-press) ease;
 }
-.ibz-cine-skip span {
-  margin-left: 6px;
-  padding: 1px 5px;
-  font-size: 11px;
-  border: 1px solid rgba(232, 242, 224, 0.4);
-  border-radius: 3px;
-  opacity: 0.8;
+.ibz-cine-skip:hover {
+  border-color: var(--hz-green);
+  filter: brightness(1.07);
+  transform: translateY(calc(-1 * var(--hz-u)));
 }
-.ibz-cine-skip:hover { border-color: #9be35a; color: #fff; }
-.ibz-cine-skip.is-visible { display: block; }
+.ibz-cine-skip:active {
+  transform: translateY(calc(2 * var(--hz-u)));
+}
+.ibz-cine-skip:focus-visible {
+  outline: calc(3 * var(--hz-u)) solid var(--hz-yellow);
+  outline-offset: calc(3 * var(--hz-u));
+}
+.ibz-cine-skip.is-visible { display: inline-flex; }
 
 .ibz-cine-start {
   position: absolute;
@@ -85,57 +94,108 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 18px;
+  gap: var(--hz-gap-4);
+  padding: var(--hz-edge);
   pointer-events: auto;
   cursor: default;
 }
 .ibz-cine-start.is-visible { display: flex; }
 .ibz-cine-start.is-ready { cursor: pointer; }
+
 .ibz-cine-title {
   margin: 0;
-  font-size: clamp(34px, 7vw, 72px);
-  letter-spacing: 0.18em;
-  color: #9be35a;
-  text-shadow: 0 0 24px rgba(155, 227, 90, 0.35);
+  font-family: var(--hz-font-display);
+  font-size: clamp(calc(34 * var(--hz-u)), 7vw, calc(72 * var(--hz-u)));
+  font-weight: 900;
+  letter-spacing: 0.14em;
+  text-align: center;
+  color: var(--hz-cream);
+  text-shadow: var(--hz-text-shadow), 0 calc(8 * var(--hz-u)) calc(24 * var(--hz-u)) rgba(25, 63, 72, 0.7);
 }
+.ibz-cine-title span {
+  color: var(--hz-green);
+}
+
 .ibz-cine-start-hint {
-  font-size: 15px;
-  letter-spacing: 0.2em;
+  font-family: var(--hz-font-display);
+  font-size: var(--hz-fs-m);
+  font-weight: 800;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
+  color: var(--hz-yellow);
+  text-shadow: var(--hz-text-shadow);
   opacity: 0.55;
 }
-.ibz-cine-start.is-ready .ibz-cine-start-hint { opacity: 0.9; animation: ibz-cine-pulse 1.6s ease-in-out infinite; }
-@keyframes ibz-cine-pulse { 50% { opacity: 0.45; } }
+.ibz-cine-start.is-ready .ibz-cine-start-hint {
+  opacity: 0.95;
+  animation: hz-soft-pulse 2.4s ease-in-out infinite;
+}
+
+.ibz-cine-fs {
+  margin-top: var(--hz-gap-2);
+  opacity: 0.8;
+  filter: saturate(0.4);
+  transition: opacity 0.15s ease, filter 0.15s ease;
+}
+.ibz-cine-fs:hover, .ibz-cine-fs.is-on { opacity: 1; filter: none; }
+.ibz-cine-fs .hz-key { margin-left: var(--hz-gap-1); }
+.ibz-cine-fs[hidden] { display: none; }
 
 .ibz-cine-objective {
   position: absolute;
-  top: 92px;
+  top: calc(92 * var(--hz-u));
   left: 50%;
-  transform: translate(-50%, -12px);
-  width: min(460px, calc(100vw - 32px));
+  transform: translate(-50%, calc(-12 * var(--hz-u))) scale(0.96);
+  width: min(calc(480 * var(--hz-u)), calc(100vw - 2 * var(--hz-edge)));
   box-sizing: border-box;
-  padding: 14px 20px 16px;
-  background: rgba(18, 23, 29, 0.92);
-  border: 2px solid #9be35a;
-  border-radius: 8px;
-  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.6);
+  padding: var(--hz-gap-3) var(--hz-gap-4) var(--hz-gap-4);
+  background: var(--hz-panel-solid);
+  border: calc(2 * var(--hz-u)) solid rgba(134, 217, 87, 0.55);
+  border-radius: var(--hz-r-l);
+  box-shadow: var(--hz-hi), var(--hz-lip), var(--hz-drop);
   text-align: center;
   opacity: 0;
-  transition: opacity 0.45s ease, transform 0.45s ease;
+  transition: opacity var(--hz-t-panel) var(--hz-ease), transform var(--hz-t-panel) var(--hz-ease-pop);
 }
-.ibz-cine-objective.is-visible { opacity: 1; transform: translate(-50%, 0); }
-.ibz-cine-objective-tag { font-size: 11px; letter-spacing: 0.22em; color: #9be35a; font-weight: 700; }
-.ibz-cine-objective-title { margin: 4px 0 6px; font-size: 26px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
-.ibz-cine-objective-text { font-size: 15px; line-height: 1.4; color: #cfd8c8; }
+.ibz-cine-objective.is-visible {
+  opacity: 1;
+  transform: translate(-50%, 0) scale(1);
+}
+.ibz-cine-objective-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: calc(6 * var(--hz-u));
+  font-family: var(--hz-font-display);
+  font-size: var(--hz-fs-xs);
+  letter-spacing: 0.16em;
+  color: var(--hz-yellow);
+  font-weight: 900;
+}
+.ibz-cine-objective-title {
+  margin: var(--hz-gap-1) 0 var(--hz-gap-2);
+  font-family: var(--hz-font-display);
+  font-size: var(--hz-fs-xl);
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--hz-green-hi);
+  text-shadow: var(--hz-text-shadow);
+}
+.ibz-cine-objective-text {
+  font-size: var(--hz-fs-m);
+  line-height: 1.42;
+  color: var(--hz-cream-dim);
+}
 
 /* Gameplay HUD hidden during the cinematic (HUD.setCinematic). */
 .ibz-hud.is-cinematic > * { visibility: hidden !important; }
 
 @media (pointer: coarse) {
-  .ibz-cine-skip span { display: none; }
+  .ibz-cine-skip .hz-key { display: none; }
 }
 
 @media (max-width: 640px) {
-  .ibz-cine-skip { top: calc(9vh + 12px); bottom: auto; }
-  .ibz-cine-objective { top: 70px; }
+  .ibz-cine-skip { top: calc(9vh + var(--hz-gap-3)); bottom: auto; }
+  .ibz-cine-objective { top: calc(70 * var(--hz-u)); }
 }

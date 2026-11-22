@@ -53,12 +53,12 @@ describe('conversion: design §15.10–11', () => {
       { type: 'momentumGain', amount: BALANCE.momentum.gainConvert,
         value: BALANCE.momentum.gainArmedKill + BALANCE.momentum.gainConvert, reason: 'convert' },
       { type: 'biomassGain', amount: BALANCE.progression.biomassConvert,
-        total: BALANCE.progression.biomassKill + BALANCE.progression.biomassConvert, reason: 'convert' },
+        total: BALANCE.progression.biomassKill + BALANCE.progression.biomassConvert, reason: 'convert', pos },
     ]);
     updateConversion(sim.ctx, 5, input); expect(sim.state.stats.conversions).toBe(1);
   });
 
-  it('keeps guaranteed Alpha conversions subject to the cap, without a rise reward when rejected', () => {
+  it('lets guaranteed Alpha conversions rise past the horde cap', () => {
     const sim = fixture(0.99), g = sim.state.guards[5];
     for (let i = 0; i < BALANCE.horde.maxFollowers; i++) {
       sim.state.zombies.push(createZombie(sim.ctx.newId(), sim.state.leader.pos,
@@ -69,8 +69,10 @@ describe('conversion: design §15.10–11', () => {
     expect(sim.state.pendingConversions[0].willConvert).toBe(true);
     sim.state.time = BALANCE.conversion.delay; updateConversion(sim.ctx, 0, input);
     expect(sim.state.pendingConversions).toHaveLength(0);
-    expect(sim.state.zombies).toHaveLength(BALANCE.horde.maxFollowers);
-    expect(sim.state.progression.biomass).toBe(BALANCE.progression.biomassKill);
+    expect(sim.state.zombies).toHaveLength(BALANCE.horde.maxFollowers + 1);
+    updateConversion(sim.ctx, BALANCE.conversion.riseDuration, input);
+    expect(sim.state.followerCount).toBe(BALANCE.horde.maxFollowers + 1);
+    expect(sim.state.progression.biomass).toBe(BALANCE.progression.biomassKill + BALANCE.progression.biomassConvert);
   });
 
   it('continues conversions while respawning, skips dormant rises, and awards biomass only on joining', () => {
@@ -89,24 +91,23 @@ describe('conversion: design §15.10–11', () => {
     expect(sim.drainEvents().filter(e => e.type === 'biomassGain' && e.reason === 'convert')).toHaveLength(1);
   });
 
-  it('caps followers plus rising zombies, reserving the last slot across simultaneous pending deaths', () => {
+  it('conversions go past the cap, but a full horde (incl. over-cap converts) still blocks recruiting strays', () => {
     const sim = fixture();
     for (let i = 0; i < 100; i++) {
       const z = createZombie(sim.ctx.newId(), sim.state.leader.pos, { state: 'ambient', variant: 0, spawnZone: -1, isConverted: false, rng: sim.ctx.rng });
       sim.state.zombies.push(z); recruitZombie(sim.ctx, z, false);
     }
-    damageGuard(sim.ctx, sim.state.guards[5], 50, 'zombie'); sim.state.time = 3;
-    updateConversion(sim.ctx, dt, input); expect(sim.state.zombies).toHaveLength(100);
-    expect(sim.state.pendingConversions).toHaveLength(0); expect(sim.state.followerCount).toBe(100);
-    const other = fixture();
-    for (let i = 0; i < 99; i++) {
-      const z = createZombie(other.ctx.newId(), other.state.leader.pos, { state: 'rising', variant: 0, spawnZone: -1, isConverted: true, rng: other.ctx.rng });
-      other.state.zombies.push(z);
-    }
-    for (const g of other.state.guards.slice(5)) damageGuard(other.ctx, g, 50, 'zombie');
-    other.state.time = 3; updateConversion(other.ctx, dt, input);
-    expect(other.state.zombies).toHaveLength(100); expect(other.state.followerCount).toBe(0);
-    expect(other.state.pendingConversions).toHaveLength(0);
+    expect(sim.state.followerCount).toBe(100);
+    const guards = sim.state.guards.slice(5);
+    for (const g of guards) damageGuard(sim.ctx, g, 50, 'zombie');
+    sim.state.time = 3; updateConversion(sim.ctx, dt, input);
+    expect(sim.state.pendingConversions).toHaveLength(0);
+    expect(sim.state.zombies).toHaveLength(100 + guards.length);
+    updateConversion(sim.ctx, BALANCE.conversion.riseDuration, input);
+    expect(sim.state.followerCount).toBe(100 + guards.length); expect(countFollowers(sim.state)).toBe(100 + guards.length);
+    const stray = createZombie(sim.ctx.newId(), sim.state.leader.pos, { state: 'ambient', variant: 0, spawnZone: -1, isConverted: false, rng: sim.ctx.rng });
+    sim.state.zombies.push(stray);
+    expect(recruitZombie(sim.ctx, stray, false)).toBe(false); expect(stray.state).toBe('ambient');
   });
 
   it('is deterministic across repeated seeded runs and does not advance after game over', () => {

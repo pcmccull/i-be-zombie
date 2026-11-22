@@ -6,10 +6,13 @@ import type { GameEvent, GuardAgent, SimInput, StrongholdId, Vec2 } from '../src
 import { createZombie } from '../src/entities/Zombie';
 import { Simulation } from '../src/sim/Simulation';
 import { createSave, parseSave } from '../src/persistence/saveSchema';
-import { damageLeader } from '../src/systems/CombatSystem';
+import { killLeader } from '../src/systems/CombatSystem';
 import { unlockAbility } from '../src/systems/ProgressionSystem';
 import { getDistrictAt } from '../src/world/worldQueries';
 import { buildDistrictLayout } from '../src/world/districtLayout';
+import { usePreBeachEconomy } from './support/preBeachEconomy';
+
+usePreBeachEconomy();
 
 const dt = BALANCE.sim.fixedDt;
 const SEED = 4242;
@@ -94,6 +97,18 @@ function livingDefenders(sim: Simulation, id: StrongholdId): GuardAgent[] {
  * attack the breach structure, kill defenders by attack orders, then hold the objective point.
  */
 const yieldLoop = (): Promise<void> => new Promise(r => setTimeout(r, 0)); // keeps vitest's worker RPC alive during long sims
+/** The Alpha can only order attacks on identified humans (EW vision gate); scripted runs stand in for the player seeing the target. */
+function identify(sim: Simulation, id: number): void {
+  const ids = sim.state.vision.identified;
+  if (ids.includes(id)) return;
+  ids.push(id); ids.sort((a, b) => a - b);
+}
+
+/** God-mode: the Alpha's survival is state.horde (core + followers); keep the core full and cancel Last Brain. */
+function god(sim: Simulation): void {
+  const h = sim.state.horde; h.coreDamage = 0; h.lastBrain.active = false; h.lastBrain.timeLeft = 0;
+}
+
 async function capture(sim: Simulation, mon: Monitor, id: StrongholdId, maxSeconds = 240): Promise<number> {
   const def = layout.strongholds.find(s => s.id === id)!, st = sim.state.strongholds.find(s => s.id === id)!;
   const nest = layout.nests.find(n => n.strongholdId === id)!;
@@ -104,7 +119,7 @@ async function capture(sim: Simulation, mon: Monitor, id: StrongholdId, maxSecon
   let lastKey = '';
   for (let i = 0; i < maxSeconds * 60 && !st.captured; i++) {
     const input = emptyInput(), l = sim.state.leader;
-    if (l.alive) l.hp = l.maxHp;
+    if (l.alive) god(sim);
     if (i % 90 === 0) addFollowers(sim, 40, l.pos);
     if (i % 30 === 0) {
       const breached = gateObjective ? sim.state.gate.destroyed
@@ -116,6 +131,7 @@ async function capture(sim: Simulation, mon: Monitor, id: StrongholdId, maxSecon
         cmd = { type: 'attack', target: gateObjective ? { kind: 'gate' } : { kind: 'structure', id: door! }, additive: false };
       } else if (defenders.length > 0 && !st.objectivesDone.includes(hold?.id ?? '')) {
         defenders.sort((a, b) => dist(a.pos, l.pos) - dist(b.pos, l.pos));
+        identify(sim, defenders[0].id);
         key = 'g' + defenders[0].id; cmd = { type: 'attack', target: { kind: 'guard', id: defenders[0].id }, additive: false };
         if (dist(defenders[0].pos, l.pos) > 25 && hold) place(sim, hold.point!);
       } else if (hold) {
@@ -158,7 +174,7 @@ describe('open-world integration (spec §10)', () => {
       let guard = 0;
       while (dist(sim.state.leader.pos, goal) > 4 && guard++ < 150 * 60) {
         const input = emptyInput(); input.sprint = true;
-        sim.state.leader.hp = sim.state.leader.maxHp; // god-mode: this test is about continuity, not survival
+        god(sim); // god-mode: this test is about continuity, not survival
         steer(sim, input, goal, w);
         sim.step(dt, input); mon.sample();
       }
@@ -226,17 +242,17 @@ describe('open-world integration (spec §10)', () => {
     s.zombies = []; s.followerCount = 0; // pure 1v1 (no passive recruits to help)
     place(sim, start!);
     cop = cop!;
-    let minHp = l.hp;
+    
     for (let i = 0; i < 40 * 60 && cop.state !== 'DEAD' && l.alive; i++) {
       const input = emptyInput();
       if (dist(l.pos, cop.pos) < 2.4) { input.attack = true; }
       input.aimPoint = { ...cop.pos };
       steer(sim, input, cop.pos, newWalker());
-      sim.step(dt, input); mon.sample(); minHp = Math.min(minHp, l.hp);
+      sim.step(dt, input); mon.sample();
       if (cop.hp <= 0) break;
     }
     expect(cop.hp).toBeLessThanOrEqual(0); expect(cop.state).toBe('DEAD');
-    expect(minHp).toBeLessThan(l.maxHp); // took damage on the way in
+    expect(s.horde.alphaDamageTaken).toBeGreaterThan(0); // took damage on the way in
     expect(mon.n('attackSwing')).toBeGreaterThanOrEqual(1); expect(cop.killedByAlpha).toBe(true);
     expect(mon.events.some(e => e.type === 'guardDied')).toBe(true);
   }, 60_000);
@@ -252,8 +268,8 @@ describe('open-world integration (spec §10)', () => {
     let engaged = false, closer = false;
     for (let i = 0; i < 30 * 60 && cop.state !== 'DEAD'; i++) {
       const input = emptyInput();
-      if (i === 5) input.hordeCommand = { type: 'attack', target: { kind: 'guard', id: cop.id }, additive: false };
-      l.hp = l.maxHp;
+      if (i === 5) { identify(sim, cop.id); input.hordeCommand = { type: 'attack', target: { kind: 'guard', id: cop.id }, additive: false }; }
+      god(sim);
       sim.step(dt, input); mon.sample();
       if (i === 6) expect(s.order).toEqual({ type: 'attack', target: { kind: 'guard', id: cop.id } });
       for (const z of s.zombies) {
@@ -311,7 +327,7 @@ describe('open-world integration (spec §10)', () => {
     place(sim, walkablePointNear(sim, cop.pos, 1.0, 3)); cop.hp = cop.maxHp = 400;
     let maxCombo = 0;
     for (let i = 0; i < 6 * 60 && cop.state !== 'DEAD'; i++) {
-      const input = emptyInput(); input.attack = true; input.aimPoint = { ...cop.pos }; l.hp = l.maxHp;
+      const input = emptyInput(); input.attack = true; input.aimPoint = { ...cop.pos }; god(sim);
       place(sim, walkablePointNear(sim, cop.pos, 1.0, 1.4));
       sim.step(dt, input); mon.sample(); maxCombo = Math.max(maxCombo, l.comboStep);
     }
@@ -421,7 +437,7 @@ describe('open-world integration (spec §10)', () => {
     runSteps(sim, mon, 120);
     const followersBefore = s.followerCount, nest = layout.nests.find(n => n.id === s.activeNestId)!;
     place(sim, { x: nest.pos.x + 20, z: nest.pos.z - 20 });
-    damageLeader(sim.ctx, 1e6);
+    killLeader(sim.ctx);
     const t0 = s.time;
     sim.step(dt, emptyInput()); mon.sample();
     expect(s.phase).toBe('respawning'); expect(s.deaths).toBe(1); expect(l.alive).toBe(false);
@@ -429,8 +445,8 @@ describe('open-world integration (spec §10)', () => {
     expect(s.time).toBeGreaterThan(t0 + 0.9); // world kept simulating
     expect(s.phase).toBe('respawning');
     runSteps(sim, mon, Math.ceil(BALANCE.respawn.delay / dt));
-    expect(s.phase).toBe('playing'); expect(l.alive).toBe(true); expect(l.hp).toBe(l.maxHp);
-    expect(dist(l.pos, nest.pos)).toBeLessThan(2);
+    expect(s.phase).toBe('playing'); expect(l.alive).toBe(true); expect(s.horde.coreDamage).toBe(0);
+    expect(dist(l.pos, nest.pos)).toBeLessThan(BALANCE.respawn.emergeOffset + 0.5);
     expect(s.progression.biomass).toBe(25); expect(s.progression.unlocked).toContain('alpha_claws');
     expect(s.followerCount).toBeGreaterThanOrEqual(Math.min(followersBefore, BALANCE.respawn.followers));
     expect(s.followerCount).toBe(s.zombies.filter(z => z.state === 'follower').length);
@@ -457,7 +473,7 @@ describe('open-world integration (spec §10)', () => {
       }
       const input = emptyInput(); input.sprint = true;
       if (goal) { steer(sim, input, goal, w); input.aimPoint = { ...goal }; input.attack = dist(goal, l.pos) < 2.6; }
-      l.hp = l.maxHp;
+      god(sim);
       sim.step(dt, input);
       if (i + 1 === 30 * 60) at30 = s.followerCount;
     }
@@ -484,9 +500,12 @@ describe('open-world integration (spec §10)', () => {
     }
     // eslint-disable-next-line no-console
     console.log(`[T012] roam: ${(performance.now() - t).toFixed(0)} ms, guards<=${mon.maxGuards} zombies<=${mon.maxZombies} followers<=${mon.maxFollowers} legs=${leg} deaths=${s.deaths}`);
-    expect(mon.maxFollowers).toBeLessThanOrEqual(BALANCE.openWorld.maxFollowers);
+    // The (pre-claimed) walk-in start nest adds followersPerNest on top of the base cap; this route captures nothing.
+    // Recruiting stops at the cap; converted humans may join past it.
+    expect(mon.maxFollowers).toBeLessThanOrEqual(BALANCE.openWorld.maxFollowers + BALANCE.openWorld.followersPerNest + s.stats.conversions);
     expect(mon.maxGuards).toBeLessThanOrEqual(BALANCE.population.maxHumans);
-    expect(mon.maxGuards).toBeLessThanOrEqual(initialGuards + 20);
+    // + the living-city director's own hard-capped humans (docs/11_cityupgrade.md; tests/cityEvents.test.ts).
+    expect(mon.maxGuards).toBeLessThanOrEqual(initialGuards + 20 + BALANCE.city.eventMaxHumans);
     expect(mon.maxZombies).toBeLessThanOrEqual(initialZombies + BALANCE.openWorld.maxFollowers + 60);
     expect(s.zombies.filter(z => z.state === 'ambient').length).toBeLessThanOrEqual(BALANCE.population.maxAmbient);
     expect(s.followerCount).toBe(s.zombies.filter(z => z.state === 'follower').length);

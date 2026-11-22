@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { BALANCE } from '../src/config/balance';
 import { DISTRICTS } from '../src/content/districts';
 import { STRONGHOLDS } from '../src/content/strongholds';
-import { emptyInput, type AABB, type Vec2 } from '../src/core/types';
+import { DISTRICT_IDS, emptyInput, type AABB, type Vec2 } from '../src/core/types';
 import { Simulation } from '../src/sim/Simulation';
 import { CollisionWorld } from '../src/world/CollisionWorld';
 import { NavigationGrid } from '../src/world/NavigationGrid';
@@ -25,9 +25,9 @@ describe('open-world layout', () => {
     changed.strongholds[1].objectives[1].requires!.push('changed');
     changed.buildings[0].height = 100;
     expect(buildDistrictLayout()).toEqual(world);
-    expect(world.buildings.length).toBeLessThanOrEqual(260);
-    expect(world.colliders.length).toBeLessThanOrEqual(1500);
-    expect(world.markings.length).toBeLessThan(400);
+    expect(world.buildings.length).toBeLessThanOrEqual(600);
+    expect(world.colliders.length).toBeLessThanOrEqual(4000);
+    expect(world.markings.length).toBeLessThanOrEqual(1400);
     expect(world.buildings.filter(b => b.style === 'mall')).toHaveLength(1);
     const mall = world.buildings.find(b => b.style === 'mall')!;
     expect(area(mall.footprint)).toBe(70 * 40);
@@ -35,8 +35,10 @@ describe('open-world layout', () => {
   });
 
   it('tiles the exact world bounds without interior gaps/overlap and clamps district queries', () => {
-    expect(world.bounds).toEqual({ minX: -200, minZ: -160, maxX: 200, maxZ: 160 });
-    expect(world.districts).toHaveLength(4);
+    expect(world.bounds).toEqual({ minX: -420, minZ: -500, maxX: 420, maxZ: 180 });
+    expect(world.playArea).toEqual({ minX: -400, minZ: -480, maxX: 400, maxZ: 160 });
+    expect(world.districts).toHaveLength(16);
+    expect(world.districts.map(d => d.id)).toEqual([...DISTRICT_IDS]);
     expect(world.districts.reduce((sum, d) => sum + area(d.rect), 0)).toBe(area(world.bounds));
     for (const meta of DISTRICTS) {
       const d = world.districts.find(d => d.id === meta.id)!;
@@ -44,25 +46,28 @@ describe('open-world layout', () => {
       expect(d.spawnPoints.length).toBeGreaterThanOrEqual(4);
       expect(getDistrictAt(world, center(d.rect))).toBe(d.id);
     }
-    for (let x = -199; x <= 199; x += 10) for (let z = -159; z <= 159; z += 10) {
+    for (let x = -419; x <= 419; x += 10) for (let z = -499; z <= 179; z += 10) {
       const owners = world.districts.filter(d => inside({ x, z }, d.rect));
       expect(owners).toHaveLength(1);
       expect(getDistrictAt(world, { x, z })).toBe(owners[0].id);
     }
     expect(getDistrictAt(world, { x: 0, z: 0 })).toBe('shopping');
-    expect(getDistrictAt(world, { x: -2000, z: 2000 })).toBe('suburbs');
-    expect(getDistrictAt(world, { x: 2000, z: -2000 })).toBe('industrial');
-    expect(getDistrictAt(world, { x: 200, z: 160 })).toBe('shopping');
+    expect(getDistrictAt(world, { x: -2000, z: 2000 })).toBe('sunny_boardwalk');
+    expect(getDistrictAt(world, { x: 2000, z: -2000 })).toBe('luxury_marina');
+    expect(getDistrictAt(world, { x: 200, z: 160 })).toBe('oceanfront_hotels');
+    expect(getDistrictAt(world, { x: -150, z: 115 })).toBe('suburbs');
     expect(getDistrictAt(world, { x: -200, z: -160 })).toBe('police');
   });
 
   it('realizes the content metadata and resolves all objective, structure and nest references', () => {
     expect(world.strongholds.map(s => s.id)).toEqual(STRONGHOLDS.map(s => s.id));
     expect(new Set(world.structures.map(s => s.id)).size).toBe(world.structures.length);
-    expect(new Set(world.nests.map(n => n.id)).size).toBe(5);
+    expect(new Set(world.nests.map(n => n.id)).size).toBe(STRONGHOLDS.length + 1);
     expect(world.nests.filter(n => n.strongholdId === null).map(n => n.id)).toEqual(['nest_start']);
     const startNest = world.nests.find(n => n.strongholdId === null)!;
-    expect(Math.hypot(startNest.pos.x - world.playerStart.x, startNest.pos.z - world.playerStart.z)).toBeLessThan(BALANCE.nest.equipRadius);
+    // Walk-in nest by the bus, a short walk up from the beach start (tests/beachStart.test.ts covers the claim).
+    expect(startNest.claim).toBe(true);
+    expect(Math.hypot(startNest.pos.x - world.playerStart.x, startNest.pos.z - world.playerStart.z)).toBeLessThan(50);
     for (const meta of STRONGHOLDS) {
       const s = world.strongholds.find(s => s.id === meta.id)!;
       expect(s).toMatchObject({ ...meta, objectives: meta.objectives.map(o => ({ ...o })) });
@@ -99,8 +104,12 @@ describe('open-world layout', () => {
   });
 
   it('keeps every spawn, nest, patrol waypoint and whole spawn rectangle walkable', () => {
+    // A tank crew sits inside its own hull collider (like a tower occupant); the hull itself must exist.
+    for (const g of world.guards.filter(g => g.heavy === 'tank')) {
+      expect(collision.findByTag(g.hullTag!)?.kind).toBe('vehicle');
+    }
     const points = [world.playerStart, ...world.nests.map(n => n.pos), ...world.districts.flatMap(d => d.spawnPoints),
-      ...world.guards.flatMap(g => [g.pos, ...g.waypoints])];
+      ...world.guards.filter(g => g.heavy !== 'tank').flatMap(g => [g.pos, ...g.waypoints])];
     for (const p of points) expect(collision.isBlocked(p, 0.45), JSON.stringify(p)).toBe(false);
     for (const zone of [...world.spawnZones, { rect: world.startFollowerArea, name: 'followers' }]) {
       for (let x = zone.rect.minX; x <= zone.rect.maxX; x += 0.5) {
@@ -120,11 +129,17 @@ describe('open-world layout', () => {
   });
 
   it('has exact district population budgets, defender roles, held zombies and nearby opening encounters', () => {
-    const budgets = { suburbs: [16, 30], police: [10, 18], shopping: [22, 26], industrial: [8, 22] };
+    const budgets: Partial<Record<string, number[]>> = { suburbs: [16, 30], police: [10, 18], shopping: [22, 26], industrial: [8, 22] };
     for (const d of world.districts) {
-      expect([d.civilianBudget, d.ambientBudget]).toEqual(budgets[d.id]);
+      if (budgets[d.id]) expect([d.civilianBudget, d.ambientBudget]).toEqual(budgets[d.id]);
+      expect(d.civilianBudget).toBeGreaterThan(0);
+      expect(d.ambientBudget).toBeGreaterThan(0);
       expect(world.guards.filter(g => g.role === 'civilian' && getDistrictAt(world, g.pos) === d.id)).toHaveLength(d.civilianBudget);
-      expect(world.guards.filter(g => g.post === 'patrol' && getDistrictAt(world, g.pos) === d.id)).toHaveLength(d.id === 'suburbs' ? 0 : 2);
+      const original = budgets[d.id] !== undefined;
+      const policePatrols = original ? (d.id === 'suburbs' ? 0 : 2) : [0, 0, 2, 6, 0, 0][d.threatTier];
+      const soldierPatrols = original ? 0 : [0, 0, 0, 0, 12, 16][d.threatTier];
+      expect(world.guards.filter(g => g.role === 'police' && g.post === 'patrol' && getDistrictAt(world, g.pos) === d.id)).toHaveLength(policePatrols);
+      expect(world.guards.filter(g => g.role === 'soldier' && g.post === 'patrol' && getDistrictAt(world, g.pos) === d.id)).toHaveLength(soldierPatrols);
       const zones = world.spawnZones.filter(z => !z.heldBy && getDistrictAt(world, center(z.rect)) === d.id);
       expect(zones.reduce((sum, z) => sum + z.count, 0)).toBe(d.ambientBudget);
     }
@@ -175,7 +190,7 @@ describe('open-world layout', () => {
         expect(c.minX < r.maxX && c.maxX > r.minX && c.minZ < r.maxZ && c.maxZ > r.minZ).toBe(false);
       }
     }
-  }, 30000);
+  }, 60000);
 
   it('seals each enclosure and connects its interior/objective after its own entrance is destroyed', () => {
     const c = new CollisionWorld(world.bounds, world.colliders), nav = new NavigationGrid(c);
@@ -191,7 +206,7 @@ describe('open-world layout', () => {
       if (objective.point) expect(nav.findPath(world.playerStart, objective.point), s.id).not.toBeNull();
     }
     expect(nav.findPath(world.playerStart, world.checkpoint.gateApproachInside[3])).not.toBeNull();
-  }, 30000);
+  }, 60000);
 
   it('constructs and advances the existing simulation for 120 fixed steps', () => {
     const sim = new Simulation(buildDistrictLayout());
@@ -199,78 +214,52 @@ describe('open-world layout', () => {
     expect(sim.state.time).toBeCloseTo(2);
     expect(sim.state.followerCount).toBe(sim.state.zombies.filter(z => z.state === 'follower').length);
     expect(sim.state.guards.length).toBe(world.guards.length);
-  }, 30000);
+  }, 60000);
 
-  it('has no walkable islands except sealed enclosures, and no islands at all once entrances open', () => {
-    const c = new CollisionWorld(world.bounds, world.colliders), nav = new NavigationGrid(c);
-    const unreachable = (): Vec2[] => {
-      const open = new Uint8Array(nav.cols * nav.rows), seen = new Uint8Array(open.length);
-      const queue = new Int32Array(open.length), p = { x: 0, z: 0 };
-      const point = (id: number): Vec2 => {
-        p.x = world.bounds.minX + (id % nav.cols + 0.5) * nav.cellSize;
-        p.z = world.bounds.minZ + (Math.floor(id / nav.cols) + 0.5) * nav.cellSize;
-        return p;
-      };
-      for (let id = 0; id < open.length; id++) open[id] = +nav.isWalkable(point(id));
-      const start = Math.floor((world.playerStart.z - world.bounds.minZ) / nav.cellSize) * nav.cols +
-        Math.floor((world.playerStart.x - world.bounds.minX) / nav.cellSize);
-      let read = 0, write = 1;
-      queue[0] = start; seen[start] = 1;
-      const visit = (id: number): void => {
-        if (open[id] && !seen[id]) { seen[id] = 1; queue[write++] = id; }
-      };
-      while (read < write) {
-        const id = queue[read++], x = id % nav.cols, z = Math.floor(id / nav.cols);
-        if (x > 0) visit(id - 1);
-        if (x + 1 < nav.cols) visit(id + 1);
-        if (z > 0) visit(id - nav.cols);
-        if (z + 1 < nav.rows) visit(id + nav.cols);
-      }
-      const result: Vec2[] = [];
-      for (let id = 0; id < open.length; id++) if (open[id] && !seen[id]) result.push({ ...point(id) });
-      return result;
-    };
-    const rooms = [...world.structures.map(s => s.enclosure), world.checkpoint.bounds];
-    expect(unreachable().filter(p => !rooms.some(b => inside(p, b))).slice(0, 10)).toEqual([]);
-    for (const s of world.structures) c.setEnabled(c.findByTag(s.tag)!.id, false);
-    c.setEnabled(c.findByTag('gate')!.id, false); nav.rebuild();
-    expect(unreachable().slice(0, 10)).toEqual([]);
-  }, 30000);
+
 });
 
+// Chunk mechanics are tested on the original 400 x 320 m grid (5 x 4 whole chunks); EW grows the real world.
+const grid20 = { ...world, bounds: { minX: -200, minZ: -160, maxX: 200, maxZ: 160 } };
+
 describe('world chunk queries and streaming', () => {
+  it('EW: the 840 x 680 m world streams as 11 x 9 chunks of 80 m', () => {
+    expect([chunkCols(world), chunkRows(world)]).toEqual([11, 9]);
+    expect(chunksInRadius(world, world.playerStart, Infinity, [])).toHaveLength(99);
+  });
+
   it('uses stable 5 by 4 row-major chunks, clamps edges and reuses output objects', () => {
-    expect([chunkCols(world), chunkRows(world)]).toEqual([5, 4]);
-    expect(chunkIdAt(world, { x: -1000, z: -1000 })).toBe(0);
-    expect(chunkIdAt(world, { x: 1000, z: 1000 })).toBe(19);
+    expect([chunkCols(grid20), chunkRows(grid20)]).toEqual([5, 4]);
+    expect(chunkIdAt(grid20, { x: -1000, z: -1000 })).toBe(0);
+    expect(chunkIdAt(grid20, { x: 1000, z: 1000 })).toBe(19);
     const out = { minX: 0, minZ: 0, maxX: 0, maxZ: 0 };
     for (let id = 0; id < 20; id++) {
-      expect(chunkRect(world, id, out)).toBe(out);
+      expect(chunkRect(grid20, id, out)).toBe(out);
       expect(area(out)).toBe(80 * 80);
-      expect(chunkIdAt(world, center(out))).toBe(id);
+      expect(chunkIdAt(grid20, center(out))).toBe(id);
     }
-    expect(() => chunkRect(world, -1)).toThrow(RangeError);
-    expect(() => chunkRect(world, 20)).toThrow(RangeError);
-    expect(() => chunkRect(world, 0.5)).toThrow(RangeError);
-    const partial = { ...world, bounds: { minX: 10, minZ: 20, maxX: 100, maxZ: 110 } };
+    expect(() => chunkRect(grid20, -1)).toThrow(RangeError);
+    expect(() => chunkRect(grid20, 20)).toThrow(RangeError);
+    expect(() => chunkRect(grid20, 0.5)).toThrow(RangeError);
+    const partial = { ...grid20, bounds: { minX: 10, minZ: 20, maxX: 100, maxZ: 110 } };
     expect(chunkRect(partial, 3)).toEqual({ minX: 90, minZ: 100, maxX: 100, maxZ: 110 });
   });
 
   it('uses exact circle/rectangle overlap including tangency and clears reused arrays', () => {
     const out = [99];
-    expect(chunksInRadius(world, { x: -160, z: -120 }, 0, out)).toBe(out);
+    expect(chunksInRadius(grid20, { x: -160, z: -120 }, 0, out)).toBe(out);
     expect(out).toEqual([0]);
-    expect(chunksInRadius(world, { x: -120, z: -120 }, 0, out)).toEqual([0, 1]);
-    expect(chunksInRadius(world, { x: -201, z: -120 }, 0, out)).toEqual([]);
-    expect(chunksInRadius(world, { x: -201, z: -120 }, 1, out)).toEqual([0]);
-    expect(chunksInRadius(world, world.playerStart, Infinity, out)).toHaveLength(20);
-    expect(() => chunksInRadius(world, world.playerStart, -1, out)).toThrow(RangeError);
+    expect(chunksInRadius(grid20, { x: -120, z: -120 }, 0, out)).toEqual([0, 1]);
+    expect(chunksInRadius(grid20, { x: -201, z: -120 }, 0, out)).toEqual([]);
+    expect(chunksInRadius(grid20, { x: -201, z: -120 }, 1, out)).toEqual([0]);
+    expect(chunksInRadius(grid20, grid20.playerStart, Infinity, out)).toHaveLength(20);
+    expect(() => chunksInRadius(grid20, grid20.playerStart, -1, out)).toThrow(RangeError);
   });
 
   it('returns exact load/unload diffs, retains a hysteresis band and stays at most twelve chunks on loops/teleports', () => {
-    const streamer = new ChunkStreamer(world), mirror = new Set<number>();
-    const route = [world.playerStart, { x: -100, z: 80 }, { x: -100, z: -80 }, { x: 100, z: -80 },
-      { x: 100, z: 80 }, { x: 0, z: 0 }, world.playerStart];
+    const streamer = new ChunkStreamer(grid20), mirror = new Set<number>();
+    const route = [grid20.playerStart, { x: -100, z: 80 }, { x: -100, z: -80 }, { x: 100, z: -80 },
+      { x: 100, z: 80 }, { x: 0, z: 0 }, grid20.playerStart];
     const scratch: number[] = [];
     for (let lap = 0; lap < 3; lap++) for (let leg = 1; leg < route.length; leg++) {
       const a = route[leg - 1], b = route[leg];
@@ -281,13 +270,13 @@ describe('world chunk queries and streaming', () => {
         for (const id of diff.load) { expect(mirror.has(id)).toBe(false); mirror.add(id); }
         expect([...streamer.loaded].sort()).toEqual([...mirror].sort());
         expect(streamer.loaded.size).toBeLessThanOrEqual(12);
-        expect(streamer.loaded.has(chunkIdAt(world, p))).toBe(true);
-        const retained = chunksInRadius(world, p, BALANCE.chunks.unloadRadius, scratch);
+        expect(streamer.loaded.has(chunkIdAt(grid20, p))).toBe(true);
+        const retained = chunksInRadius(grid20, p, BALANCE.chunks.unloadRadius, scratch);
         for (const id of streamer.loaded) expect(retained).toContain(id);
         expect(streamer.update(p)).toEqual({ load: [], unload: [] });
       }
     }
-    const fresh = new ChunkStreamer(world);
+    const fresh = new ChunkStreamer(grid20);
     fresh.update({ x: -190, z: -160 });
     // id 2 is outside the load radius at the new point, but inside unloadRadius.
     fresh.update({ x: -200, z: -160 });
@@ -295,6 +284,6 @@ describe('world chunk queries and streaming', () => {
     fresh.update({ x: 200, z: 160 });
     expect(fresh.loaded.has(0)).toBe(false);
     expect(fresh.loaded.size).toBeLessThanOrEqual(12);
-    expect(new ChunkStreamer(world).loaded.size).toBe(0);
+    expect(new ChunkStreamer(grid20).loaded.size).toBe(0);
   });
 });

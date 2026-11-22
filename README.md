@@ -1,10 +1,64 @@
 # I BE ZOMBIE
 
 A stylized low-poly 3D open-world zombie horde game built with Three.js, TypeScript and Vite. You are the **Alpha**. Infect a seamless
-400 m × 320 m city, grow a horde of up to 40, storm human strongholds in any order, claim districts, and unlock permanent mutations.
+800 m × 640 m city of 16 districts, grow a horde of up to 40, storm human strongholds in any order, claim districts, and unlock permanent mutations.
 Progress is saved in the browser.
 
-## What's new: the open world
+## What's new: visual polish (docs/8_visual_polish.md)
+
+- **Characters.** Humans read as tourists (Hawaiian shirts, sun hats, cameras), residents, workers (hi-vis, hard hats), security
+  (navy + light blue) and defenders (orange vest + navy). Civilians panic with flailing arms, armed humans snap to alert, and
+  everyone recoils when hit. The Alpha is recognisable without any hat: lopsided raised shoulder, one oversized right hand,
+  mismatched glowing eyes, a slack grin and a torn tourist shirt. It has empty attachment slots for future cosmetics.
+- **City surfaces.** World-space detail on the city materials: asphalt grain, cracks and patches, sidewalk slab joints, mottled
+  grass, stucco walls with base grime, and rippled sand. The detail fades out with distance so it never shimmers. Palms and trees
+  sway in the wind, shops have striped canvas awnings, and apartments have balconies with railings and planters.
+- **Effects.** A pooled, capped particle system (2 draw calls) drives footstep dust by surface, hit stars, green/teal recruitment
+  wisps, rally arrows, charge dust and speed streaks, muzzle smoke and shell glints, bullet impacts, barricade debris, bus/vehicle
+  explosions, unlock confetti and ambient leaves and insects. Effects past the vision limit are never drawn.
+- **Lighting and post.** A warm Miami sun with a cool bounce fill, plus a light colour grade, and a glow that only picks up
+  bright, saturated light (muzzle flashes, glowing eyes, sparks).
+- **Graphics settings** (pause menu): **Graphics: Low / Medium / High**, which sets shadow map size, post-processing, surface
+  detail, wind, particle budgets and the pixel-ratio cap, and **Reduced motion**, which cuts camera shake, flashes and particle
+  counts. They are stored in the browser and never in the save. The defaults come from the device: touch → Low, DPR 1 → Medium,
+  otherwise High; `prefers-reduced-motion` turns Reduced motion on.
+- **Diagnostics.** **F3** also shows a graphics panel: frame time p50/p95, draw calls, triangles, geometries and textures, shadow
+  casters, and live/max particles. `?bench=1` (100 zombies + 100 humans around the Alpha) and `?bench=2` (260 + 120) load a
+  repeatable stress scene that is never saved. `window.__game.graphicsStats` returns the same numbers for scripted runs.
+- **Art pipeline.** Everything is still generated in code: no model or texture files, no downloads, no licences to track. The
+  spec's glTF/KTX2 pipeline was swapped for cached procedural geometry and canvas/data texture atlases, because the repo forbids
+  remote assets (see `.agent-context/ARCHITECTURE.md` §VP-0).
+
+## Earlier: expanded world and zombie vision
+
+Implemented from [`docs/5_expand_world.md`](docs/5_expand_world.md).
+
+- **16 districts on a 4 × 4 grid.** The original four sit in the bottom-middle; around them are the Sunny Boardwalk, Oceanfront
+  Hotels, Arts District, Military Stronghold, Palm Park, Financial Core, Neon Nights, Medical Center, International Airport,
+  Golf Estates, University Campus and Luxury Marina. Each has its own look, stronghold and a threat tier (1–5) shown when you
+  enter it.
+- **A real world edge.** Ocean and seawall on the south, a bay with container stacks on the east, mangroves and a military
+  perimeter on the west, a collapsed highway and fences on the north, with wrecked-vehicle and broken-bridge gaps. The edge
+  can't be broken, climbed or walked through, and the land past it is dressed backdrop.
+- **Zombie eyesight.** The Alpha is short-sighted. You can only target humans you have *identified*; beyond your eyesight the
+  city fades into haze and **nothing past the vision limit is drawn**.
+
+  | Tier | Name | Clear sight | Vision limit | Also detects | Cost |
+  |---|---|---|---|---|---|
+  | 1 | Rotten Eyes | 18 m | ~52 m | — | start |
+  | 2 | Predator Sight | 28 m | ~72 m | moving humans (40 m) | 20 biomass |
+  | 3 | Hunter Vision | 42 m | ~94 m | + stronghold defenders (70 m) | 60 biomass |
+  | 4 | Apex Vision | 60 m | ~123 m | + reinforcements (140 m) | 120 biomass |
+
+  Inside the clear-sight radius humans show in full and can be targeted; between it and the vision limit they show as hazed
+  silhouettes (you can see them, but must get closer to attack). Past the limit nothing is drawn, humans included.
+  Buy tiers in the **Eyesight** section of any active nest's panel. Camera zoom never changes what you can see.
+- **Ears and nose.** Every gunshot and scream within earshot puts a ⚠ warning with an arrow at the screen edge, pointing toward
+  the sound (red = gunshot, amber = scream). Sirens (blue) and crowd scent (green) show as softer arcs. Cues also appear as fuzzy
+  blobs on the map and are panned in stereo. They never give an exact position.
+- **Saves upgrade automatically** (save v3): your eyesight tier is stored and old fog-of-war maps are remapped onto the bigger grid.
+
+## Earlier: the open world
 
 Implemented from [`docs/3_open_world.md`](docs/3_open_world.md). The task board and reports are in [`.agent-context/`](.agent-context/).
 
@@ -29,7 +83,7 @@ Implemented from [`docs/3_open_world.md`](docs/3_open_world.md). The task board 
   - **Alpha Claws:** while equipped, LMB becomes a three-hit combo whose finisher staggers.
   - **Horde Frenzy:** nearby followers get +40% speed and +50% attack rate for 8 s.
   - **Brute Evolution:** spend 15 biomass per Brute to mutate the nearest followers into siege Brutes (180 HP, 3.5× structure damage).
-  - Change your Q/E/R/F loadout at any active nest.
+  - Change your Q/T/R/F loadout at any active nest.
 - **The Alpha fights directly.** LMB bite has windup, recovery and forgiving auto-aim. Humans you kill yourself always rise as
   followers.
 - **Nests and respawn.** If the Alpha dies, it respawns at the active nest after 4 s, keeping its unlocks, biomass and territory.
@@ -87,11 +141,11 @@ Implemented in [`src/core/InputController.ts`](src/core/InputController.ts) and 
 |---|---|
 | `W A S D` / arrows | Move relative to the camera; `Shift` sprints while stamina lasts |
 | **LMB** | Alpha attack: bite, or the 3-hit claw combo with Alpha Claws equipped. Auto-aims at the nearest enemy in front |
-| **RMB** on human / gate / door | Horde attack order. `Ctrl+RMB` adds or removes a split target |
+| **RMB** on human / gate / door | Horde attack order. Hold `E` + RMB to add or removes a split target |
 | **RMB** on ground | Horde move order (marker; reverts to follow on arrival or after 20 s) |
 | `Space` / `Shift+RMB` | Rally / regroup: pull in and recruit nearby walkers (8 s cooldown) |
 | `G` | Recall: everyone follows |
-| `Q` `E` `R` `F` | Activate the equipped mutation slot (Rush, Frenzy, Brutes; Claws is passive while equipped) |
+| `Q` `T` `R` `F` | Activate the equipped mutation slot (Rush, Frenzy, Brutes; Claws is passive while equipped) |
 | `M` | World map. Click it to set or clear a waypoint |
 | `Esc` | Pause menu: Continue, Save, Reset Save (with confirmation), Sound |
 | `N` | Mute / unmute |
@@ -141,7 +195,9 @@ The codebase enforces a strict separation between pure gameplay simulation and T
 10. `updateStructures`, then `updateMomentum`.
 11. `updateConquest`: fog reveal, objectives, contested/capture-once, district metrics, alert and reinforcements, nest replenishment.
 12. `updateRespawn`: death → `respawning` → nest respawn.
-13. Timers; `state.time += dt`.
+13. `updateAwareness`: zombie vision (identified / seen humans, LOS-budgeted from the leader position only) and sense cues from
+    this step's events. Runs while respawning too.
+14. Timers; `state.time += dt`.
 
 The legacy district (`new Simulation()` without a layout) keeps the recruitment-milestone order with `checkVictory`.
 
@@ -156,14 +212,16 @@ src/
   sim/                         [pure] Simulation.ts, createInitialState.ts
   world/                       districtLayout.ts + layout/* (open world), legacyDistrictLayout.ts, worldQueries.ts (districts,
                                chunks, ChunkStreamer), CollisionWorld.ts, NavigationGrid.ts [pure];
-                               CityDistrict.ts (chunk streaming), Checkpoint.ts, Landmarks.ts, NestMarkers.ts [3D]
+                               boundaryLayout.ts [pure] (world edge + backdrop);
+                               CityDistrict.ts (chunk streaming), Checkpoint.ts, Landmarks.ts, NestMarkers.ts, BoundaryScenery.ts [3D]
   entities/                    [pure] ZombieLeader.ts, Zombie.ts, HumanGuard.ts, Structure.ts
   systems/                     [pure] Horde, Navigation, Combat, HumanAI, Conversion, Structure, Momentum, Progression,
-                               Conquest, Respawn, Population, Victory (legacy)
+                               Conquest, Respawn, Population, Awareness (vision + senses), Victory (legacy)
   persistence/                 saveSchema.ts [pure] (versioned WorldSave, migrations), SaveStore.ts (localStorage, never throws)
-  visuals/                     [3D] LowPolyCharacters.ts, HordeRenderer.ts, EntityRenderer.ts, Effects.ts, HealthBars.ts
+  visuals/                     [3D] LowPolyCharacters.ts, HordeRenderer.ts, EntityRenderer.ts, Effects.ts, HealthBars.ts,
+                               VisionFog.ts (vision haze + limit); core/visionMath.ts [pure]
   audio/                       AudioSystem.ts (Web Audio synth)
-  ui/                          HUD.ts, Minimap.ts, WorldMap.ts, PauseMenu.ts, NestPanel.ts, DebugOverlay.ts, mapRender.ts,
+  ui/                          HUD.ts, SenseIndicators.ts, Minimap.ts, WorldMap.ts, PauseMenu.ts, NestPanel.ts, DebugOverlay.ts, mapRender.ts,
                                uiHelpers.ts [pure], hud.css, hudOpenWorld.css
   utils/                       [pure] math.ts, spatialHash.ts, rng.ts
 tests/                         Vitest suites importing [pure] modules only (openWorld.test.ts = spec §10 scenarios)
@@ -191,8 +249,8 @@ All gameplay numbers are centralized in [`src/config/balance.ts`](src/config/bal
 | Category | Key Parameters |
 |---|---|
 | **Simulation & World** | `fixedDt`: `1/60 s`, `maxFrameDt`: `0.25 s`, `maxStepsPerFrame`: `8`, `aiTickHz`: `10`, `navReplanHz`: `5`, bounds `[-120..120] × [-90..90] m`, `navCellSize`: `1.25 m`, `navAgentRadius`: `0.45 m` |
-| **Zombie Leader** | `maxHp`: `100`, `walkSpeed`: `5 m/s`, `sprintSpeed`: `7.4 m/s`, `staminaMax`: `100` (drain `25/s`, recovery `15/s`, exhaustion threshold `20`), `attackDamage`: `10`, `attackRange`: `1.7 m`, `attackCooldown`: `1.1 s`, `recruitRadius`: `9 m` |
-| **Walker & Horde** | `initialAmbient`: `85` (45 held in landmarks), `startFollowers`: `5`, `maxFollowers`: `100`, `maxHp`: `40`, `speed`: `3.7 m/s` (`ambientSpeed`: `0.9 m/s`, `catchUpMultiplier`: `1.35×` beyond `14 m`), `attackDamage`: `8`, `attackRange`: `1.5 m`, `attackCooldown`: `1.2 s`, `autoEngageRadius`: `6 m`, `corpseFadeTime`: `6 s` |
+| **Zombie Leader** | no HP — survives on **Horde Strength** (core `6` units × `40`, Alpha damage × `2.5` shared nearest-first to followers within `6 m`, Last Brain Standing `6 s` at `1.35×` speed), `walkSpeed`: `5 m/s`, `sprintSpeed`: `7.4 m/s`, `staminaMax`: `100` (drain `25/s`, recovery `15/s`, exhaustion threshold `20`), `attackDamage`: `10`, `attackRange`: `1.7 m`, `attackCooldown`: `1.1 s`, `recruitRadius`: `9 m` |
+| **Walker & Horde** | `initialAmbient`: `85` (45 held in landmarks), `startFollowers`: `5` (legacy; the open world starts alone on the beach, first nest raises `10`), `maxFollowers`: `100`, `maxHp`: `40`, `speed`: `3.7 m/s` (`ambientSpeed`: `0.9 m/s`, `catchUpMultiplier`: `1.35×` beyond `14 m`), `attackDamage`: `8`, `attackRange`: `1.5 m`, `attackCooldown`: `1.2 s`, `autoEngageRadius`: `6 m`, `corpseFadeTime`: `6 s` |
 | **Abilities** | **Rally (`E`):** `radius`: `15 m`, `cooldown`: `8 s` · **Rush (`Space`):** `duration`: `4 s`, `cooldown`: `15 s`, `speedMultiplier`: `1.45×`, `attackRateMultiplier`: `1.25×` |
 | **Human Guard** | `count`: `8` (`towerCount`: `2`), `maxHp`: `50`, `speed`: `3 m/s`, `damage`: `10`, `range`: `22 m` (`towerRange`: `30 m`), `fireCooldown`: `0.8 s`, `hitChance`: `0.75`, `eyeHeight`: `1.5 m` (`towerEyeHeight`: `5.2 m`), `detectionFovDeg`: `140°`, `towerMeleeReachBonus`: `2.2 m` |
 | **Checkpoint Gate** | `maxHp`: `400` |
@@ -250,6 +308,25 @@ Automated tests in [`tests/`](tests/) run in Vitest without WebGL and cover all 
 | [`tests/cameraMath.test.ts`](tests/cameraMath.test.ts) & [`tests/utils.test.ts`](tests/utils.test.ts) | Camera offset conventions, 6 px click-vs-drag threshold, shortest-arc angle interpolation, seeded `mulberry32` RNG, and `SpatialHash` queries. |
 
 ## Performance
+
+**Visual polish benchmark** (2026-11-16, built-in browser pane at 800×600, DPR 1). The `?bench=` scenes ran with the game loop
+driven from script, so the numbers are CPU frame time plus `gl.finish()` per frame. The window was not on screen, so real
+display timing could not be measured.
+
+| Scene | Preset | Frame p50 | Frame p95 | Draw calls | Shadow casters | Triangles | Live particles |
+|---|---|---|---|---|---|---|---|
+| bench=1 (100 zombies + 100 humans) | High | 14.9 ms | 25.0 ms | 418 | 152 | 807k | 82 |
+| bench=1 | High + reduced motion | 11.5 ms | 18.1 ms | 325 | — | — | 34 |
+| bench=1 | Medium | 14.2 ms | 22.0 ms | 320 | 110 | 800k | 46 |
+| bench=1 | Low | 12.2 ms | 21.8 ms | 312 | 103 | 798k | 28 |
+| bench=2 stress (260 zombies + 120 humans) | High | 13.2 ms | 18.4 ms | 492 | 145 | 866k | 92 |
+| bench=2 stress | Low | 11.8 ms | 15.8 ms | 405 | 110 | 859k | 4 |
+
+Before humans were limited to casting shadows near the Alpha, bench=1 drew about 1,260 calls with about 845 shadow casters
+(10 meshes per human rig, each drawn again in the shadow pass). Humans now cast dynamic shadows only within 22–26 m of the
+Alpha. Post-processing (grade + bloom) costs well under 1 ms. Particles use 2 draw calls at most. No true "before" timings of
+the pre-polish build exist for these scenes; the low preset (no post, no surface detail, 1024 shadow map) is the closest
+stand-in.
 
 Measured in Chrome 156 (8 logical cores) inside the Claude desktop app's embedded browser pane, at a 1024×768 viewport with DPR 1. The scenario was 94 live followers attacking the checkpoint gate, with 8 guards firing:
 

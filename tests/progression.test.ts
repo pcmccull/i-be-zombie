@@ -130,15 +130,11 @@ describe('loadout at nests', () => {
     expect(equipAbility(sim.ctx, 2, null)).toBe(false);
     expect(equipAbility(sim.ctx, 0, 'horde_frenzy')).toBe(false);
     sim.state.leader.pos = { ...start };
-    sim.state.leader.hp = 0;
-    expect(equipAbility(sim.ctx, 0, 'horde_frenzy')).toBe(false);
-    sim.state.leader.hp = sim.state.leader.maxHp;
     sim.state.leader.alive = false;
     expect(equipAbility(sim.ctx, 0, 'horde_frenzy')).toBe(false);
     expect(sim.state.progression.equipped).toEqual([null, null, 'horde_frenzy', null]);
     expect(sim.drainEvents().filter(e => e.type === 'abilityDenied')).toEqual([
       { type: 'abilityDenied', abilityId: null, reason: 'notAtNest' },
-      { type: 'abilityDenied', abilityId: 'horde_frenzy', reason: 'notAtNest' },
       { type: 'abilityDenied', abilityId: 'horde_frenzy', reason: 'notAtNest' },
       { type: 'abilityDenied', abilityId: 'horde_frenzy', reason: 'notAtNest' },
     ]);

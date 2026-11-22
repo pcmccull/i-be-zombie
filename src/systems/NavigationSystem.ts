@@ -1,6 +1,6 @@
 import { BALANCE } from '../config/balance';
 import type { IFlowField, INavigationGrid, SimContext, SquadGuidance } from '../core/contracts';
-import type { GuardAgent, SimInput, TargetRef, Vec2 } from '../core/types';
+import type { EntityId, GuardAgent, SimInput, TargetRef, Vec2 } from '../core/types';
 import { distSq } from '../utils/math';
 import { resolveTargetPos } from './CombatSystem';
 import { findStructure } from './StructureSystem';
@@ -23,12 +23,9 @@ function newPlan(): AttackPlan {
     attackPos: { x: Infinity, z: Infinity }, orderKey: '', guardField: null };
 }
 
-/**
- * Grid the horde steers on: once the pack is big enough it treats low obstacles (cars,
- * barriers) as passable and crawls over them; small groups path around.
- */
+/** Grid the horde steers on: car-height obstacles (cars, barriers, short walls) are passable — followers climb them. */
 export function hordeGrid(ctx: SimContext): INavigationGrid {
-  return ctx.state.followerCount >= BALANCE.horde.crawlNavMinFollowers ? ctx.crawlNavGrid : ctx.navGrid;
+  return ctx.crawlNavGrid;
 }
 
 function key(target: TargetRef | null): string {
@@ -52,7 +49,7 @@ function guardGoals(ctx: SimContext, g: GuardAgent): Vec2[] {
     const snapped = ctx.navGrid.nearestWalkable(p);
     // Snapping a point beside a perimeter wall can put it on the other side.
     // Only actual melee access points belong in this target's goal set.
-    const reach = BALANCE.walker.attackRange + g.radius + (tower ? BALANCE.guard.towerMeleeReachBonus : 0);
+    const reach = BALANCE.walker.attackRange + g.radius + (g.tower ? BALANCE.guard.towerMeleeReachBonus : 0);
     if (distSq(snapped, g.pos) <= reach * reach &&
         !ctx.collision.segmentBlocked(snapped, g.pos, access)) points.push(snapped);
   }
@@ -60,7 +57,7 @@ function guardGoals(ctx: SimContext, g: GuardAgent): Vec2[] {
 }
 
 /** Only called when an ordered target dies: one shared reachability pass for the pack. */
-export function nearestReachableGuard(ctx: SimContext, origin: Vec2, radius: number): TargetRef | null {
+export function nearestReachableGuard(ctx: SimContext, origin: Vec2, radius: number, allow?: (id: EntityId) => boolean): TargetRef | null {
   const starts: Vec2[] = [];
   for (const z of ctx.state.zombies) if (z.state === 'follower' && z.hp > 0) starts.push(z.pos);
   if (!starts.length) return null;
@@ -69,7 +66,7 @@ export function nearestReachableGuard(ctx: SimContext, origin: Vec2, radius: num
   let nearest = radius * radius;
   let target: TargetRef | null = null;
   for (const g of ctx.state.guards) {
-    if (g.state === 'DEAD' || g.hp <= 0) continue;
+    if (g.state === 'DEAD' || g.hp <= 0 || (allow && !allow(g.id))) continue;
     const d = distSq(origin, g.pos);
     if (d > nearest || (d === nearest && target)) continue;
     // Use the same validated melee approaches as attack navigation, including towers.
@@ -89,7 +86,7 @@ export function updateNavigation(ctx: SimContext, dt: number, _input: SimInput):
   p.elapsed += dt;
   const interval = 1 / BALANCE.sim.navReplanHz;
   const grid = hordeGrid(ctx);
-  const versionChanged = p.version !== ctx.navGrid.version || p.grid !== grid;
+  const versionChanged = p.version !== grid.version || p.grid !== grid;
   if (!ctx.nav.followField || versionChanged ||
       (distSq(ctx.state.leader.pos, p.followPos) > 4 && p.elapsed - p.followAt >= interval - 1e-9)) {
     ctx.nav.followField = grid.buildFlowField([ctx.state.leader.pos], ctx.nav.followField ?? undefined,
@@ -112,7 +109,7 @@ export function updateNavigation(ctx: SimContext, dt: number, _input: SimInput):
     if (!guidance) { guidance = { attackField: null, effectiveTarget: null }; ctx.nav.squads.set(squad.id, guidance); }
     guidance.attackField = plan.attackField; guidance.effectiveTarget = plan.effectiveTarget;
   }
-  p.version = ctx.navGrid.version; p.grid = grid;
+  p.version = grid.version; p.grid = grid;
 }
 
 function planAttack(ctx: SimContext, p: Planning, plan: AttackPlan, target: TargetRef | null,
@@ -165,6 +162,11 @@ function planAttack(ctx: SimContext, p: Planning, plan: AttackPlan, target: Targ
     const id = effective.id;
     const def = ctx.layout.structures.find(d => d.id === id)!;
     field = grid.buildFlowField(def.approachOutside,
+      plan.attackField === plan.guardField ? undefined : plan.attackField ?? undefined, maxDistance);
+  }
+  if (effective.kind === 'vehicle') {
+    // A moving car: re-aimed by the drift replan (<= 5 Hz) at the nearest walkable cell under it.
+    field = grid.buildFlowField([grid.nearestWalkable(targetPos)],
       plan.attackField === plan.guardField ? undefined : plan.attackField ?? undefined, maxDistance);
   }
   if (effective.kind === 'gate' && !gatePlanned && (target.kind !== 'gate' || changed || versionChanged || !field)) {

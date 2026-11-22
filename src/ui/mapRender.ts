@@ -1,10 +1,12 @@
 // Canvas2D drawing shared by the minimap and the world map. Fog (discovery) and territory (district status)
 // are two independent layers: fog decides what terrain is visible, territory only tints what is visible.
-import type { DistrictLayout, GameState, GroundKind, Vec2 } from '../core/types';
+import type { DistrictLayout, GameState, GroundKind, SenseKind, Vec2 } from '../core/types';
 import {
   STRONGHOLD_COLORS,
+  cueOpacity,
   districtName,
   makeProjection,
+  mapHumanVisibility,
   strongholdMapStatus,
   territoryStyle,
   worldToMap,
@@ -12,16 +14,25 @@ import {
   type MapProjection,
 } from './uiHelpers';
 
-const FOG_COLOR = '#0c0f13';
+/** Unexplored / outside-world colour (deep teal, matches the HUD backing). */
+export const FOG_COLOR = '#0f2a31';
 const GROUND_COLORS: Record<GroundKind, string> = {
-  road: '#4a5260',
-  sidewalk: '#7d7a70',
-  park: '#4b6a45',
-  plaza: '#8a8472',
-  lot: '#555b66',
-  compound: '#6a6759',
+  road: '#56606b',
+  sidewalk: '#9c9585',
+  park: '#5c9a4c',
+  plaza: '#b3a27d',
+  lot: '#636d77',
+  compound: '#7a7461',
+  sand: '#e6cf98',
+  court: '#4f8a8b',
 };
-const BUILDING_COLOR = '#b4a583';
+const BUILDING_COLOR = '#ead6a8';
+const CUE_RGB: Record<SenseKind, string> = {
+  gunshot: '255, 106, 61',
+  scream: '255, 179, 71',
+  siren: '91, 184, 255',
+  crowd: '155, 227, 90',
+};
 
 const tmp: Vec2 = { x: 0, z: 0 };
 const tmp2: Vec2 = { x: 0, z: 0 };
@@ -67,7 +78,7 @@ export function drawStaticLayer(
   }
   g.clip();
 
-  g.fillStyle = '#2b3038';
+  g.fillStyle = '#3b5a5c';
   g.fillRect(proj.offX, proj.offY, proj.width, proj.height);
   for (const p of layout.ground) {
     worldToMap(proj, p.rect.minX, p.rect.minZ, tmp);
@@ -96,7 +107,7 @@ export function drawStaticLayer(
 
   // District borders for discovered districts.
   g.lineWidth = 1;
-  g.strokeStyle = 'rgba(240, 242, 236, 0.28)';
+  g.strokeStyle = 'rgba(255, 244, 220, 0.42)';
   for (const d of layout.districts) {
     if (!state.districts[d.id]?.discovered) continue;
     worldToMap(proj, d.rect.minX, d.rect.minZ, tmp);
@@ -130,10 +141,10 @@ function strongholdIcon(g: CanvasRenderingContext2D, x: number, y: number, r: nu
   g.fillStyle = color;
   g.fill();
   g.lineWidth = 1.5;
-  g.strokeStyle = '#0c0f13';
+  g.strokeStyle = '#193F48';
   g.stroke();
   if (tier > 0 && r >= 7) {
-    g.fillStyle = '#0c0f13';
+    g.fillStyle = '#193F48';
     for (let i = 0; i < tier; i++) g.fillRect(x - (tier * 3) / 2 + i * 3 + 0.5, y - 1, 2, 2);
   }
 }
@@ -161,16 +172,16 @@ export function drawDynamicLayer(
     worldToMap(proj, n.pos.x, n.pos.z, tmp);
     g.beginPath();
     g.arc(tmp.x, tmp.z, 3.5 * s, 0, Math.PI * 2);
-    g.fillStyle = active ? '#c8f0a0' : '#58604f';
+    g.fillStyle = active ? '#86D957' : '#58704f';
     g.fill();
     g.lineWidth = 1.5;
-    g.strokeStyle = active ? '#4f6b3a' : '#2b3038';
+    g.strokeStyle = '#193F48';
     g.stroke();
     if (n.id === state.activeNestId) {
       g.beginPath();
       g.arc(tmp.x, tmp.z, 6 * s, 0, Math.PI * 2);
       g.lineWidth = 1;
-      g.strokeStyle = '#9be35a';
+      g.strokeStyle = '#b6f07f';
       g.stroke();
     }
   }
@@ -191,8 +202,42 @@ export function drawDynamicLayer(
       g.fillText(label, tmp.x, tmp.z + 8 * s);
     }
   }
+  // Sense cues (fuzzy blobs, never precise dots).
+  const cues = state.vision?.cues ?? [];
+  for (let i = 0; i < cues.length; i++) {
+    const cue = cues[i];
+    const alpha = cueOpacity(cue.intensity, cue.age, cue.ttl);
+    if (alpha <= 0.02) continue;
+    worldToMap(proj, cue.pos.x, cue.pos.z, tmp);
+    const r = (cue.kind === 'crowd' ? 16 : 12) * s;
+    const rgb = CUE_RGB[cue.kind] ?? '255, 179, 71';
+    const grad = g.createRadialGradient(tmp.x, tmp.z, 0, tmp.x, tmp.z, r);
+    grad.addColorStop(0, `rgba(${rgb}, ${(alpha * 0.48).toFixed(3)})`);
+    grad.addColorStop(0.55, `rgba(${rgb}, ${(alpha * 0.22).toFixed(3)})`);
+    grad.addColorStop(1, `rgba(${rgb}, 0)`);
+    g.fillStyle = grad;
+    g.beginPath();
+    g.arc(tmp.x, tmp.z, r, 0, Math.PI * 2);
+    g.fill();
+  }
+  // Humans (gated by AwarenessSystem: identified = full marker, seen = grey dot, others hidden).
+  for (let i = 0; i < state.guards.length; i++) {
+    const guard = state.guards[i];
+    const vis = mapHumanVisibility(state, guard);
+    if (vis === 'none') continue;
+    worldToMap(proj, guard.pos.x, guard.pos.z, tmp);
+    g.beginPath();
+    if (vis === 'seen') {
+      g.arc(tmp.x, tmp.z, Math.max(1.5, 1.4 * s), 0, Math.PI * 2);
+      g.fillStyle = '#9fb7b5';
+    } else {
+      g.arc(tmp.x, tmp.z, Math.max(2, 1.9 * s), 0, Math.PI * 2);
+      g.fillStyle = guard.role === 'civilian' ? '#FFD166' : '#FF8066';
+    }
+    g.fill();
+  }
   // Followers (cheap dots).
-  g.fillStyle = '#9be35a';
+  g.fillStyle = '#86D957';
   const dot = Math.max(1.5, 1.2 * s);
   for (let i = 0; i < state.zombies.length; i++) {
     const z = state.zombies[i];
@@ -204,7 +249,7 @@ export function drawDynamicLayer(
   if (opts.waypoint) {
     worldToMap(proj, opts.waypoint.x, opts.waypoint.z, tmp2);
     g.lineWidth = 2;
-    g.strokeStyle = '#ffd24a';
+    g.strokeStyle = '#FFD166';
     g.beginPath();
     g.arc(tmp2.x, tmp2.z, 5 * s, 0, Math.PI * 2);
     g.moveTo(tmp2.x - 8 * s, tmp2.z);
@@ -225,10 +270,10 @@ export function drawDynamicLayer(
   g.lineTo(0, 2.5 * s);
   g.lineTo(-4.5 * s, 5 * s);
   g.closePath();
-  g.fillStyle = l.alive ? '#f4f7f0' : '#8a3a30';
+  g.fillStyle = l.alive ? '#FFF4DC' : '#FF8066';
   g.fill();
-  g.lineWidth = 1.5;
-  g.strokeStyle = '#4f6b3a';
+  g.lineWidth = Math.max(1.5, 1.4 * s);
+  g.strokeStyle = '#193F48';
   g.stroke();
   g.restore();
 }

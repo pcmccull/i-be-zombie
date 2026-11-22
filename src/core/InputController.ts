@@ -1,5 +1,15 @@
 import * as THREE from 'three';
-import type { HordeCommand, SimInput, TargetRef, Vec2 } from './types';
+import type {
+  CompanionId,
+  CosmeticSlot,
+  HideoutId,
+  HordeCommand,
+  PlayerVehicleKind,
+  SimInput,
+  TargetRef,
+  TraitId,
+  Vec2,
+} from './types';
 import {
   abilitySlotForKey,
   hordeCommandForRightClick,
@@ -33,8 +43,8 @@ interface InputDependencies {
   occluders: THREE.Object3D[];
   onOrbit(dx: number, dy: number): void;
   onZoom(deltaY: number): void;
-  /** One-shot key actions (recenter, help, debug, mute, map, pause). Regroup/follow become horde commands here. */
-  onKey(action: Exclude<KeyAction, 'regroup' | 'follow'>): void;
+  /** One-shot key actions (recenter, help, debug, mute, map, pause). Follow (recall) becomes a horde command here. */
+  onKey(action: Exclude<KeyAction, 'follow'>): void;
   onFirstGesture(): void;
   canLock?: () => boolean;
   /** Pause menu / world map open: game keys and canvas orders are ignored. */
@@ -50,6 +60,8 @@ interface InputDependencies {
   inputLocked?: () => boolean;
   /** Key presses while inputLocked (e.g. Esc / Enter to skip the intro). */
   onLockedKey?: (code: string) => void;
+  /** EW vision gate: return false for targets that must not be hoverable/pickable (unidentified humans). */
+  targetAllowed?: (target: TargetRef) => boolean;
 }
 
 function isEditing(target: EventTarget | null): boolean {
@@ -69,6 +81,15 @@ export class InputController {
   private expectedUnlock = false;
   private lockLostAt = -1e9;
   private hover: TargetRef | null = null;
+  private buyVisionEdge = false;
+  private buyTraitEdge: TraitId | null = null;
+  private interactEdge = false;
+  private equipCosmeticEdge: { slot: CosmeticSlot; rewardId: string | null } | null = null;
+  private buyRewardEdge: string | null = null;
+  private toggleCompanionEdge: CompanionId | null = null;
+  private summonVehicleEdge: PlayerVehicleKind | null = null;
+  private fastTravelHideoutEdge: HideoutId | null = null;
+  private nestTeleportEdge: string | null = null;
   private pointerId: number | null = null;
   private pointerButton = -1;
   private downX = 0;
@@ -150,6 +171,19 @@ export class InputController {
     this.aimPoint = null;
   }
 
+  /** Nest panel "Upgrade eyesight": one-step SimInput.buyVision edge (UI click, so not dropped by modal/lock). */
+  queueBuyVision(): void { this.buyVisionEdge = true; }
+  /** Nest panel trait upgrade (Running / Attack Speed): one-step SimInput.buyTrait edge. */
+  queueBuyTrait(id: TraitId): void { this.buyTraitEdge = id; }
+  queueInteract(): void { if (!this.modal() && !this.locked()) this.interactEdge = true; }
+  queueEquipCosmetic(slot: CosmeticSlot, rewardId: string | null): void { this.equipCosmeticEdge = { slot, rewardId }; }
+  queueBuyReward(rewardId: string): void { this.buyRewardEdge = rewardId; }
+  queueToggleCompanion(id: CompanionId): void { this.toggleCompanionEdge = id; }
+  queueSummonVehicle(kind: PlayerVehicleKind): void { this.summonVehicleEdge = kind; }
+  queueFastTravelHideout(id: HideoutId): void { this.fastTravelHideoutEdge = id; }
+  /** Nest teleport map pick: one-step SimInput.nestTeleport edge (UI click, so not dropped by the modal map). */
+  queueNestTeleport(nestId: string): void { this.nestTeleportEdge = nestId; }
+
   queueAbility(slot: number): void {
     if (this.modal() || this.locked()) return;
     this.abilitySlot = slot;
@@ -188,11 +222,29 @@ export class InputController {
       attack: this.attackEdge, aimPoint: this.attackEdge ? this.aimPoint : null,
       hordeCommand: this.command, abilitySlot: this.abilitySlot, equip: null,
       buySlot: false,
+      buyVision: this.buyVisionEdge,
+      buyTrait: this.buyTraitEdge,
+      interact: this.interactEdge,
+      equipCosmetic: this.equipCosmeticEdge,
+      buyReward: this.buyRewardEdge,
+      toggleCompanion: this.toggleCompanionEdge,
+      summonVehicle: this.summonVehicleEdge,
+      fastTravelHideout: this.fastTravelHideoutEdge,
+      nestTeleport: this.nestTeleportEdge,
     };
+    this.nestTeleportEdge = null;
     this.attackEdge = false;
     this.aimPoint = null;
     this.command = null;
     this.abilitySlot = null;
+    this.buyVisionEdge = false;
+    this.buyTraitEdge = null;
+    this.interactEdge = false;
+    this.equipCosmeticEdge = null;
+    this.buyRewardEdge = null;
+    this.toggleCompanionEdge = null;
+    this.summonVehicleEdge = null;
+    this.fastTravelHideoutEdge = null;
     return input;
   }
 
@@ -228,7 +280,14 @@ export class InputController {
 
   clear(): void {
     this.keys.clear();
-    this.attackEdge = false;
+    this.attackEdge = false; this.buyVisionEdge = false; this.buyTraitEdge = null;
+    this.interactEdge = false;
+    this.equipCosmeticEdge = null;
+    this.buyRewardEdge = null;
+    this.toggleCompanionEdge = null;
+    this.summonVehicleEdge = null;
+    this.fastTravelHideoutEdge = null;
+    this.nestTeleportEdge = null;
     this.aimPoint = null;
     this.command = null;
     this.abilitySlot = null;
@@ -293,9 +352,9 @@ export class InputController {
     if (event.repeat || alreadyHeld) return;
     const slot = abilitySlotForKey(event.code);
     if (slot !== null) { this.abilitySlot = slot; return; }
+    if (event.code === 'KeyV') { this.interactEdge = true; return; }
     const action = keyActionFor(event.code);
-    if (action === 'regroup') this.command = { type: 'regroup' };
-    else if (action === 'follow') this.command = { type: 'follow' };
+    if (action === 'follow') this.command = { type: 'follow' };
     else if (action === 'pause') {
       // Browsers swallow the Esc that leaves pointer lock; if both arrive, do not toggle twice.
       if (performance.now() - this.lockLostAt > 250) this.deps.onKey('pause');
@@ -347,7 +406,7 @@ export class InputController {
     if (this.isLocked) {
       // Captured mouse: act immediately on the crosshair (no drag possible).
       const rect = this.canvas.getBoundingClientRect();
-      this.handleClick(event.button, rect.left + rect.width * 0.5, rect.top + rect.height * 0.5, event.shiftKey, event.ctrlKey);
+      this.handleClick(event.button, rect.left + rect.width * 0.5, rect.top + rect.height * 0.5, event.shiftKey, this.keys.has('KeyE'));
       return;
     }
     this.pointerId = event.pointerId;
@@ -393,13 +452,13 @@ export class InputController {
     this.lastY = event.clientY;
     if (!this.dragged && isClick(this.downX, this.downY, event.clientX, event.clientY) && !this.modal()) {
       // Free cursor: a click acts on whatever is under the pointer (point-and-click horde orders).
-      this.handleClick(this.pointerButton, event.clientX, event.clientY, event.shiftKey, event.ctrlKey);
+      this.handleClick(this.pointerButton, event.clientX, event.clientY, event.shiftKey, this.keys.has('KeyE'));
     }
     this.releasePointer();
   };
 
   /** LMB = Alpha attack (aimed at the ground point under the pointer/crosshair); RMB = horde command. */
-  private handleClick(button: number, x: number, y: number, shift: boolean, ctrl: boolean, touch = false): void {
+  private handleClick(button: number, x: number, y: number, shift: boolean, split: boolean, touch = false): void {
     if (button === 0) {
       this.attackEdge = true;
       this.aimPoint = this.groundAt(x, y);
@@ -421,7 +480,7 @@ export class InputController {
       ground = this.groundAt(x, y);
       if (ground && tapGroundBlocked(blockedAt, this.raycaster.ray.origin.distanceTo(this.groundPoint))) ground = null;
     }
-    const command = hordeCommandForRightClick({ target, ground, shift, ctrl });
+    const command = hordeCommandForRightClick({ target, ground, shift, split });
     if (command) this.command = command;
   }
 
@@ -543,7 +602,7 @@ export class InputController {
     this.candidates.length = 0;
     this.targets.length = 0;
     for (const object of this.deps.pickables()) {
-      if (object.userData.target) {
+      if (object.userData.target && (this.deps.targetAllowed?.(object.userData.target as TargetRef) ?? true)) {
         this.targets.push(object);
         this.candidates.push(object);
       }

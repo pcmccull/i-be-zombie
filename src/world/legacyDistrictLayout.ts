@@ -837,9 +837,13 @@ export function buildLegacyDistrictLayout(): DistrictLayout {
     districts: [{
       id: 'suburbs', name: 'Legacy District', rect: { ...bounds }, strongholdId: null,
       civilianBudget: 0, ambientBudget: 0, landmark: 'Recruitment-milestone test district',
+      threatTier: 1, archetype: 'suburban', cell: { col: 0, row: 0 },
       spawnPoints: spawnZones.filter(z => !z.heldBy).slice(0, 4).map(z => ({ x: (z.rect.minX + z.rect.maxX) / 2, z: (z.rect.minZ + z.rect.maxZ) / 2 })),
     }],
     strongholds: [],
     nests: [{ id: 'start', districtId: 'suburbs', pos: { ...playerStart }, strongholdId: null }],
+    playArea: { ...bounds },
+    boundaries: [],
+    backdrop: [],
   };
 }

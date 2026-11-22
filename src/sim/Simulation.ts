@@ -18,7 +18,19 @@ import { updateMomentum } from '../systems/MomentumSystem';
 import { updatePopulation } from '../systems/PopulationSystem';
 import { updateProgression } from '../systems/ProgressionSystem';
 import { updateConquest } from '../systems/ConquestSystem';
+import { updateHordeHealth } from '../systems/HordeHealthSystem';
 import { updateRespawn } from '../systems/RespawnSystem';
+import { updateAwareness } from '../systems/AwarenessSystem';
+import { updateResistance } from '../systems/ResistanceSystem';
+import { updateTraffic } from '../systems/TrafficSystem';
+import { updateShops } from '../systems/ShopSystem';
+import { updateCityDirector } from '../systems/CityActivityDirector';
+import { updateWorldInteractions } from '../systems/WorldInteractionSystem';
+import { updateRewards } from '../systems/RewardSystem';
+import { updateCompanions } from '../systems/CompanionSystem';
+import { updatePlayerVehicle } from '../systems/PlayerVehicleSystem';
+import { updateHideouts } from '../systems/HideoutSystem';
+import { updateNestTravel } from '../systems/NestTravelSystem';
 import { applySave } from '../persistence/saveSchema';
 import type { WorldSave } from '../core/types';
 import { createInitialState } from './createInitialState';
@@ -82,10 +94,13 @@ export class Simulation implements ISimulation {
       s.zombies.length = write;
       return;
     }
+    const stepEventStart = this.events.length;
     if (openWorld) updatePopulation(this.ctx, dt);
     applyHordeCommands(this.ctx, dt, input);
     updateProgression(this.ctx, dt, input);
-    if (s.phase === 'playing') updateLeader(this.ctx, dt, input);
+    if (s.phase === 'playing' && !s.nestTravel) updateLeader(this.ctx, dt, input);
+    // V priority: vehicle (mount/dismount) > shortcut > nest teleport map > nearest prop. No Alpha control mid-teleport.
+    let interactFree = !(openWorld && updatePlayerVehicle(this.ctx, dt, input));
     updateNavigation(this.ctx, dt, input);
     updateHorde(this.ctx, dt, input);
     updateHumanAI(this.ctx, dt, input);
@@ -93,7 +108,21 @@ export class Simulation implements ISimulation {
     updateConversion(this.ctx, dt, input);
     updateStructures(this.ctx, dt);
     updateMomentum(this.ctx, dt);
-    if (openWorld) { updateConquest(this.ctx, dt); updateRespawn(this.ctx, dt); } else checkVictory(this.ctx);
+    if (openWorld) { updateConquest(this.ctx, dt); updateHordeHealth(this.ctx, dt); updateRespawn(this.ctx, dt); }
+    else { updateHordeHealth(this.ctx, dt); checkVictory(this.ctx); }
+    // todos #10b/#12: citizen fight-back level, traffic (hits/rammers/bailing drivers), shop drinks. Open world only.
+    if (openWorld) { updateResistance(this.ctx); updateTraffic(this.ctx, dt); updateShops(this.ctx); }
+    // Living City & Expanded Rewards (docs/11_cityupgrade.md). Open world only.
+    if (openWorld) {
+      if (updateHideouts(this.ctx, input, interactFree)) interactFree = false;
+      if (updateNestTravel(this.ctx, dt, input, interactFree)) interactFree = false;
+      updateWorldInteractions(this.ctx, input, interactFree);
+      updateCompanions(this.ctx, dt, input);
+      updateCityDirector(this.ctx, dt, this.events.slice(stepEventStart));
+      updateRewards(this.ctx, input, this.events.slice(stepEventStart));
+    }
+    // EW: zombie vision/senses (open world only; legacy has no fog). Runs while respawning too, so identified collapses to the engaged set.
+    if (openWorld) updateAwareness(this.ctx, dt, this.events.slice(stepEventStart));
     tickVisualTimers(s.leader, dt);
     for (const z of s.zombies) tickVisualTimers(z, dt);
     for (const g of s.guards) tickVisualTimers(g, dt);

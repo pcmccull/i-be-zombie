@@ -1,8 +1,9 @@
 import * as THREE from 'three';
 import type { GameState } from '../core/types';
+import { isIdentified } from '../systems/AwarenessSystem';
 
 /**
- * Camera-facing overhead health bars for every living, damaged character (leader, horde zombies, humans).
+ * Camera-facing overhead health bars for every living, damaged character (horde zombies, humans).
  * Bars are hidden at full health. Two InstancedMeshes (background + fill) => 2 draw calls total.
  * The fill is anchored at the bar's left edge and scaled by hp/maxHp, colored by remaining health.
  */
@@ -27,6 +28,7 @@ export class HealthBars {
   private readonly matrix = new THREE.Matrix4();
   private readonly color = new THREE.Color();
   private count = 0;
+  private visionGating = false;
 
   constructor(private readonly maxBars = 260) {
     this.group.name = 'HealthBars';
@@ -57,20 +59,16 @@ export class HealthBars {
     this.group.add(this.bg, this.fill);
   }
 
+  /** Gate human health bars by AwarenessSystem.isIdentified (default false for legacy layout). */
+  setVisionGating(enabled: boolean): void {
+    this.visionGating = enabled;
+  }
+
   /** Call after the camera has been positioned for this frame. */
   update(state: GameState, alpha: number, camera: THREE.Camera): void {
     camera.getWorldQuaternion(this.camQuat);
     this.camRight.set(1, 0, 0).applyQuaternion(this.camQuat);
     this.count = 0;
-
-    const leader = state.leader;
-    if (leader.alive && leader.hp > 0 && leader.hp < leader.maxHp) {
-      this.addBar(
-        leader.prevPos.x + (leader.pos.x - leader.prevPos.x) * alpha, 2.35,
-        leader.prevPos.z + (leader.pos.z - leader.prevPos.z) * alpha,
-        leader.hp / leader.maxHp, 1.1, false,
-      );
-    }
 
     for (const z of state.zombies) {
       if (z.state === 'dead' || z.state === 'rising' || z.hp <= 0 || z.hp >= z.maxHp) continue;
@@ -83,6 +81,7 @@ export class HealthBars {
 
     for (const g of state.guards) {
       if (g.state === 'DEAD' || g.hp <= 0 || g.hp >= g.maxHp) continue;
+      if (this.visionGating && !isIdentified(state, g.id)) continue;
       this.addBar(
         g.prevPos.x + (g.pos.x - g.prevPos.x) * alpha, g.elevation + 2.2,
         g.prevPos.z + (g.pos.z - g.prevPos.z) * alpha,

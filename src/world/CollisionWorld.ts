@@ -3,18 +3,42 @@ import type { AABB, Collider, ColliderDef, Vec2 } from '../core/types';
 import { clamp } from '../utils/math';
 import { BALANCE } from '../config/balance';
 
-/** Low obstacles a packed horde can clamber over (cars, dumpsters, barriers — not trucks/walls). */
+/**
+ * Car-height obstacles zombies and the Alpha climb over: parked cars, dumpsters, barriers and short walls
+ * (<= `horde.crawlMaxHeight`). Never buildings, towers, gates, breakable structures or the world edge.
+ */
 export function isCrawlable(c: Collider): boolean {
-  return (c.kind === 'vehicle' || c.kind === 'prop') && c.height <= BALANCE.horde.crawlMaxHeight;
+  return (c.kind === 'vehicle' || c.kind === 'prop' || c.kind === 'wall') && c.height <= BALANCE.horde.crawlMaxHeight;
+}
+
+const climbProbe: AABB = { minX: 0, minZ: 0, maxX: 0, maxZ: 0 };
+
+/**
+ * Height of the climbable obstacle under a circle (car roof, wall top); 0 on open ground. Counts as soon as the body
+ * (not just its center) reaches the obstacle (todos #11), so a climber is up top before it is inside the bodywork;
+ * one merely sliding along the side (center = radius out) stays down.
+ */
+export function climbHeightAt(collision: ICollisionWorld, pos: Vec2, radius: number, scratch: Collider[]): number {
+  const inset = radius * 0.8;
+  climbProbe.minX = pos.x - inset; climbProbe.maxX = pos.x + inset;
+  climbProbe.minZ = pos.z - inset; climbProbe.maxZ = pos.z + inset;
+  let height = 0;
+  for (const c of collision.queryAABB(climbProbe, scratch)) {
+    if (c.blocksMove && isCrawlable(c) && pos.x > c.minX - inset && pos.x < c.maxX + inset &&
+        pos.z > c.minZ - inset && pos.z < c.maxZ + inset) height = Math.max(height, c.height);
+  }
+  return height;
 }
 
 export class CollisionWorld implements ICollisionWorld {
   readonly bounds: AABB;
   readonly colliders: readonly Collider[];
+  // 8 m keeps local perception/movement queries small even in the denser districts.
   private readonly cellSize = 8;
   private readonly cols: number;
   private readonly rows: number;
-  private readonly cells: number[][];
+  private readonly cellOffsets: Uint32Array;
+  private readonly cellIds: Uint32Array;
   private readonly seen: Uint32Array;
   private stamp = 0;
   private readonly scratch: Collider[] = [];
@@ -25,11 +49,22 @@ export class CollisionWorld implements ICollisionWorld {
     this.colliders = defs.map((def, id) => ({ ...def, id, enabled: true }));
     this.cols = Math.max(1, Math.ceil((bounds.maxX - bounds.minX) / this.cellSize));
     this.rows = Math.max(1, Math.ceil((bounds.maxZ - bounds.minZ) / this.cellSize));
-    this.cells = Array.from({ length: this.cols * this.rows }, () => []);
+    // Compressed buckets avoid allocating thousands of empty JS arrays at boot.
+    this.cellOffsets = new Uint32Array(this.cols * this.rows + 1);
     this.seen = new Uint32Array(defs.length);
     for (const c of this.colliders) {
-      for (let z = this.row(c.minZ); z <= this.row(c.maxZ); z++) {
-        for (let x = this.col(c.minX); x <= this.col(c.maxX); x++) this.cells[z * this.cols + x].push(c.id);
+      const minX = this.col(c.minX), maxX = this.col(c.maxX), maxZ = this.row(c.maxZ);
+      for (let z = this.row(c.minZ); z <= maxZ; z++) {
+        for (let x = minX; x <= maxX; x++) this.cellOffsets[z * this.cols + x + 1]++;
+      }
+    }
+    for (let i = 1; i < this.cellOffsets.length; i++) this.cellOffsets[i] += this.cellOffsets[i - 1];
+    this.cellIds = new Uint32Array(this.cellOffsets[this.cellOffsets.length - 1]);
+    const cursors = this.cellOffsets.slice(0, -1);
+    for (const c of this.colliders) {
+      const minX = this.col(c.minX), maxX = this.col(c.maxX), maxZ = this.row(c.maxZ);
+      for (let z = this.row(c.minZ); z <= maxZ; z++) {
+        for (let x = minX; x <= maxX; x++) this.cellIds[cursors[z * this.cols + x]++] = c.id;
       }
     }
   }
@@ -53,16 +88,13 @@ export class CollisionWorld implements ICollisionWorld {
 
   queryAABB(box: AABB, out: Collider[]): Collider[] {
     out.length = 0;
-    this.stamp = (this.stamp + 1) >>> 0;
-    if (this.stamp === 0) {
-      this.seen.fill(0);
-      this.stamp = 1;
-    }
-    for (let z = this.row(box.minZ); z <= this.row(box.maxZ); z++) {
-      for (let x = this.col(box.minX); x <= this.col(box.maxX); x++) {
-        const cell = this.cells[z * this.cols + x];
-        for (let i = 0; i < cell.length; i++) {
-          const id = cell[i];
+    this.nextStamp();
+    const minX = this.col(box.minX), maxX = this.col(box.maxX), maxZ = this.row(box.maxZ);
+    for (let z = this.row(box.minZ); z <= maxZ; z++) {
+      for (let x = minX; x <= maxX; x++) {
+        const cell = z * this.cols + x;
+        for (let i = this.cellOffsets[cell], end = this.cellOffsets[cell + 1]; i < end; i++) {
+          const id = this.cellIds[i];
           if (this.seen[id] === this.stamp) continue;
           this.seen[id] = this.stamp;
           const c = this.colliders[id];
@@ -72,6 +104,14 @@ export class CollisionWorld implements ICollisionWorld {
       }
     }
     return out;
+  }
+
+  private nextStamp(): void {
+    this.stamp = (this.stamp + 1) >>> 0;
+    if (this.stamp === 0) {
+      this.seen.fill(0);
+      this.stamp = 1;
+    }
   }
 
   private circleCandidates(p: Vec2, radius: number): Collider[] {
@@ -150,18 +190,42 @@ export class CollisionWorld implements ICollisionWorld {
   }
 
   segmentBlocked(a: Vec2, b: Vec2, opts?: SegmentOptions): boolean {
-    this.box.minX = Math.min(a.x, b.x);
-    this.box.maxX = Math.max(a.x, b.x);
-    this.box.minZ = Math.min(a.z, b.z);
-    this.box.maxZ = Math.max(a.z, b.z);
-    const candidates = this.queryAABB(this.box, this.scratch);
+    this.nextStamp();
+    const dx = b.x - a.x, dz = b.z - a.z;
+    const sx = Math.sign(dx), sz = Math.sign(dz);
+    let x = this.col(a.x), z = this.row(a.z);
+    // The outer buckets contain off-world colliders too, just like queryAABB.
+    // Traverse only intersected buckets rather than the segment's entire AABB.
+    let budget = this.cols + this.rows + 1;
+    while (budget-- > 0) {
+      if (this.segmentCellBlocked(z * this.cols + x, a, b, opts)) return true;
+      const tx = (sx > 0 ? x + 1 < this.cols : sx < 0 && x > 0)
+        ? (this.bounds.minX + (sx > 0 ? x + 1 : x) * this.cellSize - a.x) / dx : Infinity;
+      const tz = (sz > 0 ? z + 1 < this.rows : sz < 0 && z > 0)
+        ? (this.bounds.minZ + (sz > 0 ? z + 1 : z) * this.cellSize - a.z) / dz : Infinity;
+      if (Math.min(tx, tz) > 1) break;
+      if (tx === tz) {
+        if (this.segmentCellBlocked(z * this.cols + x + sx, a, b, opts) ||
+            this.segmentCellBlocked((z + sz) * this.cols + x, a, b, opts)) return true;
+        x += sx; z += sz;
+      } else if (tx < tz) x += sx;
+      else z += sz;
+    }
+    return false;
+  }
+
+  private segmentCellBlocked(cell: number, a: Vec2, b: Vec2, opts?: SegmentOptions): boolean {
     const dx = b.x - a.x;
     const dz = b.z - a.z;
     const move = opts?.mode === 'move';
     const h0 = opts?.fromHeight ?? 1.5;
     const dh = (opts?.toHeight ?? 1.2) - h0;
-    for (let i = 0; i < candidates.length; i++) {
-      const c = candidates[i];
+    for (let i = this.cellOffsets[cell], end = this.cellOffsets[cell + 1]; i < end; i++) {
+      const id = this.cellIds[i];
+      if (this.seen[id] === this.stamp) continue;
+      this.seen[id] = this.stamp;
+      const c = this.colliders[id];
+      if (!c.enabled) continue;
       if (!(move ? c.blocksMove : c.blocksSight) || opts?.ignoreIds?.includes(c.id)) continue;
       let t0 = 0;
       let t1 = 1;

@@ -1,9 +1,20 @@
 // Touch overlay (todos #7): a left virtual stick plus action buttons. DOM only, callbacks only — it never touches
 // game state. Game creates it, enables it on touch devices, polls readStick() through InputController and feeds
 // setSlots() with the owned ability slots. ARCHITECTURE.md §TD-2.
+import './hudTheme.css';
 import './touch.css';
 import { BALANCE } from '../config/balance';
+import { ABILITIES } from '../content/abilities';
 import { clampKnob, createStickOutput, stickFromOffset, type StickOutput } from '../core/touchMath';
+import type { AbilityId } from '../core/types';
+import { abilityIcon, icon } from './hudIcons';
+
+function slotAbilityId(name: string): AbilityId | null {
+  for (const id of Object.keys(ABILITIES) as AbilityId[]) {
+    if (ABILITIES[id].name === name) return id;
+  }
+  return null;
+}
 
 export interface TouchSlotView {
   key: string;
@@ -15,7 +26,7 @@ export interface TouchSlotView {
 }
 
 type Cb = () => void;
-type ButtonId = 'attack' | 'regroup' | 'follow' | 'map' | 'pause' | 'recenter';
+type ButtonId = 'attack' | 'follow' | 'map' | 'pause' | 'recenter' | 'use';
 
 export class TouchControls {
   private readonly el: HTMLDivElement;
@@ -23,7 +34,7 @@ export class TouchControls {
   private readonly knobEl: HTMLDivElement;
   private readonly slotsEl: HTMLDivElement;
   private readonly listeners = new AbortController();
-  private readonly cbs: Record<ButtonId, Cb[]> = { attack: [], regroup: [], follow: [], map: [], pause: [], recenter: [] };
+  private readonly cbs: Record<ButtonId, Cb[]> = { attack: [], follow: [], map: [], pause: [], recenter: [], use: [] };
   private readonly abilityCbs: ((slot: number) => void)[] = [];
   private readonly stick = createStickOutput();
   private readonly knob = { x: 0, y: 0 };
@@ -41,17 +52,17 @@ export class TouchControls {
     this.el.innerHTML = `
       <div class="ibz-touch-stick" data-ref="stick"><div class="ibz-touch-knob" data-ref="knob"></div></div>
       <div class="ibz-touch-top">
-        <button type="button" class="ibz-touch-btn is-small" data-btn="pause" aria-label="Pause">II</button>
-        <button type="button" class="ibz-touch-btn is-small" data-btn="map" aria-label="Map">MAP</button>
-        <button type="button" class="ibz-touch-btn is-small" data-btn="recenter" aria-label="Recenter camera">CAM</button>
+        <button type="button" class="ibz-touch-btn is-small" data-btn="pause" aria-label="Pause">${icon('pause', 's')}</button>
+        <button type="button" class="ibz-touch-btn is-small" data-btn="map" aria-label="Map">${icon('map', 's')}</button>
+        <button type="button" class="ibz-touch-btn is-small" data-btn="recenter" aria-label="Recenter camera">${icon('camera', 's')}</button>
       </div>
       <div class="ibz-touch-actions">
         <div class="ibz-touch-slots" data-ref="slots"></div>
         <div class="ibz-touch-row">
-          <button type="button" class="ibz-touch-btn" data-btn="follow" aria-label="Horde follow">FOLLOW</button>
-          <button type="button" class="ibz-touch-btn" data-btn="regroup" aria-label="Rally horde">RALLY</button>
+          <button type="button" class="ibz-touch-btn" data-btn="follow" aria-label="Horde follow">${icon('recall', 's')}<span>FOLLOW</span></button>
+          <button type="button" class="ibz-touch-btn is-use" data-btn="use" aria-label="Use (vehicle, drain, prop)" hidden>${icon('bolt', 's')}<span>USE</span></button>
         </div>
-        <button type="button" class="ibz-touch-btn is-attack" data-btn="attack" aria-label="Attack">ATTACK</button>
+        <button type="button" class="ibz-touch-btn is-attack" data-btn="attack" aria-label="Attack">${icon('bite', 'l')}<span>ATTACK</span></button>
       </div>`;
     this.stickEl = this.el.querySelector('[data-ref="stick"]') as HTMLDivElement;
     this.knobEl = this.el.querySelector('[data-ref="knob"]') as HTMLDivElement;
@@ -105,8 +116,14 @@ export class TouchControls {
   }
 
   onAttack(cb: Cb): void { this.cbs.attack.push(cb); }
-  onRegroup(cb: Cb): void { this.cbs.regroup.push(cb); }
   onFollow(cb: Cb): void { this.cbs.follow.push(cb); }
+  /** docs/11_cityupgrade.md §6: touch twin of V (mount, storm drain, props). */
+  onUse(cb: Cb): void { this.cbs.use.push(cb); }
+  /** Show USE only when V would do something here (hudModel.interactPrompt). */
+  setUseVisible(v: boolean): void {
+    const b = this.el.querySelector('[data-btn="use"]') as HTMLButtonElement | null;
+    if (b && b.hidden === v) b.hidden = !v;
+  }
   onMap(cb: Cb): void { this.cbs.map.push(cb); }
   onPause(cb: Cb): void { this.cbs.pause.push(cb); }
   onRecenter(cb: Cb): void { this.cbs.recenter.push(cb); }
@@ -127,7 +144,7 @@ export class TouchControls {
         b.type = 'button';
         b.className = 'ibz-touch-btn is-slot';
         b.dataset.slot = String(i);
-        b.innerHTML = `<span class="ibz-touch-sweep"></span><span class="ibz-touch-key">${v.key}</span><span class="ibz-touch-name"></span>`;
+        b.innerHTML = `<span class="ibz-touch-sweep"></span><span class="ibz-touch-key">${v.key}</span><span class="ibz-touch-ico">${icon(abilityIcon(slotAbilityId(v.name)), 's')}</span><span class="ibz-touch-name"></span>`;
         (b.querySelector('.ibz-touch-name') as HTMLSpanElement).textContent = v.name;
         this.slotsEl.appendChild(b);
         return b;

@@ -15,7 +15,7 @@ const layout = buildDistrictLayout();
 const make = (): Simulation => new Simulation(layout, 7);
 
 describe('F1 regressions', () => {
-  it('conversion respects the open-world cap (40 followers + pending conversions never exceed 40)', () => {
+  it('conversions join past the open-world cap; followerCount stays consistent', () => {
     const sim = make(), s = sim.state;
     s.zombies = []; s.followerCount = 0;
     for (let i = 0; i < BALANCE.openWorld.maxFollowers; i++) {
@@ -28,10 +28,9 @@ describe('F1 regressions', () => {
     }
     for (let i = 0; i < 400; i++) {
       sim.step(dt, emptyInput());
-      const live = s.zombies.filter(z => z.state === 'follower' || z.state === 'rising').length;
-      expect(live).toBeLessThanOrEqual(BALANCE.openWorld.maxFollowers);
-      expect(s.followerCount).toBeLessThanOrEqual(BALANCE.openWorld.maxFollowers);
+      expect(s.followerCount).toBe(s.zombies.filter(z => z.state === 'follower').length);
     }
+    expect(s.followerCount).toBeGreaterThan(BALANCE.openWorld.maxFollowers);
   });
 
   it('a dead Alpha / non-playing phase cannot activate or equip abilities', () => {
@@ -39,13 +38,13 @@ describe('F1 regressions', () => {
     unlockAbility(sim.ctx, 'horde_frenzy');
     s.progression.biomass = 500;
     expect(canActivate(s, 'horde_frenzy')).toBeNull();
-    s.leader.alive = false; s.leader.hp = 0; s.phase = 'respawning';
+    s.leader.alive = false; s.phase = 'respawning';
     expect(canActivate(s, 'horde_frenzy')).toBe('locked');
     expect(activateAbility(sim.ctx, 'horde_frenzy')).toBe(false);
     expect(s.progression.biomass).toBe(500);
     expect(s.progression.cooldowns.horde_frenzy ?? 0).toBe(0);
     expect(equipAbility(sim.ctx, 1, 'horde_frenzy')).toBe(false);
-    s.leader.alive = true; s.leader.hp = s.leader.maxHp;
+    s.leader.alive = true;
     expect(canActivate(s, 'horde_frenzy')).toBe('locked'); // phase still respawning
   });
 

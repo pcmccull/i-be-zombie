@@ -6,15 +6,20 @@ import {
   abilitySlotView,
   toastDedupe,
   buildDebugLines,
+  cueOpacity,
+  cueScreenAngle,
   equippableAbilities,
+  eyesightPanelView,
   followerCap,
   makeProjection,
+  mapHumanVisibility,
   mapToWorld,
   nearbyEquipNest,
   nextSlotPrice,
   visibleSlotCount,
   selectObjectiveStronghold,
   staticLayerKey,
+  threatPipCount,
   toastForEvent,
   worldToMap,
 } from '../src/ui/uiHelpers';
@@ -103,6 +108,10 @@ describe('nest proximity, caps, toasts, debug lines', () => {
   it('finds the start nest only within the equip radius', () => {
     const { layout, state } = world();
     const nest = layout.nests.find((n) => n.strongholdId === null)!;
+    state.leader.pos.x = nest.pos.x;
+    state.leader.pos.z = nest.pos.z;
+    expect(nearbyEquipNest(state, layout)).toBeNull(); // the walk-in nest is dormant until claimed
+    state.claimedNests.push(nest.id);
     state.leader.pos.x = nest.pos.x + BALANCE.nest.equipRadius - 1;
     state.leader.pos.z = nest.pos.z;
     expect(nearbyEquipNest(state, layout)?.id).toBe(nest.id);
@@ -121,6 +130,19 @@ describe('nest proximity, caps, toasts, debug lines', () => {
     expect(followerCap(null)).toBe(BALANCE.horde.maxFollowers);
   });
 
+  it('adds followersPerNest to the horde cap for every unlocked nest', () => {
+    const { layout, state } = world();
+    const base = BALANCE.openWorld.maxFollowers, per = BALANCE.openWorld.followersPerNest;
+    expect(per).toBe(10);
+    expect(followerCap(layout, state)).toBe(base); // start nest does not count
+    const nested = layout.nests.filter((n) => n.strongholdId !== null);
+    expect(nested.length).toBeGreaterThanOrEqual(2);
+    state.strongholds.find((s) => s.id === nested[0].strongholdId)!.captured = true;
+    expect(followerCap(layout, state)).toBe(base + per);
+    state.strongholds.find((s) => s.id === nested[1].strongholdId)!.captured = true;
+    expect(followerCap(layout, state)).toBe(base + 2 * per);
+  });
+
   it('builds toast text for open-world events', () => {
     expect(toastForEvent({ type: 'abilityUnlocked', abilityId: 'alpha_claws', slot: 0 })?.text).toBe(
       'New mutation: Alpha Claws - equipped in slot Q',
@@ -130,7 +152,7 @@ describe('nest proximity, caps, toasts, debug lines', () => {
       toastForEvent({ type: 'strongholdCaptured', strongholdId: 'police_station', districtId: 'police', unlock: 'alpha_claws', biomass: 30 })?.text,
     ).toContain('Alpha Claws');
     expect(toastForEvent({ type: 'abilityDenied', abilityId: 'horde_frenzy', reason: 'cooldown' })).toBeNull();
-    expect(toastForEvent({ type: 'abilityDenied', abilityId: 'brute_evolution', reason: 'biomass' })?.text).toContain('biomass');
+    expect(toastForEvent({ type: 'abilityDenied', abilityId: 'brute_evolution', reason: 'biomass' })?.text).toContain('brains');
     expect(toastForEvent({ type: 'autosave', reason: 'capture' })).toBeNull();
   });
 
@@ -169,7 +191,7 @@ describe('TD-T004 slot visibility and toasts', () => {
     expect(nextSlotPrice(mk(4))).toBeNull();
   });
   it('toast text', () => {
-    expect(toastForEvent({ type: 'slotPurchased', slot: 1, cost: 40 })?.text).toBe('Ability slot E unlocked');
+    expect(toastForEvent({ type: 'slotPurchased', slot: 1, cost: 40 })?.text).toBe('Ability slot T unlocked');
     expect(toastForEvent({ type: 'abilityDenied', abilityId: null, reason: 'maxSlots' })?.text).toBe('All ability slots owned');
     const st = mk(1);
     st.progression.equipped[0] = 'rush';
@@ -187,5 +209,105 @@ describe('TD-T004 slot visibility and toasts', () => {
     expect(abilitySlotView(st, 0).kind).toBe('empty');
     st.progression.equipped[0] = 'rush';
     expect(abilitySlotView(st, 0).abilityId).toBe('rush');
+  });
+});
+
+describe('EW-T009 senses, vision panel, map gating, threat pips', () => {
+  it('computes cue screen angle for front, right, left, behind relative to cameraYaw', () => {
+    const leader = { x: 10, z: 20 };
+    // cameraYaw = 0 looks toward +Z; screen-right is -X
+    expect(cueScreenAngle(leader, { x: 10, z: 40 }, 0)).toBeCloseTo(0);
+    expect(cueScreenAngle(leader, { x: 0, z: 20 }, 0)).toBeCloseTo(Math.PI / 2);
+    expect(cueScreenAngle(leader, { x: 20, z: 20 }, 0)).toBeCloseTo(-Math.PI / 2);
+    expect(Math.abs(cueScreenAngle(leader, { x: 10, z: 0 }, 0))).toBeCloseTo(Math.PI);
+
+    // cameraYaw = PI/2 looks toward +X; screen-right is +Z
+    expect(cueScreenAngle(leader, { x: 30, z: 20 }, Math.PI / 2)).toBeCloseTo(0);
+    expect(cueScreenAngle(leader, { x: 10, z: 40 }, Math.PI / 2)).toBeCloseTo(Math.PI / 2);
+    expect(cueScreenAngle(leader, { x: 10, z: 0 }, Math.PI / 2)).toBeCloseTo(-Math.PI / 2);
+    expect(Math.abs(cueScreenAngle(leader, { x: -10, z: 20 }, Math.PI / 2))).toBeCloseTo(Math.PI);
+  });
+
+  it('scales cue opacity by intensity and remaining lifetime', () => {
+    expect(cueOpacity(1, 0, 2.5)).toBeCloseTo(1);
+    expect(cueOpacity(0.8, 0, 2)).toBeCloseTo(0.8);
+    expect(cueOpacity(0.8, 1, 2)).toBeCloseTo(0.4);
+    expect(cueOpacity(0.8, 2, 2)).toBe(0);
+    expect(cueOpacity(0.8, 3, 2)).toBe(0);
+    expect(cueOpacity(0, 0, 2)).toBe(0);
+    expect(cueOpacity(0.5, 0, 0)).toBe(0);
+  });
+
+  it('gates map human visibility to identified, seen, or none', () => {
+    const { state } = world();
+    const g0 = state.guards[0];
+    const g1 = state.guards[1];
+    const g2 = state.guards[2];
+    state.vision.identified = [g0.id].sort((a, b) => a - b);
+    state.vision.seen = [g1.id].sort((a, b) => a - b);
+
+    expect(mapHumanVisibility(state, g0)).toBe('identified');
+    expect(mapHumanVisibility(state, g1)).toBe('seen');
+    expect(mapHumanVisibility(state, g2)).toBe('none');
+
+    g0.hp = 0;
+    g0.state = 'DEAD';
+    expect(mapHumanVisibility(state, g0)).toBe('none');
+  });
+
+  it('clamps threat pip count to 1..5', () => {
+    expect(threatPipCount(1)).toBe(1);
+    expect(threatPipCount(3)).toBe(3);
+    expect(threatPipCount(5)).toBe(5);
+  });
+
+  it('builds eyesight panel view model with cost, affordable, and MAX', () => {
+    const { state } = world();
+    state.progression.visionTier = 1;
+    state.progression.biomass = 10;
+    const t1 = eyesightPanelView(state);
+    expect(t1.tier).toBe(1);
+    expect(t1.name).toBe('Rotten Eyes');
+    expect(t1.clearRadius).toBe(BALANCE.vision.tiers[0].clearRadius);
+    expect(t1.nextCost).toBe(BALANCE.vision.tierCosts[1]);
+    expect(t1.nextTierName).toBe('Predator Sight');
+    expect(t1.affordable).toBe(false);
+
+    state.progression.biomass = BALANCE.vision.tierCosts[1];
+    expect(eyesightPanelView(state).affordable).toBe(true);
+
+    state.progression.visionTier = 4;
+    const t4 = eyesightPanelView(state);
+    expect(t4.name).toBe('Apex Vision');
+    expect(t4.nextCost).toBeNull();
+    expect(t4.nextTierName).toBeNull();
+    expect(t4.affordable).toBe(false);
+    expect(t4.detects.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('formats visionUpgraded and maxVision toasts', () => {
+    expect(toastForEvent({ type: 'visionUpgraded', tier: 2, cost: 20 })).toEqual({
+      text: 'Eyes adjust \u2014 Predator Sight',
+      kind: 'good',
+    });
+    expect(toastForEvent({ type: 'abilityDenied', abilityId: null, reason: 'maxVision' })).toEqual({
+      text: 'Eyesight already at max',
+      kind: 'warn',
+    });
+  });
+});
+
+describe('warning cues (gunshot / scream)', () => {
+  it('are always clearly visible while alive and fade only with age', async () => {
+    const { cueOpacity, isWarningCue, WARNING_CUE_MIN_OPACITY } = await import('../src/ui/uiHelpers');
+    expect(isWarningCue('gunshot')).toBe(true);
+    expect(isWarningCue('scream')).toBe(true);
+    expect(isWarningCue('siren')).toBe(false);
+    expect(isWarningCue('crowd')).toBe(false);
+    expect(cueOpacity(0, 0, 2.5, WARNING_CUE_MIN_OPACITY)).toBeCloseTo(WARNING_CUE_MIN_OPACITY);
+    expect(cueOpacity(0.1, 0, 2.5, WARNING_CUE_MIN_OPACITY)).toBeCloseTo(WARNING_CUE_MIN_OPACITY);
+    expect(cueOpacity(1, 0, 2.5, WARNING_CUE_MIN_OPACITY)).toBeCloseTo(1);
+    expect(cueOpacity(0, 2.5, 2.5, WARNING_CUE_MIN_OPACITY)).toBe(0);
+    expect(cueOpacity(0, 0, 2.5)).toBe(0);
   });
 });

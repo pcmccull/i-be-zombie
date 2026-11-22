@@ -161,7 +161,7 @@ describe('todo 3: zombies climb watchtowers', () => {
   });
 });
 
-describe('todo 4: packed zombies crawl over cars', () => {
+describe('todo 4: zombies climb over cars', () => {
   function carScenario(count: number) {
     const sim = fixture();
     const car = sim.ctx.collision.colliders.find(c => c.kind === 'vehicle' && isCrawlable(c) &&
@@ -192,12 +192,15 @@ describe('todo 4: packed zombies crawl over cars', () => {
     expect(zs.filter(z => z.pos.x > car.maxX).length).toBeGreaterThanOrEqual(6);
   });
 
-  it('a lone zombie cannot crawl over a car', () => {
-    const { sim, zs } = carScenario(1);
+  it('a lone zombie climbs over a car too (no pack needed)', () => {
+    const { sim, car, zs } = carScenario(1);
+    let maxElevation = 0;
     for (let i = 0; i < 240; i++) {
       sim.step(dt, emptyInput());
-      expect(zs[0].elevation).toBe(0);
-      expect(sim.ctx.collision.isBlocked(zs[0].pos, zs[0].radius)).toBe(false);
+      maxElevation = Math.max(maxElevation, zs[0].elevation);
+      expect(sim.ctx.collision.isBlocked(zs[0].pos, zs[0].radius, isCrawlable)).toBe(false);
     }
+    expect(maxElevation).toBeGreaterThan(0.5);
+    expect(zs[0].pos.x).toBeGreaterThan(car.maxX);
   });
 });

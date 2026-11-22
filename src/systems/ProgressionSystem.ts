@@ -2,17 +2,18 @@
 import { BALANCE } from '../config/balance';
 import { ABILITIES } from '../content/abilities';
 import type { AbilityDenyReason, SimContext } from '../core/contracts';
-import type { AbilityDef, AbilityId, GameEvent, GameState, SimInput, ZombieAgent } from '../core/types';
+import type { AbilityDef, AbilityId, GameEvent, GameState, SimInput, TraitId, Vec2, ZombieAgent } from '../core/types';
 import { evolveToBrute } from '../entities/Zombie';
 import { isNestActive } from './ConquestSystem';
 
 type BiomassReason = Extract<GameEvent, { type: 'biomassGain' }>['reason'];
 
-export function addBiomass(ctx: SimContext, amount: number, reason: BiomassReason): void {
+export function addBiomass(ctx: SimContext, amount: number, reason: BiomassReason, pos?: Vec2): void {
   if (!(amount > 0) || !Number.isFinite(amount)) return;
   const p = ctx.state.progression;
   p.biomass += amount;
-  ctx.emit({ type: 'biomassGain', amount, total: p.biomass, reason });
+  ctx.emit(pos ? { type: 'biomassGain', amount, total: p.biomass, reason, pos: { x: pos.x, z: pos.z } }
+    : { type: 'biomassGain', amount, total: p.biomass, reason });
 }
 
 function abilityDef(id: AbilityId): AbilityDef | undefined {
@@ -39,7 +40,7 @@ export function isEquipped(state: GameState, id: AbilityId): boolean {
 
 function leaderAtActiveNest(ctx: SimContext): boolean {
   const leader = ctx.state.leader;
-  return leader.alive && leader.hp > 0 && ctx.layout.nests.some(n =>
+  return leader.alive && ctx.layout.nests.some(n =>
     (leader.pos.x - n.pos.x) ** 2 + (leader.pos.z - n.pos.z) ** 2 <= BALANCE.nest.equipRadius ** 2 &&
     isNestActive(ctx, n.id));
 }
@@ -57,7 +58,7 @@ function livingBrutes(state: GameState): number {
 export function canActivate(state: GameState, id: AbilityId): AbilityDenyReason | null {
   const def = abilityDef(id);
   if (!def) return 'empty';
-  if (!state.leader.alive || state.leader.hp <= 0 || state.phase !== 'playing') return 'locked';
+  if (!state.leader.alive || state.phase !== 'playing') return 'locked';
   if (!isUnlocked(state, id) || !isEquipped(state, id)) return 'locked';
   // Pounce is registry data only in this milestone; never spend for an absent effect.
   if (!def.activatable || (id !== 'rush' && id !== 'horde_frenzy' && id !== 'brute_evolution')) return 'locked';
@@ -150,7 +151,7 @@ export function buySlot(ctx: SimContext): boolean {
     ctx.emit({ type: 'abilityDenied', abilityId: null, reason });
     return false;
   };
-  if (state.phase !== 'playing' || !state.leader.alive || state.leader.hp <= 0) return deny('locked');
+  if (state.phase !== 'playing' || !state.leader.alive) return deny('locked');
   const owned = ownedSlotCount(state);
   if (owned < 1) return deny('locked');
   if (owned >= BALANCE.progression.slots) return deny('maxSlots');
@@ -163,6 +164,68 @@ export function buySlot(ctx: SimContext): boolean {
   ctx.emit({ type: 'slotPurchased', slot: owned, cost });
   ctx.emit({ type: 'autosave', reason: 'equip' });
   return true;
+}
+
+export function visionCost(state: GameState): number | null {
+  const tier = state.progression.visionTier;
+  if (!(tier >= 1) || tier >= 4) return null;
+  return BALANCE.vision.tierCosts[tier] ?? null;
+}
+
+export function buyVision(ctx: SimContext): boolean {
+  const { state } = ctx, p = state.progression;
+  const deny = (reason: AbilityDenyReason): false => {
+    ctx.emit({ type: 'abilityDenied', abilityId: null, reason });
+    return false;
+  };
+  if (state.phase !== 'playing' || !state.leader.alive) return deny('locked');
+  const cost = visionCost(state);
+  if (cost === null) return deny('maxVision');
+  if (!leaderAtActiveNest(ctx)) return deny('notAtNest');
+  if (p.biomass < cost) return deny('biomass');
+  p.biomass = Math.max(0, p.biomass - cost);
+  p.visionTier = (p.visionTier + 1) as typeof p.visionTier;
+  ctx.emit({ type: 'visionUpgraded', tier: p.visionTier, cost });
+  ctx.emit({ type: 'autosave', reason: 'equip' });
+  return true;
+}
+
+function traitLevel(state: GameState, id: TraitId): number {
+  const raw = id === 'speed' ? state.progression.speedLevel : state.progression.attackLevel;
+  return Number.isFinite(raw) && raw > 0 ? Math.min(Math.floor(raw), BALANCE.traits[id].costs.length) : 0;
+}
+
+/** Price of the next level of a nest trait; null at max level. Costs rise every level. */
+export function traitCost(state: GameState, id: TraitId): number | null {
+  return BALANCE.traits[id].costs[traitLevel(state, id)] ?? null;
+}
+
+export function buyTrait(ctx: SimContext, id: TraitId): boolean {
+  const { state } = ctx, p = state.progression;
+  const deny = (reason: AbilityDenyReason): false => {
+    ctx.emit({ type: 'abilityDenied', abilityId: null, reason });
+    return false;
+  };
+  if (state.phase !== 'playing' || !state.leader.alive) return deny('locked');
+  const cost = traitCost(state, id);
+  if (cost === null) return deny('maxTrait');
+  if (!leaderAtActiveNest(ctx)) return deny('notAtNest');
+  if (p.biomass < cost) return deny('biomass');
+  p.biomass = Math.max(0, p.biomass - cost);
+  const level = traitLevel(state, id) + 1;
+  if (id === 'speed') p.speedLevel = level; else p.attackLevel = level;
+  ctx.emit({ type: 'traitUpgraded', trait: id, level, cost });
+  ctx.emit({ type: 'autosave', reason: 'equip' });
+  return true;
+}
+
+/** Running Speed trait: scales Alpha walk/sprint and horde movement. */
+export function traitSpeedMultiplier(state: GameState): number {
+  return 1 + traitLevel(state, 'speed') * BALANCE.traits.speed.perLevel;
+}
+/** Attack Speed trait: divides Alpha windup/recovery and follower swing cooldown. */
+export function traitAttackRateMultiplier(state: GameState): number {
+  return 1 + traitLevel(state, 'attack') * BALANCE.traits.attack.perLevel;
 }
 
 export function updateProgression(ctx: SimContext, dt: number, input: SimInput): void {
@@ -183,6 +246,8 @@ export function updateProgression(ctx: SimContext, dt: number, input: SimInput):
   }
   if (input.equip) equipAbility(ctx, input.equip.slot, input.equip.ability);
   if (input.buySlot) buySlot(ctx);
+  if (input.buyVision) buyVision(ctx);
+  if (input.buyTrait === 'speed' || input.buyTrait === 'attack') buyTrait(ctx, input.buyTrait);
 }
 export function isFrenzyActive(state: GameState): boolean { return state.progression.frenzyTimeLeft > 0; }
 export function hordeSpeedMultiplier(state: GameState): number { return isFrenzyActive(state) ? BALANCE.frenzy.speedMultiplier : 1; }

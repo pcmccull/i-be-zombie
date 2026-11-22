@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { AABB, ColliderDef, Vec2 } from '../src/core/types';
 import { dist, expandAabb, pointInAabb } from '../src/utils/math';
-import { mulberry32, randRange } from '../src/utils/rng';
+import { mulberry32, randInt, randRange } from '../src/utils/rng';
 import { CollisionWorld } from '../src/world/CollisionWorld';
 import { FlowField, NavigationGrid } from '../src/world/NavigationGrid';
 
@@ -319,5 +319,72 @@ describe('FlowField', () => {
     expect(median, `flow builds (ms): ${times.join(", ")}`).toBeLessThan(30);
     expect(Number.isFinite(field.distanceAt({ x: -118, z: -88 }))).toBe(true);
     console.info(`Flow field 192x144, 60 buildings (ms): ${times.map(t => t.toFixed(2)).join(', ')}`);
+  });
+});
+
+type NavInternals = { walkable: Uint8Array; connections: Uint8Array };
+const internals = (nav: NavigationGrid): NavInternals => nav as unknown as NavInternals;
+const passableTag = (c: { tag?: string }): boolean => c.tag === 'pass';
+
+/** Random overlapping footprints on the 40 m test bounds; about 30% are passable (crawl-style). */
+function scatter(seed: number, count: number): ColliderDef[] {
+  const rng = mulberry32(seed);
+  const defs: ColliderDef[] = [];
+  for (let i = 0; i < count; i++) {
+    const x = randRange(rng, -18, 16), z = randRange(rng, -18, 16);
+    defs.push(box(x, z, x + randRange(rng, 0.5, 6), z + randRange(rng, 0.5, 6), rng.next() < 0.3 ? { tag: 'pass' } : {}));
+  }
+  return defs;
+}
+
+function expectSameField(actual: FlowField, expected: FlowField): void {
+  expect(actual.distance).toEqual(expected.distance);
+  expect(actual.directionX).toEqual(expected.directionX);
+  expect(actual.directionZ).toEqual(expected.directionZ);
+  expect(actual.goalIndex).toEqual(expected.goalIndex);
+}
+
+describe('incremental navigation state', () => {
+  it('rebuilds after random toggles match a fresh full build, including reused fields and paths', () => {
+    const rng = mulberry32(777);
+    const defs = scatter(777, 40);
+    const collision = new CollisionWorld(bounds, defs);
+    const nav = new NavigationGrid(collision, 1, 0.45, passableTag);
+    const goal = { x: -15.5, z: 15.5 };
+    let reused: FlowField | undefined;
+    for (let step = 0; step < 60; step++) {
+      const id = Math.floor(rng.next() * defs.length);
+      collision.setEnabled(id, !collision.colliders[id].enabled);
+      nav.rebuild();
+      reused = nav.buildFlowField([goal], reused, 30);
+      const fresh = new NavigationGrid(collision, 1, 0.45, passableTag);
+      expect(internals(nav).walkable).toEqual(internals(fresh).walkable);
+      expect(internals(nav).connections).toEqual(internals(fresh).connections);
+      if (step % 10 === 9) {
+        expectSameField(reused, fresh.buildFlowField([goal], undefined, 30));
+        const from = { x: randRange(rng, -15, 15), z: randRange(rng, -15, 15) };
+        const to = { x: randRange(rng, -15, 15), z: randRange(rng, -15, 15) };
+        expect(nav.findPath(from, to)).toEqual(fresh.findPath(from, to));
+      }
+    }
+  });
+
+  it('reused flow fields equal fresh fields across goal changes, budgets and both reset paths', () => {
+    const collision = new CollisionWorld(bounds, scatter(99, 40));
+    const nav = new NavigationGrid(collision, 1, 0.45);
+    const sequence: [Vec2[], number | undefined][] = [
+      [[{ x: -15.5, z: -15.5 }], undefined], // near-full field: bulk reset next
+      [[{ x: 0.5, z: 0.5 }], 6], // small bounded field: touched-list reset next
+      [[{ x: 12.5, z: -9.5 }], 3],
+      [[{ x: -15.5, z: -15.5 }], undefined],
+      [[], 8],
+      [[{ x: 5.5, z: 5.5 }, { x: 5.9, z: 5.2 }], 12],
+      [[{ x: 18.5, z: 18.5 }], undefined],
+    ];
+    let field: FlowField | undefined;
+    for (const [goals, max] of sequence) {
+      field = nav.buildFlowField(goals, field, max);
+      expectSameField(field, new NavigationGrid(collision, 1, 0.45).buildFlowField(goals, undefined, max));
+    }
   });
 });

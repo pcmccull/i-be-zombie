@@ -98,7 +98,7 @@ describe('guard perception and LOS: design §15.9', () => {
     run(sim, 0.2); expect(g.state).toBe('ALERT'); expect(g.target).toEqual({ kind: 'zombie', id: z.id });
   });
 
-  it('keeps a visible current target instead of rolling leader targeting every perception tick', () => {
+  it('keeps the nearest visible threat without random leader preference', () => {
     const { sim, g } = fixture(); g.pos = { x: -80, z: 60 }; g.state = 'ALERT';
     sim.state.leader.pos = { x: -80, z: 70 };
     const z = add(sim, { x: -78, z: 67 });
@@ -107,9 +107,9 @@ describe('guard perception and LOS: design §15.9', () => {
     rng.mockReturnValue(0); const rolls = rng.mock.calls.length;
     run(sim, 0.2); expect(rng).toHaveBeenCalledTimes(rolls);
     expect(g.target).toEqual({ kind: 'zombie', id: z.id });
-    add(sim, { x: -76, z: 68 });
+    const next = add(sim, { x: -76, z: 68 });
     damageZombie(sim.ctx, z, 40); run(sim, 0.2);
-    expect(g.target).toEqual({ kind: 'leader' });
+    expect(g.target).toEqual({ kind: 'zombie', id: next.id });
   });
 
   it('stays unaware of player-start zombies for ten seconds and alerts only local guards on first approach', () => {
@@ -151,7 +151,7 @@ describe('guard movement, firing and lifecycle', () => {
     sim.state.leader.pos = { x: -80, z: 70 }; sim.ctx.rng = { next: () => 0 };
     g.target = { kind: 'leader' };
     const events = run(sim, 1.6);
-    expect(events.filter(e => e.type === 'shot')).toHaveLength(2); expect(sim.state.leader.hp).toBe(80);
+    expect(events.filter(e => e.type === 'shot')).toHaveLength(2); expect(sim.state.horde.alphaDamageTaken).toBe(20);
     const z = add(sim, { x: -79, z: 60 }); g.target = { kind: 'zombie', id: z.id };
     run(sim, 0.2); expect(g.pos.x).toBeLessThan(-80); expect(g.vel.x).toBeLessThan(0);
     damageGuard(sim.ctx, g, 50, 'other'); sim.drainEvents(); const pos = { ...g.pos }, cooldown = g.attackCooldown;
@@ -251,7 +251,7 @@ describe('open-world human roles and posts', () => {
     expect(g.hp).toBe(BALANCE.police.maxHp); expect(g.maxHp).toBe(BALANCE.police.maxHp);
     expect(run(sim, BALANCE.police.aimDelay - 0.05).filter(e => e.type === 'shot')).toHaveLength(0);
     expect(run(sim, 0.2).filter(e => e.type === 'shot')).toHaveLength(1);
-    expect(sim.state.leader.hp).toBe(BALANCE.leader.maxHp - BALANCE.police.damage);
+    expect(sim.state.horde.alphaDamageTaken).toBe(BALANCE.police.damage);
     const remaining = g.attackCooldown;
     expect(remaining).toBeGreaterThan(0);
     expect(run(sim, remaining - dt).filter(e => e.type === 'shot')).toHaveLength(0);
@@ -261,7 +261,7 @@ describe('open-world human roles and posts', () => {
   it('uses police accuracy and range, and re-aims after acquiring a different target', () => {
     const { sim, g } = policeFixture(); sim.ctx.rng = { next: () => 0.6 };
     expect(run(sim, 0.7).filter(e => e.type === 'shot')).toMatchObject([{ hit: false }]);
-    expect(sim.state.leader.hp).toBe(BALANCE.leader.maxHp);
+    expect(sim.state.horde.alphaDamageTaken).toBe(0);
     sim.state.leader.pos.z = BALANCE.police.range + 0.5;
     g.attackCooldown = 0;
     expect(run(sim, 1).filter(e => e.type === 'shot')).toHaveLength(0);

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import type { ColliderDef } from '../src/core/types';
+import type { SegmentOptions } from '../src/core/contracts';
+import type { AABB, ColliderDef, Vec2 } from '../src/core/types';
+import { mulberry32, randInt, randRange } from '../src/utils/rng';
 import { CollisionWorld } from '../src/world/CollisionWorld';
 
 const bounds = { minX: -20, minZ: -20, maxX: 20, maxZ: 20 };
@@ -155,5 +157,62 @@ describe('broad phase and sight', () => {
     expect(world.segmentBlocked({ x: -2, z: 0 }, { x: 0, z: 0 })).toBe(true);
     expect(world.segmentBlocked({ x: -3, z: 0 }, { x: -2, z: 0 })).toBe(false);
     expect(world.segmentBlocked({ x: 2, z: 0 }, { x: 3, z: 0 })).toBe(false);
+  });
+});
+
+describe('CollisionWorld segment traversal', () => {
+  it('matches a brute-force reference for random segments, toggles and off-world endpoints', () => {
+    const rng = mulberry32(4242);
+    const extent: AABB = { minX: -60, minZ: -40, maxX: 60, maxZ: 40 };
+    const defs: ColliderDef[] = [];
+    for (let i = 0; i < 300; i++) {
+      const x = randRange(rng, -72, 66), z = randRange(rng, -52, 46);
+      defs.push({ minX: x, minZ: z, maxX: x + randRange(rng, 0.2, 9), maxZ: z + randRange(rng, 0.2, 9),
+        kind: 'building', height: randRange(rng, 0.5, 9), blocksMove: rng.next() < 0.8, blocksSight: rng.next() < 0.6 });
+    }
+    const world = new CollisionWorld(extent, defs);
+    // Lattice points sit on bucket edges and just outside the world, where traversal ties are most likely.
+    const point = (lattice: boolean): Vec2 => lattice
+      ? { x: extent.minX + 8 * randInt(rng, -1, 16), z: extent.minZ + 8 * randInt(rng, -1, 11) }
+      : { x: randRange(rng, -72, 72), z: randRange(rng, -52, 52) };
+    const reference = (a: Vec2, b: Vec2, opts?: SegmentOptions): boolean => {
+      const move = opts?.mode === 'move';
+      const h0 = opts?.fromHeight ?? 1.5;
+      const dh = (opts?.toHeight ?? 1.2) - h0;
+      const dx = b.x - a.x, dz = b.z - a.z;
+      for (const c of world.colliders) {
+        if (!c.enabled || !(move ? c.blocksMove : c.blocksSight) || opts?.ignoreIds?.includes(c.id)) continue;
+        let t0 = 0, t1 = 1;
+        if (dx === 0) { if (a.x < c.minX || a.x > c.maxX) continue; }
+        else {
+          const u = (c.minX - a.x) / dx, v = (c.maxX - a.x) / dx;
+          t0 = Math.max(t0, Math.min(u, v)); t1 = Math.min(t1, Math.max(u, v));
+        }
+        if (dz === 0) { if (a.z < c.minZ || a.z > c.maxZ) continue; }
+        else {
+          const u = (c.minZ - a.z) / dz, v = (c.maxZ - a.z) / dz;
+          t0 = Math.max(t0, Math.min(u, v)); t1 = Math.min(t1, Math.max(u, v));
+        }
+        if (t0 <= t1 && (move || Math.min(h0 + dh * t0, h0 + dh * t1) < c.height)) return true;
+      }
+      return false;
+    };
+    const count = 4000;
+    let blocked = 0, mismatches = 0;
+    for (let i = 0; i < count; i++) {
+      // Toggle colliders between batches so the enabled check is exercised against the same traversal.
+      if (i % 200 === 199) world.setEnabled(randInt(rng, 0, defs.length - 1), rng.next() < 0.5);
+      const a = point(i % 3 === 0);
+      const b = i % 5 === 0 ? { x: a.x, z: point(false).z } : i % 7 === 0 ? { x: point(false).x, z: a.z } : point(i % 4 === 0);
+      const opts: SegmentOptions = i % 2 === 0 ? { mode: 'move' }
+        : { mode: 'sight', fromHeight: randRange(rng, 0, 9), toHeight: randRange(rng, 0, 9) };
+      if (i % 11 === 0) opts.ignoreIds = [randInt(rng, 0, defs.length - 1)];
+      const expected = reference(a, b, opts);
+      if (world.segmentBlocked(a, b, opts) !== expected) mismatches++;
+      if (expected) blocked++;
+    }
+    expect(mismatches).toBe(0);
+    expect(blocked).toBeGreaterThan(count / 10);
+    expect(blocked).toBeLessThan(count * 0.9);
   });
 });

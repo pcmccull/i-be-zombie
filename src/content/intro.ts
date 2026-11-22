@@ -83,12 +83,12 @@ export function buildIntroScript(layout: DistrictLayout): IntroScript {
     // 16–21: track along the boulevard sidewalk past the locals.
     { t: n(18.6), pos: v(-95, 2.6, 90), look: v(-118, 1.5, 79), fov: 50 },
     { t: n(21.0), pos: v(-118, 2.8, 90), look: v(-140, 1.5, 80), fov: 50 },
-    // 21–27.6: creep toward the player's spot past the corner house; the bus keeps the zombie hidden.
-    { t: n(24.0), pos: v(-117.5, 3.4, 101), look: v(-124, 1.8, 122), fov: 48 },
-    { t: n(26.2), pos: v(-120.5, 2.9, 116), look: v(-122, 1.8, 132), fov: 47 },
-    { t: n(27.6), pos: v(-122, 2.8, 116), look: v(-135, 1.8, 116), fov: 46, ease: 'inOut' },
-    // 27.6–30.9: dramatic orbit over the bus's nose toward the player, then zoom in on "YOU".
-    { t: n(28.9), pos: v(-131, 3.6, 110.8), look: rel(0, 0, 1.4), fov: 44 },
+    // 21–27.6: creep south through the park out onto the beach, gazing out to sea; the lone Alpha stays off-frame (west).
+    { t: n(24.0), pos: v(-128, 3.4, 128), look: v(-110, 1.8, 160), fov: 48 },
+    { t: n(26.2), pos: v(-136, 3.0, 146), look: v(-120, 1.6, 170), fov: 47 },
+    { t: n(27.6), pos: v(-140, 2.8, 150), look: v(-128, 1.6, 172), fov: 46, ease: 'inOut' },
+    // 27.6–30.9: dramatic orbit along the sand toward the player, then zoom in on "YOU".
+    { t: n(28.9), pos: v(-138, 3.6, 147.5), look: rel(0, 0, 1.4), fov: 44 },
     { t: n(29.9), pos: rel(5.5, -3.6, 2.6), look: rel(0, 0, 1.5), fov: 42 },
     { t: n(30.6), pos: rel(2.4, 0.15, 1.95), look: head, fov: 34, ease: 'out' },
     // 30.9–35.2: hold on the zombie's face (music cut + awkward silence).
@@ -115,7 +115,7 @@ export function buildIntroScript(layout: DistrictLayout): IntroScript {
 
 /** First tutorial objective shown as control is handed over (§6). */
 export const FIRST_OBJECTIVE = {
-  title: 'Make Some Friends',
-  touchText: 'Walk up to the wandering zombies to recruit them, then tap ATTACK near a human to infect them.',
-  text: 'Walk up to the wandering zombies to recruit them (WASD). Get close to a human and bite (Left Click) to infect them.',
+  title: 'Find Your Nest',
+  touchText: 'You are alone. Walk up from the beach to the glowing nest by the bus to raise your first horde of 10 zombies.',
+  text: 'You are alone. Walk up from the beach (WASD) to the glowing nest by the bus to raise your first horde of 10 zombies.',
 } as const;
