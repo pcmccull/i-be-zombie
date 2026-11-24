@@ -79,6 +79,7 @@ export const ICONS = {
     <circle cx="16" cy="16" r="5" fill="${G}" ${s(1.8)}/><circle cx="16.5" cy="16.5" r="2" fill="${O}"/>`,
   grave: `<path d="M8 28V12a8 8 0 0 1 16 0v16z" fill="#9fb7b5" ${s()}/>
     <path d="M12.5 15h7M16 11v9" fill="none" ${s(2)}/><path d="M5 28h22" fill="none" ${s(2.4)}/>`,
+  info: `<circle cx="16" cy="16" r="12" fill="${T}" ${s()}/><circle cx="16" cy="10" r="2" fill="${O}"/><path d="M16 15v8" fill="none" stroke="${O}" stroke-width="3.2" stroke-linecap="round"/>`,
   warning: `<path d="M16 4 29 27H3z" fill="${C}" ${s()}/><path d="M16 12v7" fill="none" stroke="${K}" stroke-width="3" stroke-linecap="round"/><circle cx="16" cy="23" r="1.8" fill="${K}"/>`,
   map: `<path d="M4 8l7-3 10 3 7-3v19l-7 3-10-3-7 3z" fill="${K}" ${s()}/>
     <path d="M11 5v19M21 8v19" fill="none" ${s(1.6)}/><path d="M14 13l4 3M18 13l-4 3" fill="none" stroke="${C}" stroke-width="2" stroke-linecap="round"/>`,

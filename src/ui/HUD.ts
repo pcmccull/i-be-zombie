@@ -202,9 +202,6 @@ export class HUD {
   private pauseMenu: PauseMenu | null = null;
   private nestPanel: NestPanel | null = null;
   private collectionPanel: CollectionPanel | null = null;
-  private cityStripEl: HTMLDivElement | null = null;
-  private cityBrainsEl: HTMLSpanElement | null = null;
-  private cityAlertEl: HTMLSpanElement | null = null;
   private collectionCallbacks: Partial<CollectionCallbacks> = {};
   private readonly buySlotCallbacks: (() => void)[] = [];
   private readonly buyVisionCallbacks: (() => void)[] = [];
@@ -233,10 +230,6 @@ export class HUD {
   private lastSwingMs = -1e9;
   private prevFollowerCount: number | null = null;
   private bestFollowers = 0;
-  private gainAccum = 0;
-  private gainWindowEndMs = 0;
-  private lossAccum = 0;
-  private lossWindowEndMs = 0;
   private popupBurst = 0;
   private popupStartMs = -1e9;
   private popupShown = false;
@@ -365,14 +358,6 @@ export class HUD {
         <div class="ibz-crosshair" data-ref="crosshair"></div>
 
         <div class="hz-horde ibz-bottom-left" data-ref="horde">
-          <div class="hz-horde-ico" data-ref="hordeIco">${icon('horde', 'l')}</div>
-          <div class="hz-horde-main">
-            <div class="hz-horde-label">Your horde</div>
-            <div class="hz-horde-count"><b data-ref="hordeNum">0</b><span data-ref="hordeCap">/ 40</span></div>
-            <div class="hz-horde-capbar"><div data-ref="hordeCapFill"></div></div>
-          </div>
-          <span class="hz-float hz-horde-gain" data-ref="hordeGain"></span>
-          <span class="hz-float hz-horde-loss" data-ref="hordeLoss"></span>
           <div class="hz-horde-chips">
             <span class="hz-chip hz-order" data-ref="order"><span data-ref="orderIco"></span><span data-ref="orderText">Following</span></span>
             <span class="hz-chip is-yellow hz-brutes" data-ref="brutes">${icon('brute', 's')}<b data-ref="brutesVal">0</b></span>
@@ -527,27 +512,6 @@ export class HUD {
         onFastTravelHideout: id => this.collectionCallbacks.onFastTravelHideout?.(id),
         onClose: () => this.hideCollection(),
       });
-      if (!this.cityStripEl) {
-        // docs/11_cityupgrade.md §2.3/§4.1.H: Brains + subtle district alert badge + collection button.
-        const strip = document.createElement('div');
-        strip.className = 'ibz-ow-only hz-city';
-
-        const brains = document.createElement('span');
-        brains.className = 'hz-city-brains';
-        const alertBadge = document.createElement('span');
-        alertBadge.className = 'hz-city-alert';
-        const colBtn = document.createElement('button');
-        colBtn.className = 'hz-city-btn';
-        colBtn.title = 'Collection (I)';
-        colBtn.innerHTML = `<span class="hz-key">I</span>${icon('star', 's')}<span>Collection</span>`;
-        colBtn.onclick = () => this.toggleCollection();
-
-        strip.append(brains, alertBadge, colBtn);
-        this.play.appendChild(strip);
-        this.cityStripEl = strip;
-        this.cityBrainsEl = brains;
-        this.cityAlertEl = alertBadge;
-      }
     } else {
       this.minimap.setLayout(layout);
       this.worldMap?.setLayout(layout);
@@ -742,8 +706,6 @@ export class HUD {
   reset(): void {
     this.prevFollowerCount = null;
     this.bestFollowers = 0;
-    this.gainAccum = 0;
-    this.lossAccum = 0;
     this.popupBurst = 0;
     this.popupShown = false;
     this.bioAccum = 0;
@@ -761,7 +723,7 @@ export class HUD {
     this.clearToasts();
     for (const id of this.timers) window.clearTimeout(id);
     this.timers.clear();
-    for (const k of ['hordeGain', 'hordeLoss', 'bioFloat', 'pop', 'hitmark', 'vignette', 'strengthMeter', 'lastBrain', 'portrait']) {
+    for (const k of ['bioFloat', 'pop', 'hitmark', 'vignette', 'strengthMeter', 'lastBrain', 'portrait']) {
       this.el[k].className = this.el[k].className.split(' ').filter((c) => !c.startsWith('is-')).join(' ');
     }
     this.helpVisible = false;
@@ -943,22 +905,6 @@ export class HUD {
 
     this.setClass('play', 'is-modal', this.isPauseVisible || this.isMapVisible || this.isCollectionVisible);
 
-    if (this.layout && this.cityBrainsEl && this.cityAlertEl) {
-      const brains = state.rewards.brains;
-      if (this.changed('cityBrains', brains)) {
-        this.cityBrainsEl.innerHTML = `${icon('brain', 's')}<b>${brains}</b><span>Brains</span>`;
-      }
-      const dId = getDistrictAt(this.layout, state.leader.pos);
-      const alert = state.districts[dId]?.alert ?? 'normal';
-      if (this.changed('cityAlert', alert)) {
-        const label: Record<string, string> = {
-          normal: 'Calm', concerned: 'Concerned', panic: 'Panic', lockdown: 'Lockdown', overrun: 'Overrun',
-        };
-        this.cityAlertEl.className = `hz-city-alert is-${alert}`;
-        this.cityAlertEl.innerHTML = `${icon(alert === 'overrun' ? 'zombie' : alert === 'normal' ? 'eye' : 'warning', 's')}<span>${label[alert] ?? alert}</span>`;
-        this.cityAlertEl.title = `District alert: ${label[alert] ?? alert}`;
-      }
-    }
     if (this.collectionPanel?.isVisible) {
       this.collectionPanel.render(state);
     }
@@ -1041,12 +987,6 @@ export class HUD {
       const gained = count - this.prevFollowerCount;
       this.prevFollowerCount = count;
       this.lastRecruitMs = nowMs;
-      this.gainAccum = nowMs <= this.gainWindowEndMs ? this.gainAccum + gained : gained;
-      this.gainWindowEndMs = nowMs + 650;
-      this.el.hordeGain.textContent = `+${this.gainAccum}`;
-      retrigger(this.el.hordeGain, 'is-show');
-      retrigger(this.el.hordeNum, 'is-pop');
-      retrigger(this.el.hordeIco, 'is-bounce');
       // Center popup for bigger bursts: one element, text grows while the burst continues.
       if (nowMs - this.popupStartMs > 650) {
         this.popupStartMs = nowMs;
@@ -1067,23 +1007,15 @@ export class HUD {
       if (m !== null && this.layout && state.phase === 'playing') this.queueBanner(hordeBanner(m, cap, this.bannerCount));
       this.bestFollowers = Math.max(this.bestFollowers, count);
     } else if (count < this.prevFollowerCount) {
-      const lost = this.prevFollowerCount - count;
       this.prevFollowerCount = count;
-      this.lossAccum = nowMs <= this.lossWindowEndMs ? this.lossAccum + lost : lost;
-      this.lossWindowEndMs = nowMs + 650;
-      this.el.hordeLoss.textContent = `-${this.lossAccum}`;
-      retrigger(this.el.hordeLoss, 'is-show');
-      retrigger(this.el.horde, 'is-loss');
     }
 
     const hv = hordeView(state, cap, state.order.type === 'attack' ? this.describeTargetLabel(state.order.target).toLowerCase() : '');
-    this.setText('hordeNum', `${count}`);
-    this.setText('hordeCap', `/ ${cap}`);
-    this.setScale('hordeCapFill', hv.fill);
-    this.setClass('horde', 'is-full', hv.full);
     if (this.changed('orderMode', `${hv.mode}|${hv.tone}`)) {
       this.el.orderIco.innerHTML = icon(hv.icon, 's');
       this.el.order.className = `hz-chip hz-order is-${hv.tone}`;
+      // The idle "Following" state needs no chip; only orders (attack/move/split) and the no-horde hint show.
+      this.el.order.style.display = hv.mode === 'following' ? 'none' : '';
     }
     this.setText('orderText', hv.label);
 
@@ -1342,7 +1274,7 @@ export class HUD {
     const expanded = (this.obj?.kind === 'stronghold' || this.obj?.kind === 'nest') && (nowMs < this.objExpandUntilMs || this.helpVisible);
     this.setClass('obj', 'is-expanded', expanded);
     this.setClass('obj', 'is-celebrate', nowMs < this.objCelebrateUntilMs);
-    this.setClass('obj', 'is-empty', this.obj === null || this.obj.kind === 'none');
+    this.setClass('obj', 'is-empty', this.obj === null || this.obj.kind === 'none' || this.obj.kind === 'complete');
   }
 
   private updateLegacy(state: GameState): void {

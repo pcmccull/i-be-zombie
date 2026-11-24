@@ -368,13 +368,15 @@ export class Game {
     this.touch.onFollow(() => this.input.queueCommand({ type: 'follow' }));
     this.touch.onUse(() => this.input.queueInteract());
     this.touch.onAbility(slot => this.input.queueAbility(slot));
-    this.touch.onMap(() => this.handleKeyAction('map'));
     this.touch.onPause(() => this.handleKeyAction('pause'));
-    this.touch.onRecenter(() => this.handleKeyAction('recenter'));
     if (this.touchActive) this.touch.enable();
     window.addEventListener('pointerdown', this.onTouchProbe, { capture: true });
     this.hud.setPauseCallbacks({
       onContinue: () => this.closePause(),
+      onOpenMap: () => {
+        this.closePause();
+        this.toggleMap();
+      },
       onSave: () => this.hud.notifyPause(this.saveNow() ? 'Saved' : 'Save failed'),
       onResetSave: () => this.resetSave(),
       onToggleMute: () => this.toggleMute(),

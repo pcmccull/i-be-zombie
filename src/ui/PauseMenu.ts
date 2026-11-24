@@ -6,6 +6,7 @@ import { enterFullscreen, exitFullscreen, fullscreenSupported, isFullscreen, sav
 
 export interface PauseCallbacks {
   onContinue?: () => void;
+  onOpenMap?: () => void;
   onSave?: () => void;
   /** Called only after the player confirms the second step. */
   onResetSave?: () => void;
@@ -41,6 +42,7 @@ export class PauseMenu {
   private readonly confirmBox: HTMLDivElement;
   private readonly msgEl: HTMLDivElement;
   private readonly continueBtn: HTMLButtonElement;
+  private readonly mapBtn: HTMLButtonElement;
   private readonly saveBtn: HTMLButtonElement;
   private readonly yesBtn: HTMLButtonElement;
   private readonly noBtn: HTMLButtonElement;
@@ -59,6 +61,7 @@ export class PauseMenu {
   private msgTimer: number | null = null;
 
   private readonly onContinue = (): void => this.callbacks.onContinue?.();
+  private readonly onOpenMap = (): void => this.callbacks.onOpenMap?.();
   private readonly onSave = (): void => this.callbacks.onSave?.();
   private readonly onMute = (): void => this.callbacks.onToggleMute?.();
   private readonly onReplay = (): void => this.callbacks.onReplayIntro?.();
@@ -88,6 +91,7 @@ export class PauseMenu {
         <p class="ibz-modal-pitch ibz-pause-pitch">Catch your breath, Alpha. The beach isn&rsquo;t going anywhere.</p>
         <div class="ibz-pause-buttons">
           <button type="button" class="ibz-btn" data-ref="continue"><span class="ibz-btn-ico">${icon('rush', 's')}</span><span class="ibz-btn-label">Continue</span></button>
+          <button type="button" class="ibz-btn" data-ref="map"><span class="ibz-btn-ico">${icon('map', 's')}</span><span class="ibz-btn-label">World Map</span></button>
           <button type="button" class="ibz-btn" data-ref="save"><span class="ibz-btn-ico">${icon('check', 's')}</span><span class="ibz-btn-label">Save</span></button>
           <button type="button" class="ibz-btn" data-ref="mute"><span class="ibz-btn-ico">${icon('sound', 's')}</span><span class="ibz-btn-label">Sound: On</span></button>
           <button type="button" class="ibz-btn" data-ref="replay"><span class="ibz-btn-ico">${icon('camera', 's')}</span><span class="ibz-btn-label">Replay Intro</span></button>
@@ -110,6 +114,7 @@ export class PauseMenu {
     const q = <T extends HTMLElement>(r: string): T => this.element.querySelector(`[data-ref="${r}"]`) as T;
     const lbl = (btn: HTMLButtonElement): HTMLSpanElement => btn.querySelector('.ibz-btn-label') as HTMLSpanElement;
     this.continueBtn = q('continue');
+    this.mapBtn = q('map');
     this.saveBtn = q('save');
     this.muteBtn = q('mute');
     this.resetBtn = q('reset');
@@ -128,6 +133,7 @@ export class PauseMenu {
     this.gfxLabel = lbl(this.gfxBtn);
     this.motionLabel = lbl(this.motionBtn);
     this.continueBtn.addEventListener('click', this.onContinue);
+    this.mapBtn.addEventListener('click', this.onOpenMap);
     this.saveBtn.addEventListener('click', this.onSave);
     this.muteBtn.addEventListener('click', this.onMute);
     this.resetBtn.addEventListener('click', this.onReset);
@@ -176,6 +182,7 @@ export class PauseMenu {
 
   show(): void {
     this._visible = true;
+    this.mapBtn.hidden = !this.callbacks.onOpenMap;
     this.refreshVision();
     this.refreshGraphics();
     this.refreshFullscreen();
@@ -212,6 +219,7 @@ export class PauseMenu {
   dispose(): void {
     if (this.msgTimer !== null) window.clearTimeout(this.msgTimer);
     this.continueBtn.removeEventListener('click', this.onContinue);
+    this.mapBtn.removeEventListener('click', this.onOpenMap);
     this.saveBtn.removeEventListener('click', this.onSave);
     this.muteBtn.removeEventListener('click', this.onMute);
     this.resetBtn.removeEventListener('click', this.onReset);

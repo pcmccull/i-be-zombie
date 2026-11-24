@@ -26,7 +26,7 @@ export interface TouchSlotView {
 }
 
 type Cb = () => void;
-type ButtonId = 'attack' | 'follow' | 'map' | 'pause' | 'recenter' | 'use';
+type ButtonId = 'attack' | 'follow' | 'pause' | 'use';
 
 export class TouchControls {
   private readonly el: HTMLDivElement;
@@ -34,7 +34,7 @@ export class TouchControls {
   private readonly knobEl: HTMLDivElement;
   private readonly slotsEl: HTMLDivElement;
   private readonly listeners = new AbortController();
-  private readonly cbs: Record<ButtonId, Cb[]> = { attack: [], follow: [], map: [], pause: [], recenter: [], use: [] };
+  private readonly cbs: Record<ButtonId, Cb[]> = { attack: [], follow: [], pause: [], use: [] };
   private readonly abilityCbs: ((slot: number) => void)[] = [];
   private readonly stick = createStickOutput();
   private readonly knob = { x: 0, y: 0 };
@@ -52,17 +52,19 @@ export class TouchControls {
     this.el.innerHTML = `
       <div class="ibz-touch-stick" data-ref="stick"><div class="ibz-touch-knob" data-ref="knob"></div></div>
       <div class="ibz-touch-top">
-        <button type="button" class="ibz-touch-btn is-small" data-btn="pause" aria-label="Pause">${icon('pause', 's')}</button>
-        <button type="button" class="ibz-touch-btn is-small" data-btn="map" aria-label="Map">${icon('map', 's')}</button>
-        <button type="button" class="ibz-touch-btn is-small" data-btn="recenter" aria-label="Recenter camera">${icon('camera', 's')}</button>
+        <button type="button" class="ibz-touch-btn is-small" data-btn="pause" aria-label="Pause, map and menu">${icon('pause', 's')}</button>
       </div>
       <div class="ibz-touch-actions">
-        <div class="ibz-touch-slots" data-ref="slots"></div>
-        <div class="ibz-touch-row">
-          <button type="button" class="ibz-touch-btn" data-btn="follow" aria-label="Horde follow">${icon('recall', 's')}<span>FOLLOW</span></button>
-          <button type="button" class="ibz-touch-btn is-use" data-btn="use" aria-label="Use (vehicle, drain, prop)" hidden>${icon('bolt', 's')}<span>USE</span></button>
+        <div class="ibz-touch-main">
+          <div class="ibz-touch-row">
+            <button type="button" class="ibz-touch-btn" data-btn="follow" aria-label="Horde follow">${icon('recall', 's')}<span>FOLLOW</span></button>
+            <button type="button" class="ibz-touch-btn is-use" data-btn="use" aria-label="Use (vehicle, drain, prop)" hidden>${icon('bolt', 's')}<span>USE</span></button>
+          </div>
+          <div class="ibz-touch-attack-col">
+            <div class="ibz-touch-slots" data-ref="slots"></div>
+            <button type="button" class="ibz-touch-btn is-attack" data-btn="attack" aria-label="Attack">${icon('bite', 'l')}<span>ATTACK</span></button>
+          </div>
         </div>
-        <button type="button" class="ibz-touch-btn is-attack" data-btn="attack" aria-label="Attack">${icon('bite', 'l')}<span>ATTACK</span></button>
       </div>`;
     this.stickEl = this.el.querySelector('[data-ref="stick"]') as HTMLDivElement;
     this.knobEl = this.el.querySelector('[data-ref="knob"]') as HTMLDivElement;
@@ -124,9 +126,7 @@ export class TouchControls {
     const b = this.el.querySelector('[data-btn="use"]') as HTMLButtonElement | null;
     if (b && b.hidden === v) b.hidden = !v;
   }
-  onMap(cb: Cb): void { this.cbs.map.push(cb); }
   onPause(cb: Cb): void { this.cbs.pause.push(cb); }
-  onRecenter(cb: Cb): void { this.cbs.recenter.push(cb); }
   onAbility(cb: (slot: number) => void): void { this.abilityCbs.push(cb); }
 
   /** Owned ability slots only; [] hides the strip. Rebuilds DOM only when slots/names change. */
@@ -144,7 +144,7 @@ export class TouchControls {
         b.type = 'button';
         b.className = 'ibz-touch-btn is-slot';
         b.dataset.slot = String(i);
-        b.innerHTML = `<span class="ibz-touch-sweep"></span><span class="ibz-touch-key">${v.key}</span><span class="ibz-touch-ico">${icon(abilityIcon(slotAbilityId(v.name)), 's')}</span><span class="ibz-touch-name"></span>`;
+        b.innerHTML = `<span class="ibz-touch-sweep"></span><span class="ibz-touch-ico">${icon(abilityIcon(slotAbilityId(v.name)), 's')}</span><span class="ibz-touch-name"></span>`;
         (b.querySelector('.ibz-touch-name') as HTMLSpanElement).textContent = v.name;
         this.slotsEl.appendChild(b);
         return b;

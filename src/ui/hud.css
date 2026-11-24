@@ -1000,74 +1000,11 @@
   left: var(--hz-safe-l);
   bottom: var(--hz-safe-b);
   display: grid;
-  grid-template-columns: auto 1fr;
+  grid-template-columns: 1fr;
   column-gap: calc(12 * var(--hz-u));
   row-gap: calc(8 * var(--hz-u));
   width: calc(320 * var(--hz-u));
 }
-.hz-horde-ico {
-  display: grid;
-  place-items: center;
-  width: calc(88 * var(--hz-u));
-  height: calc(88 * var(--hz-u));
-  border-radius: calc(26 * var(--hz-u));
-  transform: rotate(-5deg);
-  background: radial-gradient(circle at 40% 30%, #d8ffb6, var(--hz-green) 45%, var(--hz-green-lo));
-  border: var(--hz-ink-w) solid var(--hz-ink);
-  box-shadow: inset 0 calc(-5 * var(--hz-u)) 0 rgba(0, 0, 0, 0.2), inset 0 calc(4 * var(--hz-u)) 0 rgba(255, 255, 255, 0.4),
-    0 calc(5 * var(--hz-u)) 0 var(--hz-ink);
-}
-.hz-horde-ico .hz-ico { width: calc(74 * var(--hz-u)); height: calc(74 * var(--hz-u)); }
-.hz-horde-ico.is-bounce .hz-ico { animation: hz-bounce 480ms var(--hz-ease-pop); }
-.hz-horde-main { min-width: 0; align-self: center; }
-.hz-horde-label {
-  font-family: var(--hz-font-display);
-  font-size: var(--hz-fs-s);
-  font-style: italic;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--hz-green-hi);
-  text-shadow: var(--hz-outline);
-}
-.hz-horde-count {
-  display: flex;
-  align-items: baseline;
-  gap: calc(4 * var(--hz-u));
-  font-family: var(--hz-font-display);
-  font-style: italic;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
-  text-shadow: var(--hz-outline-thick);
-  padding: calc(2 * var(--hz-u)) 0 calc(8 * var(--hz-u)) calc(2 * var(--hz-u));
-}
-.hz-horde-count b {
-  display: inline-block;
-  font-size: calc(58 * var(--hz-u));
-  font-weight: 700;
-  color: var(--hz-cream);
-  transform-origin: 50% 70%;
-}
-.hz-horde-count b.is-pop { animation: hz-pop 380ms var(--hz-ease-pop); color: var(--hz-green-hi); }
-.hz-horde-count span { font-size: calc(26 * var(--hz-u)); color: var(--hz-cream-dim); text-shadow: var(--hz-outline); }
-.hz-horde-capbar {
-  height: calc(10 * var(--hz-u));
-  transform: skewX(-14deg);
-  border: calc(2.5 * var(--hz-u)) solid var(--hz-ink);
-  border-radius: calc(3 * var(--hz-u));
-  background: rgba(11, 34, 40, 0.8);
-  box-shadow: 0 calc(3 * var(--hz-u)) 0 var(--hz-ink);
-  overflow: hidden;
-}
-.hz-horde-capbar > div {
-  height: 100%;
-  background: linear-gradient(180deg, #d8ffb6, var(--hz-green) 50%, var(--hz-green-lo));
-  transform-origin: left center;
-  transition: transform var(--hz-t-small) var(--hz-ease);
-}
-.hz-horde.is-full .hz-horde-capbar > div { background: linear-gradient(180deg, #fff0bf, var(--hz-yellow) 50%, var(--hz-yellow-lo)); }
-.hz-horde.is-loss { animation: hz-shake 240ms ease-out; }
-.hz-horde-gain { top: calc(-14 * var(--hz-u)); left: calc(170 * var(--hz-u)); font-size: calc(32 * var(--hz-u)); color: var(--hz-green-hi); }
-.hz-horde-loss { top: calc(-6 * var(--hz-u)); left: calc(250 * var(--hz-u)); font-size: var(--hz-fs-xl); color: #ffab98; }
 .hz-horde-chips {
   grid-column: 1 / -1;
   display: flex;
@@ -1392,8 +1329,8 @@ body.ibz-touch-active .hz-saved { bottom: calc(env(safe-area-inset-bottom, 0px) 
     left: calc(env(safe-area-inset-left, 0px) + 8px);
     transform: none;
     align-items: flex-start;
-    /* stay left of the touch pause / map / camera row */
-    width: calc(100vw - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 180px);
+    /* stay left of the touch pause button */
+    width: calc(100vw - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 72px);
   }
   body.ibz-touch-active .hz-objective { align-items: flex-start; }
   body.ibz-touch-active .hz-obj-title { font-size: calc(18 * var(--hz-u)); }

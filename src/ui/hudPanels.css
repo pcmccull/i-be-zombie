@@ -737,9 +737,46 @@
   font-size: var(--hz-fs-xs);
 }
 
+.ibz-nest-row {
+  display: flex;
+  align-items: stretch;
+  gap: calc(5 * var(--hz-u));
+}
+
+.ibz-nest-row .ibz-nest-ability {
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+}
+
+.ibz-nest-info {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: calc(34 * var(--hz-u));
+  padding: 0;
+  cursor: pointer;
+  background: var(--hz-track);
+  border: calc(2.5 * var(--hz-u)) solid var(--hz-ink);
+  border-radius: var(--hz-r-m);
+  box-shadow: inset 0 calc(2 * var(--hz-u)) 0 rgba(255, 255, 255, 0.15), 0 calc(3 * var(--hz-u)) 0 var(--hz-ink);
+  transition: filter var(--hz-t-press) ease, transform var(--hz-t-press) var(--hz-ease);
+}
+
+.ibz-nest-info:hover { filter: brightness(1.15); transform: translateY(calc(-1 * var(--hz-u))); }
+.ibz-nest-info.is-open { background: linear-gradient(180deg, #ffe6a0, var(--hz-yellow) 55%, var(--hz-yellow-lo)); }
+.ibz-nest-info:focus-visible {
+  outline: calc(2.5 * var(--hz-u)) solid var(--hz-yellow);
+  outline-offset: calc(2 * var(--hz-u));
+}
+
 .ibz-nest-desc {
   display: block;
-  margin-top: calc(2 * var(--hz-u));
+  margin: calc(-1 * var(--hz-u)) 0 calc(2 * var(--hz-u));
+  padding: calc(6 * var(--hz-u)) calc(9 * var(--hz-u));
+  background: rgba(0, 0, 0, 0.22);
+  border-radius: var(--hz-r-m);
   font-weight: 500;
   font-size: var(--hz-fs-xs);
   color: var(--hz-cream-dim);

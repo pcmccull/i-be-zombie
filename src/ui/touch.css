@@ -59,7 +59,7 @@
   pointer-events: none;
 }
 
-/* Top row: pause / map / camera */
+/* Top button: pause (opens menu + map) */
 .ibz-touch-top {
   position: absolute;
   top: calc(env(safe-area-inset-top, 0px) + 10px);
@@ -80,10 +80,31 @@
   gap: 10px;
 }
 
-.ibz-touch-row,
+.ibz-touch-main {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.ibz-touch-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.ibz-touch-attack-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
 .ibz-touch-slots {
   display: flex;
-  gap: 10px;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
 }
 
 .ibz-touch-slots.is-hidden {
@@ -171,14 +192,6 @@
   gap: 1px;
 }
 
-.ibz-touch-key {
-  position: relative;
-  z-index: 1;
-  font-size: 11px;
-  line-height: 1;
-  color: var(--hz-yellow);
-}
-
 .ibz-touch-ico {
   position: relative;
   z-index: 1;
@@ -227,15 +240,15 @@ body.ibz-touch-active .ibz-intro-keys {
 }
 
 /*
- * Phone layout (TD-T007): the touch top row moves under the horde/map column and the nest panel becomes a short
- * scrollable card in the middle so it never covers the stick or the action buttons.
+ * Phone layout (TD-T007): the touch pause button sits top-right (minimap is hidden) and the nest panel becomes a
+ * short scrollable card in the middle so it never covers the stick or the action buttons.
  */
 @media (max-width: 760px) {
   .ibz-touch-top {
     left: auto;
     transform: none;
-    right: calc(env(safe-area-inset-right, 0px) + 8px);
-    top: calc(env(safe-area-inset-top, 0px) + 74px);
+    right: calc(env(safe-area-inset-right, 0px) + 10px);
+    top: calc(env(safe-area-inset-top, 0px) + 10px);
   }
 
   body.ibz-touch-active .ibz-nest-panel {
@@ -251,7 +264,6 @@ body.ibz-touch-active .ibz-intro-keys {
     font-size: 12px;
   }
 
-  body.ibz-touch-active .ibz-nest-desc,
   body.ibz-touch-active .ibz-nest-hint {
     display: none;
   }
@@ -267,7 +279,9 @@ body.ibz-touch-active .ibz-intro-keys {
   }
 }
 
-body.ibz-touch-active .ibz-nest-buy em {
+body.ibz-touch-active .ibz-nest-buy em,
+body.ibz-touch-active .ibz-nest-slot .hz-key,
+body.ibz-touch-active .hz-city-btn .hz-key {
   display: none;
 }
 

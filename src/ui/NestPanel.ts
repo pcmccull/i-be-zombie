@@ -13,6 +13,8 @@ export class NestPanel {
   private readonly bodyEl: HTMLDivElement;
   private _visible = false;
   private selectedSlot = 0;
+  /** Ability whose description is expanded via its info button (one at a time). */
+  private infoOpen: AbilityId | null = null;
   private renderKey = '';
   private available: AbilityId[] = [];
   private equipped: (AbilityId | null)[] = [];
@@ -27,8 +29,15 @@ export class NestPanel {
   private readonly callbacks: ((slot: number, ability: AbilityId | null) => void)[] = [];
 
   private readonly onClick = (ev: MouseEvent): void => {
-    const target = (ev.target as HTMLElement | null)?.closest('[data-slot],[data-ability],[data-buy],[data-buy-vision],[data-buy-trait]') as HTMLElement | null;
+    const target = (ev.target as HTMLElement | null)?.closest('[data-slot],[data-ability],[data-info],[data-buy],[data-buy-vision],[data-buy-trait]') as HTMLElement | null;
     if (!target) return;
+    const info = target.dataset.info;
+    if (info !== undefined) {
+      this.infoOpen = this.infoOpen === info ? null : (info as AbilityId);
+      this.renderKey = '';
+      this.render();
+      return;
+    }
     if (target.dataset.buyVision !== undefined) {
       this.buyVision();
       return;
@@ -107,7 +116,10 @@ export class NestPanel {
     if (atNest !== this._visible) {
       this._visible = atNest;
       this.element.classList.toggle('is-visible', atNest);
-      if (!atNest) this.renderKey = '';
+      if (!atNest) {
+        this.renderKey = '';
+        this.infoOpen = null;
+      }
     }
     if (!atNest) return;
     this.available = equippableAbilities(state);
@@ -177,9 +189,11 @@ export class NestPanel {
       for (const id of this.available) {
         const def = ABILITIES[id];
         const inSlot = this.equipped.indexOf(id);
-        html += `<button type="button" class="ibz-nest-ability${inSlot >= 0 ? ' is-equipped' : ''}" data-ability="${id}">
-          <span class="ibz-nest-ico">${icon(abilityIcon(id), 's')}</span><span class="ibz-nest-ability-text"><span><strong>${def.name}</strong>${inSlot >= 0 ? ` <em>(slot ${SLOT_KEYS[inSlot] ?? inSlot + 1})</em>` : ''}</span>
-          <span class="ibz-nest-desc">${def.description}</span></span></button>`;
+        const open = this.infoOpen === id;
+        html += `<div class="ibz-nest-row"><button type="button" class="ibz-nest-ability${inSlot >= 0 ? ' is-equipped' : ''}" data-ability="${id}">
+          <span class="ibz-nest-ico">${icon(abilityIcon(id), 's')}</span><span class="ibz-nest-ability-text"><span><strong>${def.name}</strong>${inSlot >= 0 ? ` <em>(slot ${SLOT_KEYS[inSlot] ?? inSlot + 1})</em>` : ''}</span></span></button>
+          <button type="button" class="ibz-nest-info${open ? ' is-open' : ''}" data-info="${id}" aria-label="About ${def.name}" aria-expanded="${open}" title="About ${def.name}">${icon('info', 's')}</button></div>`;
+        if (open) html += `<div class="ibz-nest-desc">${def.description}</div>`;
       }
       html += `</div><div class="ibz-nest-hint">Click a slot, then an ability &middot; keys 1-${Math.max(1, this.owned)} pick slot, [ ] cycle &middot; B buy slot</div>`;
     }
